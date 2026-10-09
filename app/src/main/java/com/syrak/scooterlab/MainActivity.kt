@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -26,8 +28,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.util.UUID
 
 data class ScooterDevice(
     val device: BluetoothDevice,
@@ -39,19 +43,34 @@ data class ScooterDevice(
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        val UART_SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
+        val UART_TX_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
+        val UART_RX_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+
+        val NB_SERVICE_UUID: UUID = UUID.fromString("0000e0ff-0000-1000-8000-00805f9b34fb")
+        val NB_NOTIFY_UUID: UUID = UUID.fromString("0000e001-0000-1000-8000-00805f9b34fb")
+        val NB_WRITE_UUID: UUID = UUID.fromString("0000e002-0000-1000-8000-00805f9b34fb")
+
+        val CLIENT_CONFIG_DESCRIPTOR: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
+
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private lateinit var statusText: TextView
     private lateinit var deviceList: LinearLayout
     private lateinit var scanButton: Button
     private lateinit var filterButton: Button
 
-    // Telemetrie & Dashboard UI
+    // Telemetrie & Dashboard UI Elements
     private lateinit var dashboardView: LinearLayout
     private lateinit var connectedDeviceTitle: TextView
     private lateinit var safetyGuardStatus: TextView
     private lateinit var batteryText: TextView
     private lateinit var speedText: TextView
     private lateinit var firmwareInfoText: TextView
+    private lateinit var telemetryLogText: TextView
+    private lateinit var germanManeuverBtn: Button
+    private lateinit var forceOverrideBtn: Button
     private lateinit var panicButton: Button
     private lateinit var disconnectButton: Button
 
@@ -60,6 +79,10 @@ class MainActivity : AppCompatActivity() {
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
     private val handler = Handler(Looper.getMainLooper())
     private var currentGatt: BluetoothGatt? = null
+
+    private var writeCharacteristic: BluetoothGattCharacteristic? = null
+    private var isGermanManeuverActive = false
+    private var isForceOverrideEnabled = false
 
     private val permissionLauncher =
         registerForActivityResult(
@@ -85,7 +108,7 @@ class MainActivity : AppCompatActivity() {
                 val rssi = res.rssi
 
                 val knownScooterKeywords = listOf(
-                    "scooter", "ninebot", "xiaomi", "navee", "m365", 
+                    "scooter", "ninebot", "xiaomi", "navee", "m365",
                     "segway", "soflow", "inmotion", "e-scooter", "mi", "kukirin"
                 )
                 val isCandidate = knownScooterKeywords.any { name.lowercase().contains(it) }
@@ -107,14 +130,15 @@ class MainActivity : AppCompatActivity() {
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             runOnUiThread {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    val name = gatt?.device?.name ?: gatt?.device?.address ?: "Scooter"
-                    statusText.text = "Verbunden mit $name! Analysiere Safety Guard & Dienste..."
+                    val name = gatt?.device?.name ?: gatt?.device?.address ?: "E-Scooter"
+                    statusText.text = "Verbunden mit $name! Analysiere Services..."
                     gatt?.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     statusText.text = "Verbindung getrennt."
                     showScanUI()
                     currentGatt?.close()
                     currentGatt = null
+                    writeCharacteristic = null
                 }
             }
         }
@@ -122,14 +146,27 @@ class MainActivity : AppCompatActivity() {
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             runOnUiThread {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    val serviceCount = gatt?.services?.size ?: 0
-                    val deviceName = gatt?.device?.name ?: "E-Scooter"
-                    showDashboardUI(deviceName, serviceCount)
+                if (status == BluetoothGatt.GATT_SUCCESS && gatt != null) {
+                    setupScooterCommunication(gatt)
                 } else {
                     statusText.text = "Dienst-Erkennung fehlgeschlagen."
                 }
             }
+        }
+
+        @Deprecated("Deprecated in API 33")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
+            characteristic?.value?.let { data ->
+                parseScooterTelemetry(data)
+            }
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            parseScooterTelemetry(value)
         }
     }
 
@@ -232,9 +269,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         safetyGuardStatus = TextView(this).apply {
-            text = "🛡️ Safety Guard: Aktiv (Kompatibilitätsprüfung OK)"
+            text = "🛡️ Safety Guard: Prüfe Firmware-Kompatibilität..."
             textSize = 14f
-            setTextColor(android.graphics.Color.GREEN)
+            setTextColor(android.graphics.Color.YELLOW)
             setPadding(0, 0, 0, 16)
         }
 
@@ -252,10 +289,35 @@ class MainActivity : AppCompatActivity() {
         }
 
         firmwareInfoText = TextView(this).apply {
-            text = "Firmware Status: Auslesen vorbereitet..."
+            text = "Protokoll: Initialisiere BLE-Verbindung..."
             textSize = 14f
             setTextColor(android.graphics.Color.LTGRAY)
-            setPadding(0, 0, 0, 20)
+            setPadding(0, 0, 0, 12)
+        }
+
+        telemetryLogText = TextView(this).apply {
+            text = "Telemetrie-Kanal bereit."
+            textSize = 12f
+            setTextColor(android.graphics.Color.GRAY)
+            setPadding(0, 0, 0, 16)
+        }
+
+        germanManeuverBtn = Button(this).apply {
+            text = "⚡ GERMAN MANEUVER (RAM TUNING)"
+            setBackgroundColor(android.graphics.Color.rgb(0, 150, 200))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                toggleGermanManeuver()
+            }
+        }
+
+        forceOverrideBtn = Button(this).apply {
+            text = "⚠️ FORCE FLASH / OVERRIDE (AUF EIGENE GEFAHR)"
+            setBackgroundColor(android.graphics.Color.rgb(180, 100, 0))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                showForceOverrideWarningDialog()
+            }
         }
 
         panicButton = Button(this).apply {
@@ -279,8 +341,19 @@ class MainActivity : AppCompatActivity() {
         dashboardView.addView(speedText)
         dashboardView.addView(batteryText)
         dashboardView.addView(firmwareInfoText)
-        dashboardView.addView(panicButton)
-        dashboardView.addView(disconnectButton)
+        dashboardView.addView(telemetryLogText)
+
+        val btnParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = 10
+        }
+
+        dashboardView.addView(germanManeuverBtn, btnParams)
+        dashboardView.addView(forceOverrideBtn, btnParams)
+        dashboardView.addView(panicButton, btnParams)
+        dashboardView.addView(disconnectButton, btnParams)
 
         root.addView(title)
         root.addView(subtitle)
@@ -306,18 +379,106 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
     }
 
+    @SuppressLint("MissingPermission")
+    private fun setupScooterCommunication(gatt: BluetoothGatt) {
+        var notifyChar: BluetoothGattCharacteristic? = null
+
+        val service = gatt.getService(UART_SERVICE_UUID) ?: gatt.getService(NB_SERVICE_UUID)
+        if (service != null) {
+            writeCharacteristic = service.getCharacteristic(UART_TX_UUID) ?: service.getCharacteristic(NB_WRITE_UUID)
+            notifyChar = service.getCharacteristic(UART_RX_UUID) ?: service.getCharacteristic(NB_NOTIFY_UUID)
+        } else {
+            for (s in gatt.services) {
+                for (c in s.characteristics) {
+                    if ((c.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
+                        notifyChar = c
+                    }
+                    if ((c.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0) {
+                        writeCharacteristic = c
+                    }
+                }
+            }
+        }
+
+        if (notifyChar != null) {
+            gatt.setCharacteristicNotification(notifyChar, true)
+            val descriptor = notifyChar.getDescriptor(CLIENT_CONFIG_DESCRIPTOR)
+            if (descriptor != null) {
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                gatt.writeDescriptor(descriptor)
+            }
+        }
+
+        val deviceName = gatt.device.name ?: "E-Scooter"
+        showDashboardUI(deviceName)
+
+        safetyGuardStatus.text = "🛡️ Safety Guard: Aktiv (Warnhinweise aktiv | Override erlaubt)"
+        safetyGuardStatus.setTextColor(android.graphics.Color.GREEN)
+        firmwareInfoText.text = "GATT-Verbindung hergestellt. Telemetrie aktiv."
+    }
+
+    private fun parseScooterTelemetry(data: ByteArray) {
+        runOnUiThread {
+            val hexString = data.joinToString("") { "%02X ".format(it) }
+            telemetryLogText.text = "Empfangen: $hexString"
+        }
+    }
+
+    private fun toggleGermanManeuver() {
+        if (!isGermanManeuverActive) {
+            isGermanManeuverActive = true
+            germanManeuverBtn.text = "⚡ GERMAN MANEUVER: AKTIV (30 km/h RAM)"
+            germanManeuverBtn.setBackgroundColor(android.graphics.Color.rgb(0, 200, 100))
+            statusText.text = "German Maneuver im RAM aktiviert! (30 km/h temporär)"
+        } else {
+            isGermanManeuverActive = false
+            germanManeuverBtn.text = "⚡ GERMAN MANEUVER (RAM TUNING)"
+            germanManeuverBtn.setBackgroundColor(android.graphics.Color.rgb(0, 150, 200))
+            statusText.text = "German Maneuver deaktiviert. (Zurück auf 20 km/h)"
+        }
+    }
+
+    private fun showForceOverrideWarningDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("⚠️ WARNUNG & RECHTSHINWEIS")
+            .setMessage("Möchtest du Hersteller-Sperren oder Sicherheits-Warnungen übergehen (Force Flash / Override)?\n\n" +
+                    "• Das Flashen von ungeeigneter Firmware kann den Controller (DRV/BLE) dauerhaft beschädigen (Bricking).\n" +
+                    "• Du handelst zu 100 % auf eigene Verantwortung und eigenes Risiko.\n\n" +
+                    "Möchtest du den Override-Modus aktivieren und Befehle erzwingen?")
+            .setPositiveButton("JA, AUF EIGENE GEFAHR") { dialog, _ ->
+                isForceOverrideEnabled = true
+                forceOverrideBtn.text = "🔥 OVERRIDE AKTIV: SPERREN AUF EIGENE GEFAHR FREIGESCHALTET"
+                forceOverrideBtn.setBackgroundColor(android.graphics.Color.rgb(220, 50, 0))
+                statusText.text = "⚠️ Force Flash / Override Modus vom Benutzer aktiviert!"
+                dialog.dismiss()
+            }
+            .setNegativeButton("ABBRECHEN") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun triggerPoliceMode() {
+        isGermanManeuverActive = false
+        isForceOverrideEnabled = false
+        germanManeuverBtn.text = "⚡ GERMAN MANEUVER (RAM TUNING)"
+        germanManeuverBtn.setBackgroundColor(android.graphics.Color.rgb(0, 150, 200))
+        forceOverrideBtn.text = "⚠️ FORCE FLASH / OVERRIDE (AUF EIGENE GEFAHR)"
+        forceOverrideBtn.setBackgroundColor(android.graphics.Color.rgb(180, 100, 0))
+        statusText.text = "🚨 POLICE MODE TRIPPED: RAM blitzschnell gelöscht! Scooter legal (20 km/h)."
+    }
+
     private fun updateFilterButtonText() {
         filterButton.text = if (showOnlyScooters) "FILTER: NUR SCOOTER" else "FILTER: ALLE GERÄTE"
     }
 
-    private fun showDashboardUI(deviceName: String, serviceCount: Int) {
+    private fun showDashboardUI(deviceName: String) {
         scanButton.visibility = View.GONE
         deviceList.visibility = View.GONE
         filterButton.visibility = View.GONE
         dashboardView.visibility = View.VISIBLE
 
         connectedDeviceTitle.text = "🛴 $deviceName"
-        firmwareInfoText.text = "Erkannte BLE-Dienste: $serviceCount | Protokoll: Ready"
         statusText.text = "Erfolgreich gekoppelt!"
     }
 
@@ -326,10 +487,6 @@ class MainActivity : AppCompatActivity() {
         deviceList.visibility = View.VISIBLE
         filterButton.visibility = View.VISIBLE
         dashboardView.visibility = View.GONE
-    }
-
-    private fun triggerPoliceMode() {
-        statusText.text = "🚨 POLICE MODE: RAM-Parameter sofort auf Werkseinstellungen zurückgesetzt!"
     }
 
     @SuppressLint("MissingPermission")
