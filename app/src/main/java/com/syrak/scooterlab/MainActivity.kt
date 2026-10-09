@@ -412,12 +412,16 @@ class MainActivity : AppCompatActivity() {
             addAction(ACTION_DISCOVERY_FINISHED)
         }
 
-        ContextCompat.registerReceiver(
-            this,
-            bluetoothReceiver,
-            filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                bluetoothReceiver,
+                filter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(bluetoothReceiver, filter)
+        }
 
         receiverRegistered = true
     }
@@ -447,7 +451,7 @@ class MainActivity : AppCompatActivity() {
 
         if (receiverRegistered) {
             try {
-                super.unregisterReceiver(bluetoothReceiver)
+                unregisterReceiver(bluetoothReceiver)
             } catch (_: IllegalArgumentException) {
             }
 
