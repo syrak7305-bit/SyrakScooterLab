@@ -447,7 +447,7 @@ class MainActivity : AppCompatActivity() {
 
         if (receiverRegistered) {
             try {
-                applicationContext.unregisterReceiver(bluetoothReceiver)
+                super.unregisterReceiver(bluetoothReceiver)
             } catch (_: IllegalArgumentException) {
             }
 
