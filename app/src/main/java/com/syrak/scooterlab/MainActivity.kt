@@ -413,14 +413,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(
+            this.registerReceiver(
                 bluetoothReceiver,
                 filter,
                 Context.RECEIVER_NOT_EXPORTED
             )
         } else {
             @Suppress("DEPRECATION")
-            registerReceiver(bluetoothReceiver, filter)
+            this.registerReceiver(bluetoothReceiver, filter)
         }
 
         receiverRegistered = true
@@ -451,7 +451,7 @@ class MainActivity : AppCompatActivity() {
 
         if (receiverRegistered) {
             try {
-                unregisterReceiver(bluetoothReceiver)
+                this.unregisterReceiver(bluetoothReceiver)
             } catch (_: IllegalArgumentException) {
             }
 
