@@ -2,6 +2,7 @@ package com.syrak.scooterlab
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -28,7 +29,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import java.util.UUID
@@ -55,7 +55,7 @@ class MainActivity : AppCompatActivity() {
         val CLIENT_CONFIG_DESCRIPTOR: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 
-    private lateinit var bluetoothAdapter: BluetoothAdapter
+    private var bluetoothAdapter: BluetoothAdapter? = null
     private lateinit var statusText: TextView
     private lateinit var deviceList: LinearLayout
     private lateinit var scanButton: Button
@@ -104,7 +104,11 @@ class MainActivity : AppCompatActivity() {
             result?.let { res ->
                 val device = res.device
                 val address = device.address
-                val name = device.name ?: res.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
+                val name = try {
+                    device.name ?: res.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
+                } catch (e: SecurityException) {
+                    "Unbekanntes BLE-Gerät"
+                }
                 val rssi = res.rssi
 
                 val knownScooterKeywords = listOf(
@@ -130,7 +134,11 @@ class MainActivity : AppCompatActivity() {
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             runOnUiThread {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    val name = gatt?.device?.name ?: gatt?.device?.address ?: "E-Scooter"
+                    val name = try {
+                        gatt?.device?.name ?: gatt?.device?.address ?: "E-Scooter"
+                    } catch (e: SecurityException) {
+                        "E-Scooter"
+                    }
                     statusText.text = "Verbunden mit $name! Analysiere Services..."
                     gatt?.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -154,27 +162,27 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        @Deprecated("Deprecated in API 33")
-        override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
-            characteristic?.value?.let { data ->
-                parseScooterTelemetry(data)
-            }
-        }
-
+        @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            value: ByteArray
+            gatt: BluetoothGatt?,
+            characteristic: BluetoothGattCharacteristic?
         ) {
-            parseScooterTelemetry(value)
+            val data = characteristic?.value ?: return
+            parseScooterTelemetry(data)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        bluetoothAdapter = bluetoothManager.adapter ?: run {
+        try {
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            bluetoothAdapter = bluetoothManager?.adapter
+        } catch (e: Exception) {
+            bluetoothAdapter = null
+        }
+
+        if (bluetoothAdapter == null) {
             showBluetoothUnavailableScreen()
             return
         }
@@ -404,12 +412,17 @@ class MainActivity : AppCompatActivity() {
             gatt.setCharacteristicNotification(notifyChar, true)
             val descriptor = notifyChar.getDescriptor(CLIENT_CONFIG_DESCRIPTOR)
             if (descriptor != null) {
+                @Suppress("DEPRECATION")
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 gatt.writeDescriptor(descriptor)
             }
         }
 
-        val deviceName = gatt.device.name ?: "E-Scooter"
+        val deviceName = try {
+            gatt.device.name ?: "E-Scooter"
+        } catch (e: SecurityException) {
+            "E-Scooter"
+        }
         showDashboardUI(deviceName)
 
         safetyGuardStatus.text = "🛡️ Safety Guard: Aktiv (Warnhinweise aktiv | Override erlaubt)"
@@ -439,23 +452,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showForceOverrideWarningDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("⚠️ WARNUNG & RECHTSHINWEIS")
-            .setMessage("Möchtest du Hersteller-Sperren oder Sicherheits-Warnungen übergehen (Force Flash / Override)?\n\n" +
-                    "• Das Flashen von ungeeigneter Firmware kann den Controller (DRV/BLE) dauerhaft beschädigen (Bricking).\n" +
-                    "• Du handelst zu 100 % auf eigene Verantwortung und eigenes Risiko.\n\n" +
-                    "Möchtest du den Override-Modus aktivieren und Befehle erzwingen?")
-            .setPositiveButton("JA, AUF EIGENE GEFAHR") { dialog, _ ->
-                isForceOverrideEnabled = true
-                forceOverrideBtn.text = "🔥 OVERRIDE AKTIV: SPERREN AUF EIGENE GEFAHR FREIGESCHALTET"
-                forceOverrideBtn.setBackgroundColor(android.graphics.Color.rgb(220, 50, 0))
-                statusText.text = "⚠️ Force Flash / Override Modus vom Benutzer aktiviert!"
-                dialog.dismiss()
-            }
-            .setNegativeButton("ABBRECHEN") { dialog, _ ->
-                dialog.dismiss()
-            }
-            .show()
+        try {
+            AlertDialog.Builder(this)
+                .setTitle("⚠️ WARNUNG & RECHTSHINWEIS")
+                .setMessage("Möchtest du Hersteller-Sperren oder Sicherheits-Warnungen übergehen (Force Flash / Override)?\n\n" +
+                        "• Das Flashen von ungeeigneter Firmware kann den Controller (DRV/BLE) dauerhaft beschädigen (Bricking).\n" +
+                        "• Du handelst zu 100 % auf eigene Verantwortung und eigenes Risiko.\n\n" +
+                        "Möchtest du den Override-Modus aktivieren und Befehle erzwingen?")
+                .setPositiveButton("JA, AUF EIGENE GEFAHR") { dialog, _ ->
+                    isForceOverrideEnabled = true
+                    forceOverrideBtn.text = "🔥 OVERRIDE AKTIV: SPERREN AUF EIGENE GEFAHR FREIGESCHALTET"
+                    forceOverrideBtn.setBackgroundColor(android.graphics.Color.rgb(220, 50, 0))
+                    statusText.text = "⚠️ Force Flash / Override Modus vom Benutzer aktiviert!"
+                    dialog.dismiss()
+                }
+                .setNegativeButton("ABBRECHEN") { dialog, _ ->
+                    dialog.dismiss()
+                }
+                .show()
+        } catch (e: Exception) {
+            statusText.text = "Fehler beim Öffnen des Dialogs: ${e.message}"
+        }
     }
 
     private fun triggerPoliceMode() {
@@ -491,7 +508,9 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("MissingPermission")
     private fun disconnectGatt() {
-        currentGatt?.disconnect()
+        try {
+            currentGatt?.disconnect()
+        } catch (e: Exception) {}
     }
 
     private fun requiredPermissions(): Array<String> {
@@ -524,7 +543,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkBluetoothAndScan() {
-        if (!bluetoothAdapter.isEnabled) {
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) {
             statusText.text = "Bluetooth ist ausgeschaltet. Bitte aktivieren."
             return
         }
@@ -556,11 +576,13 @@ class MainActivity : AppCompatActivity() {
     private fun startBleScan() {
         if (isScanning) return
 
-        currentGatt?.disconnect()
-        currentGatt?.close()
+        try {
+            currentGatt?.disconnect()
+            currentGatt?.close()
+        } catch (e: Exception) {}
         currentGatt = null
 
-        val scanner = bluetoothAdapter.bluetoothLeScanner
+        val scanner = bluetoothAdapter?.bluetoothLeScanner
         if (scanner == null) {
             statusText.text = "BLE-Scanner nicht verfügbar."
             return
@@ -577,7 +599,9 @@ class MainActivity : AppCompatActivity() {
 
         handler.postDelayed({
             if (isScanning) {
-                scanner.stopScan(leScanCallback)
+                try {
+                    scanner.stopScan(leScanCallback)
+                } catch (e: Exception) {}
                 isScanning = false
                 scanButton.isEnabled = true
                 statusText.text = if (foundDevices.isEmpty()) {
@@ -592,13 +616,17 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun connectToDevice(scooter: ScooterDevice) {
         if (isScanning) {
-            bluetoothAdapter.bluetoothLeScanner?.stopScan(leScanCallback)
+            try {
+                bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback)
+            } catch (e: Exception) {}
             isScanning = false
             scanButton.isEnabled = true
         }
 
         statusText.text = "Verbinde mit ${scooter.name} (${scooter.address}) ..."
-        currentGatt?.close()
+        try {
+            currentGatt?.close()
+        } catch (e: Exception) {}
         currentGatt = scooter.device.connectGatt(this, false, gattCallback)
     }
 
@@ -719,8 +747,12 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (isScanning) {
-            bluetoothAdapter.bluetoothLeScanner?.stopScan(leScanCallback)
+            try {
+                bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback)
+            } catch (e: Exception) {}
         }
-        currentGatt?.close()
+        try {
+            currentGatt?.close()
+        } catch (e: Exception) {}
     }
 }
