@@ -94,7 +94,7 @@ class MainActivity : AppCompatActivity() {
             if (allGranted) {
                 checkBluetoothAndScan()
             } else {
-                statusText.text = "Berechtigungen fehlen. Bitte in den App-Einstellungen erlauben."
+                statusText.text = "Berechtigungen fehlen. Bitte erlauben."
             }
         }
 
@@ -182,15 +182,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
-            handler.post {
-                try {
-                    statusText.text = "⚠️ FEHLER ABGEFANGEN:\n${throwable.localizedMessage}\n\n${throwable.stackTraceToString()}"
-                    statusText.setTextColor(android.graphics.Color.RED)
-                } catch (e: Exception) {}
-            }
-        }
+        // 1. ZUERST UI BAUEN DAMIT DER SPLASH SCREEN SOFORT VERSCHWINDET
+        buildUserInterface()
 
+        // 2. DANN BLUETOOTH SICHER INITIALISIEREN
         try {
             val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             bluetoothAdapter = bluetoothManager?.adapter
@@ -198,14 +193,11 @@ class MainActivity : AppCompatActivity() {
             bluetoothAdapter = null
         }
 
-        buildUserInterface()
-
         if (bluetoothAdapter == null) {
-            statusText.text = "Bluetooth wird auf diesem Gerät nicht unterstützt."
-            return
+            statusText.text = "Bluetooth auf diesem Gerät nicht verfügbar."
+        } else {
+            statusText.text = "Bereit. Starte den Scan nahe deines E-Scooters."
         }
-
-        statusText.text = "Bereit. Starte den Scan nahe deines E-Scooters."
     }
 
     private fun buildUserInterface() {
