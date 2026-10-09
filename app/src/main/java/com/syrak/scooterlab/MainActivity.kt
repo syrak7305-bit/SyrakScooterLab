@@ -43,8 +43,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var deviceList: LinearLayout
     private lateinit var scanButton: Button
-    
-    // Telemetrie & Dashboard UI Elements
+    private lateinit var filterButton: Button
+
+    // Telemetrie & Dashboard UI
     private lateinit var dashboardView: LinearLayout
     private lateinit var connectedDeviceTitle: TextView
     private lateinit var safetyGuardStatus: TextView
@@ -55,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var disconnectButton: Button
 
     private var isScanning = false
+    private var showOnlyScooters = true
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
     private val handler = Handler(Looper.getMainLooper())
     private var currentGatt: BluetoothGatt? = null
@@ -82,7 +84,10 @@ class MainActivity : AppCompatActivity() {
                 val name = device.name ?: res.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
                 val rssi = res.rssi
 
-                val knownScooterKeywords = listOf("scooter", "ninebot", "xiaomi", "navee", "m365", "segway", "soflow", "inmotion", "e-scooter", "mi")
+                val knownScooterKeywords = listOf(
+                    "scooter", "ninebot", "xiaomi", "navee", "m365", 
+                    "segway", "soflow", "inmotion", "e-scooter", "mi", "kukirin"
+                )
                 val isCandidate = knownScooterKeywords.any { name.lowercase().contains(it) }
 
                 foundDevices[address] = ScooterDevice(device, name, address, rssi, isCandidate)
@@ -120,7 +125,6 @@ class MainActivity : AppCompatActivity() {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     val serviceCount = gatt?.services?.size ?: 0
                     val deviceName = gatt?.device?.name ?: "E-Scooter"
-                    
                     showDashboardUI(deviceName, serviceCount)
                 } else {
                     statusText.text = "Dienst-Erkennung fehlgeschlagen."
@@ -175,12 +179,30 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val filterHeaderLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 20, 0, 10)
+        }
+
         val listTitle = TextView(this).apply {
             text = "GEFUNDENE GERÄTE"
             textSize = 15f
             setTextColor(android.graphics.Color.rgb(0, 230, 255))
-            setPadding(0, 20, 0, 10)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+
+        filterButton = Button(this).apply {
+            textSize = 11f
+            updateFilterButtonText()
+            setOnClickListener {
+                showOnlyScooters = !showOnlyScooters
+                updateFilterButtonText()
+                updateDeviceList()
+            }
+        }
+
+        filterHeaderLayout.addView(listTitle)
+        filterHeaderLayout.addView(filterButton)
 
         deviceList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -196,7 +218,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // --- DASHBOARD LAYOUT (INSPEKTION & PERFORMANCE) ---
+        // --- DASHBOARD LAYOUT ---
         dashboardView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -270,7 +292,7 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         )
-        root.addView(listTitle)
+        root.addView(filterHeaderLayout)
         root.addView(
             scrollView,
             LinearLayout.LayoutParams(
@@ -284,9 +306,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
     }
 
+    private fun updateFilterButtonText() {
+        filterButton.text = if (showOnlyScooters) "FILTER: NUR SCOOTER" else "FILTER: ALLE GERÄTE"
+    }
+
     private fun showDashboardUI(deviceName: String, serviceCount: Int) {
         scanButton.visibility = View.GONE
         deviceList.visibility = View.GONE
+        filterButton.visibility = View.GONE
         dashboardView.visibility = View.VISIBLE
 
         connectedDeviceTitle.text = "🛴 $deviceName"
@@ -297,6 +324,7 @@ class MainActivity : AppCompatActivity() {
     private fun showScanUI() {
         scanButton.visibility = View.VISIBLE
         deviceList.visibility = View.VISIBLE
+        filterButton.visibility = View.VISIBLE
         dashboardView.visibility = View.GONE
     }
 
@@ -386,7 +414,7 @@ class MainActivity : AppCompatActivity() {
 
         isScanning = true
         scanButton.isEnabled = false
-        statusText.text = "Suche läuft ... E-Scooter werden bevorzugt."
+        statusText.text = "Suche läuft ..."
 
         scanner.startScan(leScanCallback)
 
@@ -398,7 +426,7 @@ class MainActivity : AppCompatActivity() {
                 statusText.text = if (foundDevices.isEmpty()) {
                     "Keine Geräte in Reichweite gefunden."
                 } else {
-                    "${foundDevices.size} Gerät(e) gefunden. Tippe auf VERBINDEN bei deinem Scooter."
+                    "${foundDevices.size} Gerät(e) erkannt."
                 }
             }
         }, 10000)
@@ -420,9 +448,21 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetTextI18n")
     private fun updateDeviceList() {
         deviceList.removeAllViews()
-        if (foundDevices.isEmpty()) {
+
+        val filteredList = foundDevices.values.filter {
+            if (showOnlyScooters) it.isScooterCandidate else true
+        }.sortedWith(
+            compareByDescending<ScooterDevice> { it.isScooterCandidate }
+                .thenByDescending { it.rssi }
+        )
+
+        if (filteredList.isEmpty()) {
             val emptyText = TextView(this).apply {
-                text = "Suche läuft..."
+                text = if (showOnlyScooters && foundDevices.isNotEmpty()) {
+                    "Kein E-Scooter erkannt. Schalte deinen Scooter ein oder tippe oben auf 'FILTER: ALLE GERÄTE'."
+                } else {
+                    "Suche läuft..."
+                }
                 textSize = 14f
                 setTextColor(android.graphics.Color.GRAY)
                 setPadding(0, 8, 0, 8)
@@ -431,12 +471,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val sortedList = foundDevices.values.sortedWith(
-            compareByDescending<ScooterDevice> { it.isScooterCandidate }
-                .thenByDescending { it.rssi }
-        )
-
-        sortedList.forEach { scooter ->
+        filteredList.forEach { scooter ->
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(20, 20, 20, 20)
