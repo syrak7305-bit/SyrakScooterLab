@@ -30,6 +30,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.util.UUID
 
@@ -61,7 +62,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scanButton: Button
     private lateinit var filterButton: Button
 
-    // Telemetrie & Dashboard UI Elements
     private lateinit var dashboardView: LinearLayout
     private lateinit var connectedDeviceTitle: TextView
     private lateinit var safetyGuardStatus: TextView
@@ -94,19 +94,22 @@ class MainActivity : AppCompatActivity() {
             if (allGranted) {
                 checkBluetoothAndScan()
             } else {
-                statusText.text = "Berechtigungen fehlen. BLE-Scan nicht möglich."
+                statusText.text = "Berechtigungen fehlen. Bitte in den App-Einstellungen erlauben."
             }
         }
 
     private val leScanCallback = object : ScanCallback() {
-        @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result?.let { res ->
                 val device = res.device
                 val address = device.address
                 val name = try {
-                    device.name ?: res.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
-                } catch (e: SecurityException) {
+                    if (ActivityCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                        device.name ?: res.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
+                    } else {
+                        res.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
+                    }
+                } catch (e: Exception) {
                     "Unbekanntes BLE-Gerät"
                 }
                 val rssi = res.rssi
@@ -130,28 +133,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
-        @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             runOnUiThread {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     val name = try {
                         gatt?.device?.name ?: gatt?.device?.address ?: "E-Scooter"
-                    } catch (e: SecurityException) {
+                    } catch (e: Exception) {
                         "E-Scooter"
                     }
                     statusText.text = "Verbunden mit $name! Analysiere Services..."
-                    gatt?.discoverServices()
+                    try {
+                        gatt?.discoverServices()
+                    } catch (e: Exception) {
+                        statusText.text = "Fehler bei Service-Suche: ${e.message}"
+                    }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     statusText.text = "Verbindung getrennt."
                     showScanUI()
-                    currentGatt?.close()
+                    try {
+                        currentGatt?.close()
+                    } catch (e: Exception) {}
                     currentGatt = null
                     writeCharacteristic = null
                 }
             }
         }
 
-        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             runOnUiThread {
                 if (status == BluetoothGatt.GATT_SUCCESS && gatt != null) {
@@ -175,6 +182,15 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            handler.post {
+                try {
+                    statusText.text = "⚠️ FEHLER ABGEFANGEN:\n${throwable.localizedMessage}\n\n${throwable.stackTraceToString()}"
+                    statusText.setTextColor(android.graphics.Color.RED)
+                } catch (e: Exception) {}
+            }
+        }
+
         try {
             val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             bluetoothAdapter = bluetoothManager?.adapter
@@ -182,12 +198,13 @@ class MainActivity : AppCompatActivity() {
             bluetoothAdapter = null
         }
 
+        buildUserInterface()
+
         if (bluetoothAdapter == null) {
-            showBluetoothUnavailableScreen()
+            statusText.text = "Bluetooth wird auf diesem Gerät nicht unterstützt."
             return
         }
 
-        buildUserInterface()
         statusText.text = "Bereit. Starte den Scan nahe deines E-Scooters."
     }
 
@@ -263,7 +280,6 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // --- DASHBOARD LAYOUT ---
         dashboardView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -387,7 +403,6 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
     }
 
-    @SuppressLint("MissingPermission")
     private fun setupScooterCommunication(gatt: BluetoothGatt) {
         var notifyChar: BluetoothGattCharacteristic? = null
 
@@ -409,18 +424,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (notifyChar != null) {
-            gatt.setCharacteristicNotification(notifyChar, true)
-            val descriptor = notifyChar.getDescriptor(CLIENT_CONFIG_DESCRIPTOR)
-            if (descriptor != null) {
-                @Suppress("DEPRECATION")
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor)
-            }
+            try {
+                gatt.setCharacteristicNotification(notifyChar, true)
+                val descriptor = notifyChar.getDescriptor(CLIENT_CONFIG_DESCRIPTOR)
+                if (descriptor != null) {
+                    @Suppress("DEPRECATION")
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(descriptor)
+                }
+            } catch (e: Exception) {}
         }
 
         val deviceName = try {
             gatt.device.name ?: "E-Scooter"
-        } catch (e: SecurityException) {
+        } catch (e: Exception) {
             "E-Scooter"
         }
         showDashboardUI(deviceName)
@@ -506,7 +523,6 @@ class MainActivity : AppCompatActivity() {
         dashboardView.visibility = View.GONE
     }
 
-    @SuppressLint("MissingPermission")
     private fun disconnectGatt() {
         try {
             currentGatt?.disconnect()
@@ -543,6 +559,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkBluetoothAndScan() {
+        if (!hasRequiredPermissions()) {
+            permissionLauncher.launch(requiredPermissions())
+            return
+        }
+
         val adapter = bluetoothAdapter
         if (adapter == null || !adapter.isEnabled) {
             statusText.text = "Bluetooth ist ausgeschaltet. Bitte aktivieren."
@@ -572,7 +593,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @SuppressLint("MissingPermission")
     private fun startBleScan() {
         if (isScanning) return
 
@@ -582,7 +602,12 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {}
         currentGatt = null
 
-        val scanner = bluetoothAdapter?.bluetoothLeScanner
+        val scanner = try {
+            bluetoothAdapter?.bluetoothLeScanner
+        } catch (e: Exception) {
+            null
+        }
+
         if (scanner == null) {
             statusText.text = "BLE-Scanner nicht verfügbar."
             return
@@ -595,7 +620,14 @@ class MainActivity : AppCompatActivity() {
         scanButton.isEnabled = false
         statusText.text = "Suche läuft ..."
 
-        scanner.startScan(leScanCallback)
+        try {
+            scanner.startScan(leScanCallback)
+        } catch (e: Exception) {
+            isScanning = false
+            scanButton.isEnabled = true
+            statusText.text = "Scan-Fehler: ${e.message}"
+            return
+        }
 
         handler.postDelayed({
             if (isScanning) {
@@ -613,7 +645,6 @@ class MainActivity : AppCompatActivity() {
         }, 10000)
     }
 
-    @SuppressLint("MissingPermission")
     private fun connectToDevice(scooter: ScooterDevice) {
         if (isScanning) {
             try {
@@ -627,7 +658,11 @@ class MainActivity : AppCompatActivity() {
         try {
             currentGatt?.close()
         } catch (e: Exception) {}
-        currentGatt = scooter.device.connectGatt(this, false, gattCallback)
+        try {
+            currentGatt = scooter.device.connectGatt(this, false, gattCallback)
+        } catch (e: Exception) {
+            statusText.text = "Verbindungsfehler: ${e.message}"
+        }
     }
 
     @SuppressLint("SetTextI18n")
@@ -734,16 +769,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showBluetoothUnavailableScreen() {
-        val text = TextView(this).apply {
-            text = "Dieses Gerät unterstützt kein Bluetooth."
-            textSize = 18f
-            setPadding(32, 32, 32, 32)
-        }
-        setContentView(text)
-    }
-
-    @SuppressLint("MissingPermission")
     override fun onDestroy() {
         super.onDestroy()
         if (isScanning) {
