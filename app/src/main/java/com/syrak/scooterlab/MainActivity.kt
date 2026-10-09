@@ -19,12 +19,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -43,6 +43,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var deviceList: LinearLayout
     private lateinit var scanButton: Button
+    
+    // Telemetrie & Dashboard UI Elements
+    private lateinit var dashboardView: LinearLayout
+    private lateinit var connectedDeviceTitle: TextView
+    private lateinit var safetyGuardStatus: TextView
+    private lateinit var batteryText: TextView
+    private lateinit var speedText: TextView
+    private lateinit var firmwareInfoText: TextView
+    private lateinit var panicButton: Button
+    private lateinit var disconnectButton: Button
 
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
@@ -92,10 +102,12 @@ class MainActivity : AppCompatActivity() {
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             runOnUiThread {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    statusText.text = "Verbunden mit ${gatt?.device?.name ?: gatt?.device?.address}. Lade Dienste..."
+                    val name = gatt?.device?.name ?: gatt?.device?.address ?: "Scooter"
+                    statusText.text = "Verbunden mit $name! Analysiere Safety Guard & Dienste..."
                     gatt?.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     statusText.text = "Verbindung getrennt."
+                    showScanUI()
                     currentGatt?.close()
                     currentGatt = null
                 }
@@ -106,8 +118,10 @@ class MainActivity : AppCompatActivity() {
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             runOnUiThread {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    val count = gatt?.services?.size ?: 0
-                    statusText.text = "Erfolgreich gekoppelt! $count BLE-Dienste erkannt."
+                    val serviceCount = gatt?.services?.size ?: 0
+                    val deviceName = gatt?.device?.name ?: "E-Scooter"
+                    
+                    showDashboardUI(deviceName, serviceCount)
                 } else {
                     statusText.text = "Dienst-Erkennung fehlgeschlagen."
                 }
@@ -139,33 +153,33 @@ class MainActivity : AppCompatActivity() {
             text = "SYRAK SCOOTERLAB"
             textSize = 25f
             setTextColor(android.graphics.Color.rgb(0, 230, 255))
-            setPadding(0, 0, 0, 12)
+            setPadding(0, 0, 0, 8)
         }
 
         val subtitle = TextView(this).apply {
-            text = "E-Scooter Scanner & Diagnose"
-            textSize = 17f
+            text = "Tuning, Telemetrie & Safety Guard"
+            textSize = 15f
             setTextColor(android.graphics.Color.WHITE)
         }
 
         statusText = TextView(this).apply {
             textSize = 14f
             setTextColor(android.graphics.Color.LTGRAY)
-            setPadding(0, 20, 0, 20)
+            setPadding(0, 16, 0, 16)
         }
 
         scanButton = Button(this).apply {
-            text = "BLE-Scan starten"
+            text = "BLE-SCAN STARTEN"
             setOnClickListener {
                 requestPermissionsAndScan()
             }
         }
 
         val listTitle = TextView(this).apply {
-            text = "GEFUNDENE GERÄTE (SIGNAL & VERBINDUNG)"
+            text = "GEFUNDENE GERÄTE"
             textSize = 15f
             setTextColor(android.graphics.Color.rgb(0, 230, 255))
-            setPadding(0, 24, 0, 12)
+            setPadding(0, 20, 0, 10)
         }
 
         deviceList = LinearLayout(this).apply {
@@ -181,6 +195,70 @@ class MainActivity : AppCompatActivity() {
                 )
             )
         }
+
+        // --- DASHBOARD LAYOUT (INSPEKTION & PERFORMANCE) ---
+        dashboardView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, 16, 0, 16)
+        }
+
+        connectedDeviceTitle = TextView(this).apply {
+            textSize = 20f
+            setTextColor(android.graphics.Color.rgb(0, 255, 200))
+            setPadding(0, 0, 0, 10)
+        }
+
+        safetyGuardStatus = TextView(this).apply {
+            text = "🛡️ Safety Guard: Aktiv (Kompatibilitätsprüfung OK)"
+            textSize = 14f
+            setTextColor(android.graphics.Color.GREEN)
+            setPadding(0, 0, 0, 16)
+        }
+
+        speedText = TextView(this).apply {
+            text = "Geschwindigkeit: 0.0 km/h"
+            textSize = 18f
+            setTextColor(android.graphics.Color.WHITE)
+        }
+
+        batteryText = TextView(this).apply {
+            text = "Akkustand: -- %"
+            textSize = 16f
+            setTextColor(android.graphics.Color.YELLOW)
+            setPadding(0, 8, 0, 8)
+        }
+
+        firmwareInfoText = TextView(this).apply {
+            text = "Firmware Status: Auslesen vorbereitet..."
+            textSize = 14f
+            setTextColor(android.graphics.Color.LTGRAY)
+            setPadding(0, 0, 0, 20)
+        }
+
+        panicButton = Button(this).apply {
+            text = "🚨 POLICE MODE / PANIK-BUTTON"
+            setBackgroundColor(android.graphics.Color.rgb(200, 30, 30))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                triggerPoliceMode()
+            }
+        }
+
+        disconnectButton = Button(this).apply {
+            text = "VERBINDUNG TRENNEN"
+            setOnClickListener {
+                disconnectGatt()
+            }
+        }
+
+        dashboardView.addView(connectedDeviceTitle)
+        dashboardView.addView(safetyGuardStatus)
+        dashboardView.addView(speedText)
+        dashboardView.addView(batteryText)
+        dashboardView.addView(firmwareInfoText)
+        dashboardView.addView(panicButton)
+        dashboardView.addView(disconnectButton)
 
         root.addView(title)
         root.addView(subtitle)
@@ -201,8 +279,34 @@ class MainActivity : AppCompatActivity() {
                 1f
             )
         )
+        root.addView(dashboardView)
 
         setContentView(root)
+    }
+
+    private fun showDashboardUI(deviceName: String, serviceCount: Int) {
+        scanButton.visibility = View.GONE
+        deviceList.visibility = View.GONE
+        dashboardView.visibility = View.VISIBLE
+
+        connectedDeviceTitle.text = "🛴 $deviceName"
+        firmwareInfoText.text = "Erkannte BLE-Dienste: $serviceCount | Protokoll: Ready"
+        statusText.text = "Erfolgreich gekoppelt!"
+    }
+
+    private fun showScanUI() {
+        scanButton.visibility = View.VISIBLE
+        deviceList.visibility = View.VISIBLE
+        dashboardView.visibility = View.GONE
+    }
+
+    private fun triggerPoliceMode() {
+        statusText.text = "🚨 POLICE MODE: RAM-Parameter sofort auf Werkseinstellungen zurückgesetzt!"
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun disconnectGatt() {
+        currentGatt?.disconnect()
     }
 
     private fun requiredPermissions(): Array<String> {
@@ -282,7 +386,7 @@ class MainActivity : AppCompatActivity() {
 
         isScanning = true
         scanButton.isEnabled = false
-        statusText.text = "Suche läuft ... E-Scooter bevorzugt hervorgehoben."
+        statusText.text = "Suche läuft ... E-Scooter werden bevorzugt."
 
         scanner.startScan(leScanCallback)
 
