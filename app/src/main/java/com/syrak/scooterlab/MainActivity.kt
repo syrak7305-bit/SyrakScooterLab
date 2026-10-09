@@ -3,7 +3,11 @@ package com.syrak.scooterlab
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
@@ -25,6 +29,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 
+data class ScooterDevice(
+    val device: BluetoothDevice,
+    val name: String,
+    val address: String,
+    val rssi: Int,
+    val isScooterCandidate: Boolean
+)
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
@@ -33,8 +45,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scanButton: Button
 
     private var isScanning = false
-    private val foundDevices = linkedMapOf<String, String>()
+    private val foundDevices = linkedMapOf<String, ScooterDevice>()
     private val handler = Handler(Looper.getMainLooper())
+    private var currentGatt: BluetoothGatt? = null
 
     private val permissionLauncher =
         registerForActivityResult(
@@ -46,18 +59,23 @@ class MainActivity : AppCompatActivity() {
             if (allGranted) {
                 checkBluetoothAndScan()
             } else {
-                statusText.text = "Berechtigungen fehlen. Bluetooth-Scan nicht möglich."
-                Toast.makeText(this, "Bitte erlaube alle Berechtigungen.", Toast.LENGTH_LONG).show()
+                statusText.text = "Berechtigungen fehlen. BLE-Scan nicht möglich."
             }
         }
 
     private val leScanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
-            result?.device?.let { device ->
+            result?.let { res ->
+                val device = res.device
                 val address = device.address
-                val name = device.name ?: result.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
-                foundDevices[address] = name
+                val name = device.name ?: res.scanRecord?.deviceName ?: "Unbekanntes BLE-Gerät"
+                val rssi = res.rssi
+
+                val knownScooterKeywords = listOf("scooter", "ninebot", "xiaomi", "navee", "m365", "segway", "soflow", "inmotion", "e-scooter", "mi")
+                val isCandidate = knownScooterKeywords.any { name.lowercase().contains(it) }
+
+                foundDevices[address] = ScooterDevice(device, name, address, rssi, isCandidate)
                 updateDeviceList()
             }
         }
@@ -66,6 +84,34 @@ class MainActivity : AppCompatActivity() {
             isScanning = false
             scanButton.isEnabled = true
             statusText.text = "BLE-Scan Fehler Code: $errorCode"
+        }
+    }
+
+    private val gattCallback = object : BluetoothGattCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
+            runOnUiThread {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    statusText.text = "Verbunden mit ${gatt?.device?.name ?: gatt?.device?.address}. Lade Dienste..."
+                    gatt?.discoverServices()
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    statusText.text = "Verbindung getrennt."
+                    currentGatt?.close()
+                    currentGatt = null
+                }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
+            runOnUiThread {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    val count = gatt?.services?.size ?: 0
+                    statusText.text = "Erfolgreich gekoppelt! $count BLE-Dienste erkannt."
+                } else {
+                    statusText.text = "Dienst-Erkennung fehlgeschlagen."
+                }
+            }
         }
     }
 
@@ -79,7 +125,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         buildUserInterface()
-        statusText.text = "Bereit für den BLE-Scan."
+        statusText.text = "Bereit. Starte den Scan nahe deines E-Scooters."
     }
 
     private fun buildUserInterface() {
@@ -97,7 +143,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val subtitle = TextView(this).apply {
-            text = "Bluetooth Low Energy Scanner"
+            text = "E-Scooter Scanner & Diagnose"
             textSize = 17f
             setTextColor(android.graphics.Color.WHITE)
         }
@@ -109,15 +155,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         scanButton = Button(this).apply {
-            text = "Bluetooth-Scan starten"
+            text = "BLE-Scan starten"
             setOnClickListener {
                 requestPermissionsAndScan()
             }
         }
 
         val listTitle = TextView(this).apply {
-            text = "GEFUNDENE GERÄTE"
-            textSize = 16f
+            text = "GEFUNDENE GERÄTE (SIGNAL & VERBINDUNG)"
+            textSize = 15f
             setTextColor(android.graphics.Color.rgb(0, 230, 255))
             setPadding(0, 24, 0, 12)
         }
@@ -195,7 +241,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!isLocationEnabled()) {
-            statusText.text = "Bitte Standort / GPS am Handy aktivieren!"
+            statusText.text = "Bitte Standort / GPS aktivieren!"
             startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
             return
         }
@@ -221,6 +267,10 @@ class MainActivity : AppCompatActivity() {
     private fun startBleScan() {
         if (isScanning) return
 
+        currentGatt?.disconnect()
+        currentGatt?.close()
+        currentGatt = null
+
         val scanner = bluetoothAdapter.bluetoothLeScanner
         if (scanner == null) {
             statusText.text = "BLE-Scanner nicht verfügbar."
@@ -232,7 +282,7 @@ class MainActivity : AppCompatActivity() {
 
         isScanning = true
         scanButton.isEnabled = false
-        statusText.text = "BLE-Scan läuft (10 Sek.) ..."
+        statusText.text = "Suche läuft ... E-Scooter bevorzugt hervorgehoben."
 
         scanner.startScan(leScanCallback)
 
@@ -244,12 +294,26 @@ class MainActivity : AppCompatActivity() {
                 statusText.text = if (foundDevices.isEmpty()) {
                     "Keine Geräte in Reichweite gefunden."
                 } else {
-                    "${foundDevices.size} Gerät(e) gefunden."
+                    "${foundDevices.size} Gerät(e) gefunden. Tippe auf VERBINDEN bei deinem Scooter."
                 }
             }
         }, 10000)
     }
 
+    @SuppressLint("MissingPermission")
+    private fun connectToDevice(scooter: ScooterDevice) {
+        if (isScanning) {
+            bluetoothAdapter.bluetoothLeScanner?.stopScan(leScanCallback)
+            isScanning = false
+            scanButton.isEnabled = true
+        }
+
+        statusText.text = "Verbinde mit ${scooter.name} (${scooter.address}) ..."
+        currentGatt?.close()
+        currentGatt = scooter.device.connectGatt(this, false, gattCallback)
+    }
+
+    @SuppressLint("SetTextI18n")
     private fun updateDeviceList() {
         deviceList.removeAllViews()
         if (foundDevices.isEmpty()) {
@@ -263,34 +327,84 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        foundDevices.forEach { (address, name) ->
+        val sortedList = foundDevices.values.sortedWith(
+            compareByDescending<ScooterDevice> { it.isScooterCandidate }
+                .thenByDescending { it.rssi }
+        )
+
+        sortedList.forEach { scooter ->
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(16, 16, 16, 16)
-                setBackgroundColor(android.graphics.Color.rgb(28, 28, 40))
+                setPadding(20, 20, 20, 20)
+                setBackgroundColor(
+                    if (scooter.isScooterCandidate)
+                        android.graphics.Color.rgb(10, 50, 40)
+                    else
+                        android.graphics.Color.rgb(28, 28, 40)
+                )
+            }
+
+            val headerLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
             }
 
             val nameText = TextView(this).apply {
-                text = name
+                text = if (scooter.isScooterCandidate) "🛴 ${scooter.name}" else scooter.name
                 textSize = 16f
-                setTextColor(android.graphics.Color.WHITE)
+                setTextColor(
+                    if (scooter.isScooterCandidate)
+                        android.graphics.Color.rgb(0, 255, 200)
+                    else
+                        android.graphics.Color.WHITE
+                )
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
 
+            val rssiText = TextView(this).apply {
+                text = "${scooter.rssi} dBm"
+                textSize = 13f
+                setTextColor(
+                    if (scooter.rssi > -70) android.graphics.Color.GREEN
+                    else if (scooter.rssi > -85) android.graphics.Color.YELLOW
+                    else android.graphics.Color.RED
+                )
+            }
+
+            headerLayout.addView(nameText)
+            headerLayout.addView(rssiText)
+
             val addressText = TextView(this).apply {
-                text = "MAC: $address"
+                text = "MAC: ${scooter.address}"
                 textSize = 13f
                 setTextColor(android.graphics.Color.rgb(0, 230, 255))
                 setPadding(0, 6, 0, 0)
             }
 
-            item.addView(nameText)
+            val connectBtn = Button(this).apply {
+                text = "VERBINDEN"
+                textSize = 12f
+                setOnClickListener {
+                    connectToDevice(scooter)
+                }
+            }
+
+            item.addView(headerLayout)
             item.addView(addressText)
+            item.addView(
+                connectBtn,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = 12
+                }
+            )
 
             val params = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = 12
+                bottomMargin = 14
             }
             deviceList.addView(item, params)
         }
@@ -311,5 +425,6 @@ class MainActivity : AppCompatActivity() {
         if (isScanning) {
             bluetoothAdapter.bluetoothLeScanner?.stopScan(leScanCallback)
         }
+        currentGatt?.close()
     }
 }
