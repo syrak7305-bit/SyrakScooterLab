@@ -29,7 +29,7 @@
         android:layout_height="wrap_content"
         android:text="Bereit. Starte den Scan nahe deines E-Scooters."
         android:textSize="14sp"
-        android:textColor="#LTGRAY"
+        android:textColor="#FFCCCCCC"
         android:paddingBottom="12dp"/>
 
     <Button
