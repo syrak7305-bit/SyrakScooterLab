@@ -136,7 +136,7 @@ class MainActivity : AppCompatActivity() {
 
         val versionText = TextView(this).apply {
             text = "Diagnostic Suite v1.0"
-            textSize.let { textSize = 13f }
+            textSize = 13f
             setTextColor(Color.rgb(120, 130, 145))
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 48)
@@ -276,7 +276,6 @@ class MainActivity : AppCompatActivity() {
         activeTimer?.cancel()
         rootContainer.removeAllViews()
 
-        // Automatische Erkennung des aktuellen Landes des Smartphones
         val currentLocale = Locale.getDefault()
         val countryName = currentLocale.getDisplayCountry(Locale.GERMAN).ifEmpty { "Ihrem Land" }
         val countryCode = currentLocale.country
@@ -303,7 +302,6 @@ class MainActivity : AppCompatActivity() {
         }
         innerLayout.addView(headerText)
 
-        // Inhalt je nach erkanntem Land anpassen
         val bodyTextContent = if (countryCode.equals("DE", ignoreCase = true)) {
             "Diese Anwendung ist nicht für den öffentlichen Straßenverkehr in Deutschland bestimmt.\n\n" +
                     "• Erlöschen der Betriebserlaubnis (ABE): Jede Modifikation der Leistung oder Höchstgeschwindigkeit führt zum Verlust der Straßenzulassung nach StVZO.\n" +
@@ -467,7 +465,7 @@ class MainActivity : AppCompatActivity() {
             scanner.startScan(leScanCallback)
         } catch (e: Exception) {
             isScanning = false
-            scanButton.isEnabled = titleText@{ scanButton.isEnabled = true; true }
+            scanButton.isEnabled = true
             statusText.text = "Scan failed to start."
             return
         }
