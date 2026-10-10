@@ -1,50 +1,23 @@
 package com.syrak.scooterlab
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.app.AlertDialog
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.location.LocationManager
-import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
-import android.view.View
-import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import java.util.UUID
-
-data class ScooterDevice(
-    val device: BluetoothDevice,
-    val name: String,
-    val address: String,
-    val rssi: Int,
-    val isScooterCandidate: Boolean
-)
 
 class MainActivity : AppCompatActivity() {
-
-    companion object {
-        val UART_SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
-        val UART_TX_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        
+        val textView = TextView(this).apply {
+            text = "🛴 Syrak ScooterLab - Basis läuft erfolgreich!"
+            textSize = 18f
+            setPadding(40, 40, 40, 40)
+        }
+        
+        setContentView(textView)
+    }
+}
+a9-e50e24dcca9e")
         val UART_RX_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
 
         val NB_SERVICE_UUID: UUID = UUID.fromString("0000e0ff-0000-1000-8000-00805f9b34fb")
