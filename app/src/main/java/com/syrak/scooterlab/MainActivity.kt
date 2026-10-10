@@ -13,9 +13,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -32,13 +34,14 @@ data class ScooterDevice(
 class MainActivity : AppCompatActivity() {
 
     private var bluetoothAdapter: BluetoothAdapter? = null
-    private lateinit var statusText: TextView
-    private lateinit var scanButton: Button
-    private lateinit var deviceListContainer: LinearLayout
+    private lateinit var rootContainer: LinearLayout
+    private val handler = Handler(Looper.getMainLooper())
 
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
-    private val handler = Handler(Looper.getMainLooper())
+    private lateinit var statusText: TextView
+    private lateinit var scanButton: Button
+    private lateinit var deviceListContainer: LinearLayout
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -85,21 +88,166 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val rootLayout = LinearLayout(this).apply {
+        rootContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(30, 30, 30, 30)
+            setPadding(40, 40, 40, 40)
+            setBackgroundColor(android.graphics.Color.rgb(18, 18, 18))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
+
+        setContentView(rootContainer)
+        showLoadingScreen()
+    }
+
+    private fun showLoadingScreen() {
+        rootContainer.removeAllViews()
+
+        val innerLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        val logoText = TextView(this).apply {
+            text = "🛴"
+            textSize = 48f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 20)
+        }
+
+        val titleText = TextView(this).apply {
+            text = "Syrak ScooterLab"
+            textSize = 26f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(android.graphics.Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 10)
+        }
+
+        val versionText = TextView(this).apply {
+            text = "v1.0.0 release / #32"
+            textSize = 13f
+            setTextColor(android.graphics.Color.GRAY)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 40)
+        }
+
+        val loadingStatus = TextView(this).apply {
+            text = "Initialisiere System..."
+            textSize = 15f
+            setTextColor(android.graphics.Color.rgb(100, 180, 255))
+            gravity = Gravity.CENTER
+        }
+
+        innerLayout.addView(logoText)
+        innerLayout.addView(titleText)
+        innerLayout.addView(versionText)
+        innerLayout.addView(loadingStatus)
+        rootContainer.addView(innerLayout)
+
+        // Simulierter Lade-Prozess mit Schritten (wie beim Original)
+        val steps = listOf(
+            "Lade Konfigurationsdaten (1/4)...",
+            "Prüfe Bluetooth-Module (2/4)...",
+            "Bereite Firmware-Schnittstelle vor (3/4)...",
+            "System bereit! (4/4)"
+        )
+
+        var currentStep = 0
+        val stepHandler = Handler(Looper.getMainLooper())
+        val runnable = object : Runnable {
+            override fun run() {
+                if (currentStep < steps.size) {
+                    loadingStatus.text = steps[currentStep]
+                    currentStep++
+                    stepHandler.postDelayed(this, 600)
+                } else {
+                    // Nach dem Laden zum Haftungstext wechseln
+                    showDisclaimerScreen()
+                }
+            }
+        }
+        stepHandler.postDelayed(runnable, 400)
+    }
+
+    private fun showDisclaimerScreen() {
+        rootContainer.removeAllViews()
+
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        val innerLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(10, 10, 10, 10)
+        }
+
+        val headerText = TextView(this).apply {
+            text = "⚠️ Haftungsausschluss & Warnung"
+            textSize = 22f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(android.graphics.Color.rgb(255, 100, 100))
+            setPadding(0, 0, 0, 20)
+        }
+
+        val bodyText = TextView(this).apply {
+            text = "Bitte lesen Sie diesen Haftungsausschluss sorgfältig durch, bevor Sie fortfahren:\n\n" +
+                    "1. **Keine Haftung:** Die Nutzung von Syrak ScooterLab, insbesondere Funktionen wie RAM-Tuning (German Maneuver), Regionsänderungen oder Firmware-Flashing, erfolgt vollkommen auf eigene Gefahr. Der Entwickler haftet für keinerlei Schäden.\n\n" +
+                    "2. **Keine Garantie:** Es wird keine Garantie für die Unversehrtheit des E-Scooters oder des Akkumanagementsystems übernommen.\n\n" +
+                    "3. **Straßenverkehr:** Geschwindigkeitserhöhungen über die gesetzlichen Limits verstoßen gegen die StVO und sind im öffentlichen Straßenverkehr untersagt.\n\n" +
+                    "Durch das Klicken auf „Akzeptieren“ bestätigen Sie, dass Sie die volle Verantwortung tragen."
+            textSize = 14f
+            setTextColor(android.graphics.Color.LTGRAY)
+            setPadding(0, 0, 0, 30)
+        }
+
+        val acceptButton = Button(this).apply {
+            text = "✅ Akzeptieren & Fortfahren"
+            setOnClickListener {
+                showMainDashboard()
+            }
+        }
+
+        val declineButton = Button(this).apply {
+            text = "❌ Ablehnen & Beenden"
+            setOnClickListener {
+                finishAffinity()
+            }
+        }
+
+        innerLayout.addView(headerText)
+        innerLayout.addView(bodyText)
+        innerLayout.addView(acceptButton)
+        innerLayout.addView(declineButton)
+        scrollView.addView(innerLayout)
+
+        rootContainer.addView(scrollView)
+    }
+
+    private fun showMainDashboard() {
+        rootContainer.removeAllViews()
 
         val titleText = TextView(this).apply {
             text = "🛵 Syrak ScooterLab"
             textSize = 22f
             setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(android.graphics.Color.WHITE)
             setPadding(0, 0, 0, 10)
         }
 
         statusText = TextView(this).apply {
             text = "Bereit zum Scannen..."
             textSize = 14f
+            setTextColor(android.graphics.Color.LTGRAY)
             setPadding(0, 0, 0, 20)
         }
 
@@ -113,12 +261,24 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 20, 0, 0)
         }
 
-        rootLayout.addView(titleText)
-        rootLayout.addView(statusText)
-        rootLayout.addView(scanButton)
-        rootLayout.addView(deviceListContainer)
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
 
-        setContentView(rootLayout)
+        val dashboardLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        dashboardLayout.addView(titleText)
+        dashboardLayout.addView(statusText)
+        dashboardLayout.addView(scanButton)
+        dashboardLayout.addView(deviceListContainer)
+        scrollView.addView(dashboardLayout)
+
+        rootContainer.addView(scrollView)
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = bluetoothManager?.adapter
