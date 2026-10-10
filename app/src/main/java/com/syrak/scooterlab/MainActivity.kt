@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
     ) { permissions ->
         val allGranted = permissions.entries.all { it.value }
         if (allGranted) {
-            statusText.text = "Diagnostic core online. Ready for BLE scan."
+            statusText.text = "System active. Make sure your scooter is powered on."
             scanButton.isEnabled = true
         } else {
             statusText.text = "Bluetooth permissions required for operation."
@@ -96,7 +96,7 @@ class MainActivity : AppCompatActivity() {
 
         rootContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(28, 28, 28, 28)
+            setPadding(0, 0, 0, 0)
             setBackgroundColor(Color.rgb(12, 14, 18))
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -119,6 +119,7 @@ class MainActivity : AppCompatActivity() {
         val innerLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
+            setPadding(32, 32, 32, 32)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -127,7 +128,7 @@ class MainActivity : AppCompatActivity() {
 
         val logoBadge = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 16, 24, 16)
+            setPadding(28, 20, 28, 20)
             setBackgroundColor(Color.rgb(20, 24, 33))
             gravity = Gravity.CENTER
         }
@@ -153,7 +154,7 @@ class MainActivity : AppCompatActivity() {
         logoBadge.addView(badgeSub)
 
         val versionText = TextView(this).apply {
-            text = "v4.2.1-PRO // BUILD #37"
+            text = "v4.2.1-PRO // BUILD #38"
             textSize = 12f
             setTextColor(Color.rgb(100, 110, 125))
             gravity = Gravity.CENTER
@@ -216,7 +217,7 @@ class MainActivity : AppCompatActivity() {
 
         val innerLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(12, 12, 12, 12)
+            setPadding(24, 24, 24, 24)
         }
 
         val headerText = TextView(this).apply {
@@ -228,7 +229,6 @@ class MainActivity : AppCompatActivity() {
         }
         innerLayout.addView(headerText)
 
-        // Ausführlicher, professioneller Text mit massig Tiefe zum Scrollen
         val sections = listOf(
             Pair("Age Requirement:", "You must be at least 18 years old to use this application. If you are under the legal age, you are strictly prohibited from modifying electric micro-mobility vehicles and must exit immediately."),
             Pair("Safety First:", "Always wear certified protective gear, test brakes and steering components regularly, obey all local traffic regulations, and remain fully aware of your surroundings during operation. Avoid distractions and never ride under the influence."),
@@ -266,7 +266,8 @@ class MainActivity : AppCompatActivity() {
 
         val bottomLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 12, 0, 0)
+            setPadding(24, 16, 24, 24)
+            setBackgroundColor(Color.rgb(16, 19, 26))
         }
 
         val agreeButton = Button(this).apply {
@@ -325,7 +326,7 @@ class MainActivity : AppCompatActivity() {
 
         val innerLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(12, 12, 12, 12)
+            setPadding(24, 24, 24, 24)
         }
 
         val headerText = TextView(this).apply {
@@ -362,7 +363,8 @@ class MainActivity : AppCompatActivity() {
 
         val bottomLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 12, 0, 0)
+            setPadding(24, 16, 24, 24)
+            setBackgroundColor(Color.rgb(16, 19, 26))
         }
 
         val acceptButton = Button(this).apply {
@@ -405,62 +407,106 @@ class MainActivity : AppCompatActivity() {
     private fun showMainDashboard() {
         rootContainer.removeAllViews()
 
-        val headerBadge = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(20, 12, 20, 12)
-            setBackgroundColor(Color.rgb(20, 24, 33))
-        }
-
-        val titleText = TextView(this).apply {
-            text = "Syrak ScooterLab"
-            textSize = 18f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.WHITE)
-        }
-
-        headerBadge.addView(titleText)
-
-        statusText = TextView(this).apply {
-            text = "Status: Idle. Ready for BLE scan."
-            textSize = 13f
-            setTextColor(Color.rgb(150, 165, 180))
-            setPadding(0, 16, 0, 12)
-        }
-
-        scanButton = Button(this).apply {
-            text = "SCAN FOR SCOOTERS"
-            setOnClickListener { startBleScan() }
-        }
-
-        deviceListContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 12, 0, 0)
-        }
-
         val scrollView = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.MATCH_PARENT
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                1f
             )
         }
 
         val dashboardLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(24, 24, 24, 24)
         }
 
-        dashboardLayout.addView(headerBadge)
-        dashboardLayout.addView(statusText)
-        dashboardLayout.addView(scanButton)
-        dashboardLayout.addView(deviceListContainer)
-        scrollView.addView(dashboardLayout)
+        // Professioneller Header im Profi-Stil
+        val titleText = TextView(this).apply {
+            text = "Syrak ScooterLab"
+            textSize = 24f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        }
 
+        val subtitleText = TextView(this).apply {
+            text = "Select your scooter to continue"
+            textSize = 13f
+            setTextColor(Color.rgb(140, 155, 170))
+            setPadding(0, 4, 0, 24)
+        }
+
+        dashboardLayout.addView(titleText)
+        dashboardLayout.addView(subtitleText)
+
+        // Zentraler Status- / Radar-Container
+        val radarContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(32, 48, 32, 48)
+            setBackgroundColor(Color.rgb(18, 22, 30))
+        }
+
+        val radarIcon = TextView(this).apply {
+            text = "⚡"
+            textSize = 42f
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(0, 230, 118))
+        }
+
+        statusText = TextView(this).apply {
+            text = "Make sure your scooter is powered on"
+            textSize = 14f
+            setTextColor(Color.rgb(180, 195, 210))
+            gravity = Gravity.CENTER
+            setPadding(0, 12, 0, 4)
+        }
+
+        radarContainer.addView(radarIcon)
+        radarContainer.addView(statusText)
+        dashboardLayout.addView(radarContainer)
+
+        // Scan Button
+        scanButton = Button(this).apply {
+            text = "SCAN FOR SCOOTERS"
+            setPadding(0, 24, 0, 24)
+            setBackgroundColor(Color.rgb(0, 160, 90))
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            setOnClickListener { startBleScan() }
+        }
+
+        val btnParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(0, 24, 0, 16) }
+
+        dashboardLayout.addView(scanButton, btnParams)
+
+        // Device List Container
+        deviceListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 12, 0, 0)
+        }
+        dashboardLayout.addView(deviceListContainer)
+
+        // Footer / Help Text
+        val footerText = TextView(this).apply {
+            text = "Don't see your scooter? View supported models"
+            textSize = 12f
+            setTextColor(Color.rgb(100, 110, 125))
+            gravity = Gravity.CENTER
+            setPadding(0, 32, 0, 16)
+        }
+        dashboardLayout.addView(footerText)
+
+        scrollView.addView(dashboardLayout)
         rootContainer.addView(scrollView)
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = bluetoothManager?.adapter
 
         if (bluetoothAdapter == null) {
-            statusText.text = "Status: Bluetooth unavailable."
+            statusText.text = "Bluetooth unavailable on this device."
             scanButton.isEnabled = false
         }
     }
@@ -494,7 +540,7 @@ class MainActivity : AppCompatActivity() {
 
         val scanner = bluetoothAdapter?.bluetoothLeScanner
         if (scanner == null) {
-            statusText.text = "Status: Bluetooth is disabled."
+            statusText.text = "Bluetooth is disabled."
             return
         }
 
@@ -503,14 +549,14 @@ class MainActivity : AppCompatActivity() {
 
         isScanning = true
         scanButton.isEnabled = false
-        statusText.text = "Status: Scanning ambient frequencies..."
+        statusText.text = "Scanning for scooters..."
 
         try {
             scanner.startScan(leScanCallback)
         } catch (e: Exception) {
             isScanning = false
             scanButton.isEnabled = true
-            statusText.text = "Status: Scan initialization failed."
+            statusText.text = "Scan initialization failed."
             return
         }
 
@@ -519,7 +565,7 @@ class MainActivity : AppCompatActivity() {
                 try { scanner.stopScan(leScanCallback) } catch (e: Exception) {}
                 isScanning = false
                 scanButton.isEnabled = true
-                statusText.text = "Status: Scan completed. Found ${foundDevices.size} device(s)."
+                statusText.text = "Scan completed. Found ${foundDevices.size} device(s)."
             }
         }, 10000)
     }
