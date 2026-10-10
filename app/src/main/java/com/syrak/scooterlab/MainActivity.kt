@@ -23,10 +23,8 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.View
-import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -181,11 +179,38 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
 
-        // 1. ZUERST UI BAUEN DAMIT DER SPLASH SCREEN SOFORT VERSCHWINDET
-        buildUserInterface()
+        statusText = findViewById(R.id.statusText)
+        scanButton = findViewById(R.id.scanButton)
+        filterButton = findViewById(R.id.filterButton)
+        deviceList = findViewById(R.id.deviceList)
 
-        // 2. DANN BLUETOOTH SICHER INITIALISIEREN
+        dashboardView = findViewById(R.id.dashboardView)
+        connectedDeviceTitle = findViewById(R.id.connectedDeviceTitle)
+        safetyGuardStatus = findViewById(R.id.safetyGuardStatus)
+        speedText = findViewById(R.id.speedText)
+        batteryText = findViewById(R.id.batteryText)
+        firmwareInfoText = findViewById(R.id.firmwareInfoText)
+        telemetryLogText = findViewById(R.id.telemetryLogText)
+        germanManeuverBtn = findViewById(R.id.germanManeuverBtn)
+        forceOverrideBtn = findViewById(R.id.forceOverrideBtn)
+        panicButton = findViewById(R.id.panicButton)
+        disconnectButton = findViewById(R.id.disconnectButton)
+
+        scanButton.setOnClickListener { requestPermissionsAndScan() }
+        filterButton.setOnClickListener {
+            showOnlyScooters = !showOnlyScooters
+            updateFilterButtonText()
+            updateDeviceList()
+        }
+        germanManeuverBtn.setOnClickListener { toggleGermanManeuver() }
+        forceOverrideBtn.setOnClickListener { showForceOverrideWarningDialog() }
+        panicButton.setOnClickListener { triggerPoliceMode() }
+        disconnectButton.setOnClickListener { disconnectGatt() }
+
+        updateFilterButtonText()
+
         try {
             val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             bluetoothAdapter = bluetoothManager?.adapter
@@ -198,201 +223,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             statusText.text = "Bereit. Starte den Scan nahe deines E-Scooters."
         }
-    }
-
-    private fun buildUserInterface() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 40, 32, 24)
-            setBackgroundColor(android.graphics.Color.rgb(12, 12, 18))
-        }
-
-        val title = TextView(this).apply {
-            text = "SYRAK SCOOTERLAB"
-            textSize = 25f
-            setTextColor(android.graphics.Color.rgb(0, 230, 255))
-            setPadding(0, 0, 0, 8)
-        }
-
-        val subtitle = TextView(this).apply {
-            text = "Tuning, Telemetrie & Safety Guard"
-            textSize = 15f
-            setTextColor(android.graphics.Color.WHITE)
-        }
-
-        statusText = TextView(this).apply {
-            textSize = 14f
-            setTextColor(android.graphics.Color.LTGRAY)
-            setPadding(0, 16, 0, 16)
-        }
-
-        scanButton = Button(this).apply {
-            text = "BLE-SCAN STARTEN"
-            setOnClickListener {
-                requestPermissionsAndScan()
-            }
-        }
-
-        val filterHeaderLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 20, 0, 10)
-        }
-
-        val listTitle = TextView(this).apply {
-            text = "GEFUNDENE GERÄTE"
-            textSize = 15f
-            setTextColor(android.graphics.Color.rgb(0, 230, 255))
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        filterButton = Button(this).apply {
-            textSize = 11f
-            updateFilterButtonText()
-            setOnClickListener {
-                showOnlyScooters = !showOnlyScooters
-                updateFilterButtonText()
-                updateDeviceList()
-            }
-        }
-
-        filterHeaderLayout.addView(listTitle)
-        filterHeaderLayout.addView(filterButton)
-
-        deviceList = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        val scrollView = ScrollView(this).apply {
-            addView(
-                deviceList,
-                ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            )
-        }
-
-        dashboardView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-            setPadding(0, 16, 0, 16)
-        }
-
-        connectedDeviceTitle = TextView(this).apply {
-            textSize = 20f
-            setTextColor(android.graphics.Color.rgb(0, 255, 200))
-            setPadding(0, 0, 0, 10)
-        }
-
-        safetyGuardStatus = TextView(this).apply {
-            text = "🛡️ Safety Guard: Prüfe Firmware-Kompatibilität..."
-            textSize = 14f
-            setTextColor(android.graphics.Color.YELLOW)
-            setPadding(0, 0, 0, 16)
-        }
-
-        speedText = TextView(this).apply {
-            text = "Geschwindigkeit: 0.0 km/h"
-            textSize = 18f
-            setTextColor(android.graphics.Color.WHITE)
-        }
-
-        batteryText = TextView(this).apply {
-            text = "Akkustand: -- %"
-            textSize = 16f
-            setTextColor(android.graphics.Color.YELLOW)
-            setPadding(0, 8, 0, 8)
-        }
-
-        firmwareInfoText = TextView(this).apply {
-            text = "Protokoll: Initialisiere BLE-Verbindung..."
-            textSize = 14f
-            setTextColor(android.graphics.Color.LTGRAY)
-            setPadding(0, 0, 0, 12)
-        }
-
-        telemetryLogText = TextView(this).apply {
-            text = "Telemetrie-Kanal bereit."
-            textSize = 12f
-            setTextColor(android.graphics.Color.GRAY)
-            setPadding(0, 0, 0, 16)
-        }
-
-        germanManeuverBtn = Button(this).apply {
-            text = "⚡ GERMAN MANEUVER (RAM TUNING)"
-            setBackgroundColor(android.graphics.Color.rgb(0, 150, 200))
-            setTextColor(android.graphics.Color.WHITE)
-            setOnClickListener {
-                toggleGermanManeuver()
-            }
-        }
-
-        forceOverrideBtn = Button(this).apply {
-            text = "⚠️ FORCE FLASH / OVERRIDE (AUF EIGENE GEFAHR)"
-            setBackgroundColor(android.graphics.Color.rgb(180, 100, 0))
-            setTextColor(android.graphics.Color.WHITE)
-            setOnClickListener {
-                showForceOverrideWarningDialog()
-            }
-        }
-
-        panicButton = Button(this).apply {
-            text = "🚨 POLICE MODE / PANIK-BUTTON"
-            setBackgroundColor(android.graphics.Color.rgb(200, 30, 30))
-            setTextColor(android.graphics.Color.WHITE)
-            setOnClickListener {
-                triggerPoliceMode()
-            }
-        }
-
-        disconnectButton = Button(this).apply {
-            text = "VERBINDUNG TRENNEN"
-            setOnClickListener {
-                disconnectGatt()
-            }
-        }
-
-        dashboardView.addView(connectedDeviceTitle)
-        dashboardView.addView(safetyGuardStatus)
-        dashboardView.addView(speedText)
-        dashboardView.addView(batteryText)
-        dashboardView.addView(firmwareInfoText)
-        dashboardView.addView(telemetryLogText)
-
-        val btnParams = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply {
-            bottomMargin = 10
-        }
-
-        dashboardView.addView(germanManeuverBtn, btnParams)
-        dashboardView.addView(forceOverrideBtn, btnParams)
-        dashboardView.addView(panicButton, btnParams)
-        dashboardView.addView(disconnectButton, btnParams)
-
-        root.addView(title)
-        root.addView(subtitle)
-        root.addView(statusText)
-        root.addView(
-            scanButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        root.addView(filterHeaderLayout)
-        root.addView(
-            scrollView,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-        )
-        root.addView(dashboardView)
-
-        setContentView(root)
     }
 
     private fun setupScooterCommunication(gatt: BluetoothGatt) {
@@ -465,12 +295,12 @@ class MainActivity : AppCompatActivity() {
             AlertDialog.Builder(this)
                 .setTitle("⚠️ WARNUNG & RECHTSHINWEIS")
                 .setMessage("Möchtest du Hersteller-Sperren oder Sicherheits-Warnungen übergehen (Force Flash / Override)?\n\n" +
-                        "• Das Flashen von ungeeigneter Firmware kann den Controller (DRV/BLE) dauerhaft beschädigen (Bricking).\n" +
+                        "• Das Flashen von ungeeigneter Firmware kann den Controller dauerhaft beschädigen.\n" +
                         "• Du handelst zu 100 % auf eigene Verantwortung und eigenes Risiko.\n\n" +
-                        "Möchtest du den Override-Modus aktivieren und Befehle erzwingen?")
+                        "Möchtest du den Override-Modus aktivieren?")
                 .setPositiveButton("JA, AUF EIGENE GEFAHR") { dialog, _ ->
                     isForceOverrideEnabled = true
-                    forceOverrideBtn.text = "🔥 OVERRIDE AKTIV: SPERREN AUF EIGENE GEFAHR FREIGESCHALTET"
+                    forceOverrideBtn.text = "🔥 OVERRIDE AKTIV: FREIGESCHALTET"
                     forceOverrideBtn.setBackgroundColor(android.graphics.Color.rgb(220, 50, 0))
                     statusText.text = "⚠️ Force Flash / Override Modus vom Benutzer aktiviert!"
                     dialog.dismiss()
@@ -489,9 +319,9 @@ class MainActivity : AppCompatActivity() {
         isForceOverrideEnabled = false
         germanManeuverBtn.text = "⚡ GERMAN MANEUVER (RAM TUNING)"
         germanManeuverBtn.setBackgroundColor(android.graphics.Color.rgb(0, 150, 200))
-        forceOverrideBtn.text = "⚠️ FORCE FLASH / OVERRIDE (AUF EIGENE GEFAHR)"
+        forceOverrideBtn.text = "⚠️ FORCE FLASH / OVERRIDE"
         forceOverrideBtn.setBackgroundColor(android.graphics.Color.rgb(180, 100, 0))
-        statusText.text = "🚨 POLICE MODE TRIPPED: RAM blitzschnell gelöscht! Scooter legal (20 km/h)."
+        statusText.text = "🚨 POLICE MODE TRIPPED: RAM gelöscht! Scooter legal (20 km/h)."
     }
 
     private fun updateFilterButtonText() {
@@ -503,7 +333,6 @@ class MainActivity : AppCompatActivity() {
         deviceList.visibility = View.GONE
         filterButton.visibility = View.GONE
         dashboardView.visibility = View.VISIBLE
-
         connectedDeviceTitle.text = "🛴 $deviceName"
         statusText.text = "Erfolgreich gekoppelt!"
     }

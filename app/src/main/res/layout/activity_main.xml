@@ -29,16 +29,14 @@
         android:layout_height="wrap_content"
         android:text="Bereit. Starte den Scan nahe deines E-Scooters."
         android:textSize="14sp"
-        android:textColor="#FFCCCCCC"
+        android:textColor="#CCCCCC"
         android:paddingBottom="12dp"/>
 
     <Button
         android:id="@+id/scanButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="BLE-SCAN STARTEN"
-        android:backgroundTint="#0096C8"
-        android:textColor="#FFFFFF"/>
+        android:text="BLE-SCAN STARTEN"/>
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -79,7 +77,7 @@
     <LinearLayout
         android:id="@+id/dashboardView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
+        android:layout_height="wrap_content"
         android:orientation="vertical"
         android:visibility="gone"
         android:paddingTop="8dp">
@@ -98,7 +96,7 @@
             android:id="@+id/safetyGuardStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            text="🛡️ Safety Guard: Aktiv"
+            android:text="🛡️ Safety Guard: Aktiv"
             android:textSize="13sp"
             android:textColor="#FFFF00"
             android:paddingBottom="8dp"/>
@@ -125,7 +123,7 @@
             android:id="@+id/firmwareInfoText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            text="Protokoll: Aktiv"
+            android:text="Protokoll: Aktiv"
             android:textSize="13sp"
             android:textColor="#CCCCCC"
             android:paddingBottom="8dp"/>
@@ -134,7 +132,7 @@
             android:id="@+id/telemetryLogText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            text="Telemetrie bereit."
+            android:text="Telemetrie bereit."
             android:textSize="11sp"
             android:textColor="#888888"
             android:paddingBottom="12dp"/>
@@ -144,8 +142,6 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="⚡ GERMAN MANEUVER (RAM TUNING)"
-            android:backgroundTint="#0096C8"
-            android:textColor="#FFFFFF"
             android:layout_marginBottom="8dp"/>
 
         <Button
@@ -153,24 +149,20 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="⚠️ FORCE FLASH / OVERRIDE"
-            android:backgroundTint="#B46400"
-            android:textColor="#FFFFFF"
             android:layout_marginBottom="8dp"/>
 
         <Button
             android:id="@+id/panicButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            text="🚨 POLICE MODE / PANIK-BUTTON"
-            android:backgroundTint="#C81E1E"
-            android:textColor="#FFFFFF"
+            android:text="🚨 POLICE MODE / PANIK-BUTTON"
             android:layout_marginBottom="8dp"/>
 
         <Button
             android:id="@+id/disconnectButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            text="VERBINDUNG TRENNEN"/>
+            android:text="VERBINDUNG TRENNEN"/>
     </LinearLayout>
 
 </LinearLayout>
