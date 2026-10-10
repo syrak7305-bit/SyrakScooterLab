@@ -97,7 +97,7 @@ class MainActivity : AppCompatActivity() {
         rootContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(28, 28, 28, 28)
-            setBackgroundColor(Color.rgb(12, 14, 18)) // Deep Cyberpunk Dark
+            setBackgroundColor(Color.rgb(12, 14, 18))
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -125,7 +125,6 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // Cyber Logo Header Badge
         val logoBadge = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 16, 24, 16)
@@ -145,7 +144,7 @@ class MainActivity : AppCompatActivity() {
             text = "ELITE FIRMWARE & TUNING SUITE"
             textSize = 10f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.rgb(0, 230, 118)) // Acid Green
+            setTextColor(Color.rgb(0, 230, 118))
             gravity = Gravity.CENTER
             setPadding(0, 2, 0, 0)
         }
@@ -154,7 +153,7 @@ class MainActivity : AppCompatActivity() {
         logoBadge.addView(badgeSub)
 
         val versionText = TextView(this).apply {
-            text = "v4.2.1-PRO // BUILD #36"
+            text = "v4.2.1-PRO // BUILD #37"
             textSize = 12f
             setTextColor(Color.rgb(100, 110, 125))
             gravity = Gravity.CENTER
@@ -171,7 +170,7 @@ class MainActivity : AppCompatActivity() {
         val loadingStatus = TextView(this).apply {
             text = "Establishing secure memory connection..."
             textSize = 13f
-            setTextColor(Color.rgb(255, 60, 60)) // Neon Red Accent
+            setTextColor(Color.rgb(255, 60, 60))
             gravity = Gravity.CENTER
         }
 
@@ -229,12 +228,19 @@ class MainActivity : AppCompatActivity() {
         }
         innerLayout.addView(headerText)
 
+        // Ausführlicher, professioneller Text mit massig Tiefe zum Scrollen
         val sections = listOf(
             Pair("Age Requirement:", "You must be at least 18 years old to use this application. If you are under the legal age, you are strictly prohibited from modifying electric micro-mobility vehicles and must exit immediately."),
-            Pair("Safety First:", "Always wear certified protective gear, test brakes and steering components regularly, obey all local traffic regulations, and remain fully aware of your surroundings during operation."),
-            Pair("Potential for Hardware Damage:", "Modifying firmware, overriding speed governors, or executing RAM patches carries inherent risks of hardware failure, controller bricking (DRV damage), and battery management system (BMS) errors. All operations are executed entirely at your own risk."),
-            Pair("No Affiliations:", "Syrak ScooterLab is an independent diagnostic development tool and has no official affiliation with Segway-Ninebot, Xiaomi, Navee, or any other scooter manufacturer."),
-            Pair("Use at Your Own Risk & Liability:", "The developer assumes absolute zero liability for personal injury, property damage, hardware destruction, or legal penalties resulting from the deployment of this software.")
+            Pair("Safety First:", "Always wear certified protective gear, test brakes and steering components regularly, obey all local traffic regulations, and remain fully aware of your surroundings during operation. Avoid distractions and never ride under the influence."),
+            Pair("English Fluency Required:", "You must be fluent in English to fully understand the technical terms, safety warnings, and instructions within this app. Misunderstandings due to language barriers are entirely your own responsibility."),
+            Pair("Potential for Hardware Damage:", "Modifying firmware, overriding speed governors, or executing RAM patches carries inherent risks of permanent hardware failure, controller bricking (DRV damage), and battery management system (BMS) faults. All operations are executed entirely at your own risk."),
+            Pair("Legal Compliance:", "It is crucial to verify the strict legality of scooter modifications in your local jurisdiction. Germany users: see the mandatory German-language legal notice on the next screen. France and other regions: exceeding legal speed limits can result in heavy administrative fines up to EUR 1,500 or vehicle confiscation."),
+            Pair("No Affiliations:", "Syrak ScooterLab is an independent diagnostic development tool and has no official affiliation, sponsorship, or endorsement with Segway-Ninebot, Xiaomi, Navee, or any other scooter manufacturer or brand."),
+            Pair("Fair Use & Distribution:", "You are strictly prohibited from redistributing this application, modifying its binaries for commercial distribution, or paying anyone claiming to offer exclusive access or paid firmware upgrades."),
+            Pair("End-User License Agreement (EULA):", "Usage of this application implies total acceptance of applicable software protocols, safety guidelines, and privacy practices governing diagnostic communications."),
+            Pair("Third-Party Liability:", "You alone are legally liable for any property damage or injury caused to third parties by a vehicle modified through this app. Insurance coverage may become entirely void after modification."),
+            Pair("Indemnification & Hold Harmless:", "You agree to indemnify, defend, and hold harmless Syrak ScooterLab, its developers, and contributors from any claims, legal costs, or damages arising directly or indirectly from your utilization of this software."),
+            Pair("Absolute Responsibility:", "You assume 100% personal responsibility for any alterations you execute. If you do not fully understand these risks or disagree with any terms, exit the application now.")
         )
 
         sections.forEach { (title, body) ->
@@ -264,7 +270,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val agreeButton = Button(this).apply {
-            text = "Agree (15)"
+            text = "Agree (20)"
             isEnabled = false
             setBackgroundColor(Color.rgb(45, 50, 60))
             setTextColor(Color.GRAY)
@@ -287,7 +293,7 @@ class MainActivity : AppCompatActivity() {
         rootContainer.addView(bottomLayout)
 
         activeTimer?.cancel()
-        activeTimer = object : CountDownTimer(15000, 1000) {
+        activeTimer = object : CountDownTimer(20000, 1000) {
             override fun onTick(millisUntilFinished: Long) {
                 val seconds = millisUntilFinished / 1000
                 agreeButton.text = "Agree ($seconds)"
@@ -333,13 +339,14 @@ class MainActivity : AppCompatActivity() {
 
         val bodyTextContent = if (countryCode.equals("DE", ignoreCase = true)) {
             "Diese Anwendung ist explizit nicht für den Betrieb von Elektrokleinstfahrzeugen im öffentlichen Straßenverkehr in der Bundesrepublik Deutschland bestimmt.\n\n" +
-                    "• Erlöschen der Betriebserlaubnis (ABE): Jede unautorisierte Modifikation der Motorleistung, Drehmomentbegrenzung oder Höchstgeschwindigkeit führt zum sofortigen Erlöschen der Allgemeinen Betriebserlaubnis nach StVZO.\n" +
-                    "• Strafrechtliche Konsequenzen: Das Fahren von modifizierten Fahrzeugen im öffentlichen Verkehrsraum erfüllt unter anderem Straftatbestände nach § 21 StVG (Fahren ohne Fahrerlaubnis) sowie § 6 PflVG (Verstoß gegen das Pflichtversicherungsgesetz), geahndet mit Geldstrafen oder Freiheitsstrafen bis zu einem Jahr.\n" +
-                    "• Finanzielle Haftung: Bei Unfällen mit manipulierten Fahrzeugen entfällt jeglicher Versicherungsschutz. Sie haften persönlich und unbeschränkt mit Ihrem gesamten Privatvermögen."
+                    "• Erlöschen der Betriebserlaubnis (ABE): Jede unautorisierte Modifikation der Motorleistung, Drehmomentbegrenzung oder Höchstgeschwindigkeit führt zum sofortigen Erlöschen der Allgemeinen Betriebserlaubnis nach der Straßenverkehrszulassungsordnung (StVZO).\n" +
+                    "• Strafrechtliche Risiken nach StVG: Das Fahren von modifizierten Fahrzeugen im öffentlichen Verkehrsraum erfüllt schwerwiegende Straftatbestände, darunter insbesondere § 21 StVG (Fahren ohne Fahrerlaubnis), was mit Geldstrafen oder Freiheitsstrafen von bis zu einem Jahr geahndet werden kann.\n" +
+                    "• Pflichtversicherungsgesetz (PflVG): Gemäß § 6 PflVG führt das Erlöschen der Betriebserlaubnis zum direkten Verlust des Versicherungsschutzes. Auch dies stellt eine Straftat dar, die strafrechtlich verfolgt wird.\n" +
+                    "• Unbeschränkte finanzielle Haftung: Bei Verkehrsunfällen mit manipulierten Fahrzeugen nehmen Versicherungen Regress. Sie haften vollkommen unbeschränkt und persönlich mit Ihrem gesamten Privatvermögen für sämtliche Personen- und Sachschäden."
         } else {
             "Bitte beachten Sie strikt die geltenden nationalen Gesetze und Vorschriften für Elektrokleinstfahrzeuge in $countryName.\n\n" +
-                    "• Geschwindigkeitsbegrenzungen und technische Veränderungen unterliegen den lokalen Verkehrsbehörden.\n" +
-                    "• Jeglicher Betrieb außerhalb von ausgewiesenen Privatgeländen erfolgt auf eigene rechtliche und zivile Verantwortung."
+                    "• Geschwindigkeitsbegrenzungen, Leistungsstufen und technische Veränderungen unterliegen der strengen Aufsicht der lokalen Verkehrsbehörden.\n" +
+                    "• Jeglicher Betrieb außerhalb von ausgewiesenen Privatgeländen erfolgt auf eigene rechtliche, zivile und strafrechtliche Verantwortung des Nutzers."
         }
 
         val bodyView = TextView(this).apply {
@@ -359,7 +366,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val acceptButton = Button(this).apply {
-            text = "Ich verstehe und akzeptiere (15)"
+            text = "Ich verstehe und akzeptiere (20)"
             isEnabled = false
             setBackgroundColor(Color.rgb(45, 50, 60))
             setTextColor(Color.GRAY)
@@ -381,7 +388,7 @@ class MainActivity : AppCompatActivity() {
         bottomLayout.addView(exitButton)
         rootContainer.addView(bottomLayout)
 
-        activeTimer = object : CountDownTimer(15000, 1000) {
+        activeTimer = object : CountDownTimer(20000, 1000) {
             override fun onTick(millisUntilFinished: Long) {
                 val seconds = millisUntilFinished / 1000
                 acceptButton.text = "Ich verstehe und akzeptiere ($seconds)"
