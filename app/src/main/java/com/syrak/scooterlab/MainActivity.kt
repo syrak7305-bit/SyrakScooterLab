@@ -13,6 +13,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.os.CountDownTimer
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -25,6 +26,7 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.util.Locale
 
 data class ScooterDevice(
     val device: BluetoothDevice,
@@ -39,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private var bluetoothAdapter: BluetoothAdapter? = null
     private lateinit var rootContainer: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
+    private var activeTimer: CountDownTimer? = null
 
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
@@ -51,10 +54,10 @@ class MainActivity : AppCompatActivity() {
     ) { permissions ->
         val allGranted = permissions.entries.all { it.value }
         if (allGranted) {
-            statusText.text = "System bereit. Berechtigungen aktiv."
+            statusText.text = "System active. Ready for diagnostics."
             scanButton.isEnabled = true
         } else {
-            statusText.text = "Bitte erteile die Bluetooth-Berechtigungen."
+            statusText.text = "Bluetooth permissions required."
         }
     }
 
@@ -65,12 +68,12 @@ class MainActivity : AppCompatActivity() {
                 val address = device.address
                 val name = try {
                     if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                        device.name ?: res.scanRecord?.deviceName ?: "Unbekanntes Gerät"
+                        device.name ?: res.scanRecord?.deviceName ?: "Unknown Device"
                     } else {
-                        res.scanRecord?.deviceName ?: "Unbekanntes Gerät"
+                        res.scanRecord?.deviceName ?: "Unknown Device"
                     }
                 } catch (e: Exception) {
-                    "Unbekanntes Gerät"
+                    "Unknown Device"
                 }
 
                 val knownKeywords = listOf("scooter", "ninebot", "xiaomi", "navee", "m365", "segway", "soflow")
@@ -84,7 +87,7 @@ class MainActivity : AppCompatActivity() {
         override fun onScanFailed(errorCode: Int) {
             isScanning = false
             scanButton.isEnabled = true
-            statusText.text = "Scan-Fehler Code: $errorCode"
+            statusText.text = "Scan error code: $errorCode"
         }
     }
 
@@ -94,7 +97,7 @@ class MainActivity : AppCompatActivity() {
         rootContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
-            setBackgroundColor(Color.rgb(15, 17, 21)) // Premium Dark Theme
+            setBackgroundColor(Color.rgb(15, 17, 21))
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -103,6 +106,11 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(rootContainer)
         showLoadingScreen()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        activeTimer?.cancel()
     }
 
     private fun showLoadingScreen() {
@@ -117,16 +125,9 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        val logoText = TextView(this).apply {
-            text = "🛴"
-            textSize = 56f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 16)
-        }
-
         val titleText = TextView(this).apply {
             text = "Syrak ScooterLab"
-            textSize = 28f
+            textSize = 26f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
@@ -134,8 +135,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val versionText = TextView(this).apply {
-            text = "v1.0.0 release / #33 PRO"
-            textSize = 13f
+            text = "Diagnostic Suite v1.0"
+            textSize.let { textSize = 13f }
             setTextColor(Color.rgb(120, 130, 145))
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 48)
@@ -143,19 +144,18 @@ class MainActivity : AppCompatActivity() {
 
         val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
-            layoutParams = LinearLayout.LayoutParams(600, 12).apply {
+            layoutParams = LinearLayout.LayoutParams(600, 10).apply {
                 setMargins(0, 0, 0, 24)
             }
         }
 
         val loadingStatus = TextView(this).apply {
-            text = "Initialisiere Core-Module..."
-            textSize = 14f
+            text = "Initializing core environment..."
+            textSize = 13f
             setTextColor(Color.rgb(80, 180, 255))
             gravity = Gravity.CENTER
         }
 
-        innerLayout.addView(logoText)
         innerLayout.addView(titleText)
         innerLayout.addView(versionText)
         innerLayout.addView(progressBar)
@@ -163,10 +163,10 @@ class MainActivity : AppCompatActivity() {
         rootContainer.addView(innerLayout)
 
         val steps = listOf(
-            "Lade Konfigurationsdaten (1/4)...",
-            "Prüfe Bluetooth-BLE-Schnittstelle (2/4)...",
-            "Bereite RAM-Tuning Engine vor (3/4)...",
-            "System bereit! (4/4)"
+            "Loading system configurations...",
+            "Checking low-energy bluetooth stack...",
+            "Preparing diagnostic modules...",
+            "System ready."
         )
 
         var currentStep = 0
@@ -176,93 +176,202 @@ class MainActivity : AppCompatActivity() {
                 if (currentStep < steps.size) {
                     loadingStatus.text = steps[currentStep]
                     currentStep++
-                    stepHandler.postDelayed(this, 700)
+                    stepHandler.postDelayed(this, 600)
                 } else {
-                    showDisclaimerScreen()
+                    showCriticalDisclaimer()
                 }
             }
         }
-        stepHandler.postDelayed(runnable, 500)
+        stepHandler.postDelayed(runnable, 400)
     }
 
-    private fun showDisclaimerScreen() {
+    private fun showCriticalDisclaimer() {
         rootContainer.removeAllViews()
 
         val scrollView = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.MATCH_PARENT
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                1f
             )
         }
 
         val innerLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16, 16, 16, 32)
+            setPadding(16, 16, 16, 16)
         }
 
         val headerText = TextView(this).apply {
-            text = "⚠️ Haftungsausschluss & Warnung"
+            text = "Safety & Liability Notice"
             textSize = 20f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.rgb(255, 90, 90))
-            setPadding(0, 0, 0, 24)
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, 20)
         }
-
         innerLayout.addView(headerText)
 
-        // Sauber strukturierte Absätze ohne hässliche Markdown-Sterne
         val sections = listOf(
-            Pair("1. Keine Haftung", "Die Nutzung von Syrak ScooterLab, insbesondere Funktionen wie RAM-Tuning (German Maneuver), Regionsänderungen oder Firmware-Flashing, erfolgt vollkommen auf eigene Gefahr. Der Entwickler haftet für keinerlei Sach- oder Personenschäden."),
-            Pair("2. Keine Garantie", "Es wird keine Garantie oder Gewährleistung für die Unversehrtheit des E-Scooters, der Steuereinheit (DRV) oder des Batteriemanagementsystems übernommen."),
-            Pair("3. Straßenverkehr (StVO)", "Geschwindigkeitserhöhungen und Modifikationen verstoßen gegen gesetzliche Bestimmungen und sind im öffentlichen Straßenverkehr strengstens untersagt.")
+            Pair("Age Restriction:", "You must be of legal age in your jurisdiction to operate or modify electric micro-mobility vehicles."),
+            Pair("Hardware Integrity:", "Modifications to firmware or RAM parameters are performed entirely at your own risk. The developer assumes no responsibility for hardware bricking or component failure."),
+            Pair("Operational Safety:", "Always wear appropriate safety gear and inspect your vehicle before operation.")
         )
 
         sections.forEach { (title, body) ->
-            val titleView = TextView(this).apply {
-                text = title
-                textSize = 15f
-                setTypeface(null, Typeface.BOLD)
-                setTextColor(Color.WHITE)
-                setPadding(0, 0, 0, 4)
-            }
-            val bodyView = TextView(this).apply {
-                text = body
+            val row = TextView(this).apply {
+                text = "$title $body"
                 textSize = 13f
                 setTextColor(Color.rgb(180, 190, 205))
-                setPadding(0, 0, 0, 20)
+                setPadding(0, 0, 0, 16)
             }
-            innerLayout.addView(titleView)
-            innerLayout.addView(bodyView)
+            innerLayout.addView(row)
+        }
+
+        scrollView.addView(innerLayout)
+        rootContainer.addView(scrollView)
+
+        val bottomLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 16, 0, 0)
+        }
+
+        val agreeButton = Button(this).apply {
+            text = "Agree (10)"
+            isEnabled = false
+            setBackgroundColor(Color.rgb(50, 55, 65))
+            setTextColor(Color.LTGRAY)
+            setOnClickListener {
+                showCountryDisclaimer()
+            }
+        }
+
+        val exitButton = Button(this).apply {
+            text = "Exit Application"
+            setBackgroundColor(Color.rgb(35, 40, 50))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                finishAffinity()
+            }
+        }
+
+        bottomLayout.addView(agreeButton)
+        bottomLayout.addView(exitButton)
+        rootContainer.addView(bottomLayout)
+
+        activeTimer?.cancel()
+        activeTimer = object : CountDownTimer(10000, 1000) {
+            override fun onTick(millisUntilFinished: Long) {
+                val seconds = millisUntilFinished / 1000
+                agreeButton.text = "Agree ($seconds)"
+            }
+            override fun onFinish() {
+                agreeButton.text = "Agree"
+                agreeButton.isEnabled = true
+                agreeButton.setBackgroundColor(Color.rgb(70, 90, 110))
+                agreeButton.setTextColor(Color.WHITE)
+            }
+        }.start()
+    }
+
+    private fun showCountryDisclaimer() {
+        activeTimer?.cancel()
+        rootContainer.removeAllViews()
+
+        // Automatische Erkennung des aktuellen Landes des Smartphones
+        val currentLocale = Locale.getDefault()
+        val countryName = currentLocale.getDisplayCountry(Locale.GERMAN).ifEmpty { "Ihrem Land" }
+        val countryCode = currentLocale.country
+
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                1f
+            )
+        }
+
+        val innerLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 16, 16, 16)
+        }
+
+        val headerText = TextView(this).apply {
+            text = "Zusätzlicher Hinweis: Nutzung in $countryName"
+            textSize = 20f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, 20)
+        }
+        innerLayout.addView(headerText)
+
+        // Inhalt je nach erkanntem Land anpassen
+        val bodyTextContent = if (countryCode.equals("DE", ignoreCase = true)) {
+            "Diese Anwendung ist nicht für den öffentlichen Straßenverkehr in Deutschland bestimmt.\n\n" +
+                    "• Erlöschen der Betriebserlaubnis (ABE): Jede Modifikation der Leistung oder Höchstgeschwindigkeit führt zum Verlust der Straßenzulassung nach StVZO.\n" +
+                    "• Rechtliche Konsequenzen: Modifikationen im öffentlichen Raum können unter § 21 StVG (Fahren ohne Fahrerlaubnis) oder § 6 PflVG (Fahren ohne Versicherungsschutz) fallen."
+        } else {
+            "Bitte beachten Sie die lokalen Gesetze und Vorschriften für Elektrokleinstfahrzeuge in $countryName.\n\n" +
+                    "• Geschwindigkeitsbegrenzungen und technische Änderungen unterliegen den nationalen Verkehrsgesetzen.\n" +
+                    "• Die Nutzung außerhalb privatem Gelände kann behördlichen Restriktionen unterliegen."
+        }
+
+        val bodyView = TextView(this).apply {
+            text = bodyTextContent
+            textSize = 13f
+            setTextColor(Color.rgb(180, 190, 205))
+            setPadding(0, 0, 0, 16)
+        }
+        innerLayout.addView(bodyView)
+
+        scrollView.addView(innerLayout)
+        rootContainer.addView(scrollView)
+
+        val bottomLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 16, 0, 0)
         }
 
         val acceptButton = Button(this).apply {
-            text = "✓ Akzeptieren & Fortfahren"
-            setPadding(0, 24, 0, 24)
-            setOnClickListener { showMainDashboard() }
+            text = "Verstanden (10)"
+            isEnabled = false
+            setBackgroundColor(Color.rgb(50, 55, 65))
+            setTextColor(Color.LTGRAY)
+            setOnClickListener {
+                showMainDashboard()
+            }
         }
 
-        val declineButton = Button(this).apply {
-            text = "✕ Ablehnen & Schließen"
-            setOnClickListener { finishAffinity() }
+        val exitButton = Button(this).apply {
+            text = "App beenden"
+            setBackgroundColor(Color.rgb(35, 40, 50))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                finishAffinity()
+            }
         }
 
-        val btnContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 20, 0, 0)
-        }
-        btnContainer.addView(acceptButton)
-        btnContainer.addView(declineButton)
+        bottomLayout.addView(acceptButton)
+        bottomLayout.addView(exitButton)
+        rootContainer.addView(bottomLayout)
 
-        innerLayout.addView(btnContainer)
-        scrollView.addView(innerLayout)
-        rootContainer.addView(scrollView)
+        activeTimer = object : CountDownTimer(10000, 1000) {
+            override fun onTick(millisUntilFinished: Long) {
+                val seconds = millisUntilFinished / 1000
+                acceptButton.text = "Verstanden ($seconds)"
+            }
+            override fun onFinish() {
+                acceptButton.text = "Verstanden & Fortfahren"
+                acceptButton.isEnabled = true
+                acceptButton.setBackgroundColor(Color.rgb(40, 130, 70))
+                acceptButton.setTextColor(Color.WHITE)
+            }
+        }.start()
     }
 
     private fun showMainDashboard() {
         rootContainer.removeAllViews()
 
         val titleText = TextView(this).apply {
-            text = "🛵 Syrak ScooterLab"
+            text = "Syrak ScooterLab"
             textSize = 22f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
@@ -270,14 +379,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         statusText = TextView(this).apply {
-            text = "Bereit zum Scannen..."
+            text = "Ready to scan for nearby units..."
             textSize = 13f
             setTextColor(Color.rgb(160, 175, 195))
             setPadding(0, 0, 0, 16)
         }
 
         scanButton = Button(this).apply {
-            text = "🔍 SCOOTER SUCHEN"
+            text = "SCAN FOR SCOOTERS"
             setOnClickListener { startBleScan() }
         }
 
@@ -309,7 +418,7 @@ class MainActivity : AppCompatActivity() {
         bluetoothAdapter = bluetoothManager?.adapter
 
         if (bluetoothAdapter == null) {
-            statusText.text = "Bluetooth auf diesem Gerät nicht verfügbar."
+            statusText.text = "Bluetooth unavailable on this device."
             scanButton.isEnabled = false
         }
     }
@@ -343,7 +452,7 @@ class MainActivity : AppCompatActivity() {
 
         val scanner = bluetoothAdapter?.bluetoothLeScanner
         if (scanner == null) {
-            statusText.text = "Bluetooth ist ausgeschaltet."
+            statusText.text = "Bluetooth is disabled."
             return
         }
 
@@ -352,14 +461,14 @@ class MainActivity : AppCompatActivity() {
 
         isScanning = true
         scanButton.isEnabled = false
-        statusText.text = "Suche läuft in der Umgebung..."
+        statusText.text = "Scanning surroundings..."
 
         try {
             scanner.startScan(leScanCallback)
         } catch (e: Exception) {
             isScanning = false
-            scanButton.isEnabled = true
-            statusText.text = "Fehler beim Starten: ${e.message}"
+            scanButton.isEnabled = titleText@{ scanButton.isEnabled = true; true }
+            statusText.text = "Scan failed to start."
             return
         }
 
@@ -368,7 +477,7 @@ class MainActivity : AppCompatActivity() {
                 try { scanner.stopScan(leScanCallback) } catch (e: Exception) {}
                 isScanning = false
                 scanButton.isEnabled = true
-                statusText.text = "Scan beendet. ${foundDevices.size} Gerät(e) gefunden."
+                statusText.text = "Scan completed. Found ${foundDevices.size} device(s)."
             }
         }, 10000)
     }
@@ -382,22 +491,22 @@ class MainActivity : AppCompatActivity() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(24, 24, 24, 24)
                 setBackgroundColor(
-                    if (scooter.isScooterCandidate) Color.rgb(20, 55, 35)
-                    else Color.rgb(26, 30, 38)
+                    if (scooter.isScooterCandidate) Color.rgb(20, 50, 35)
+                    else Color.rgb(24, 28, 36)
                 )
             }
 
             val nameText = TextView(this).apply {
-                text = if (scooter.isScooterCandidate) "🛵 ${scooter.name}" else scooter.name
-                textSize = 16f
+                text = scooter.name
+                textSize = 15f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.WHITE)
             }
 
             val detailsText = TextView(this).apply {
-                text = "MAC: ${scooter.address} | Signal: ${scooter.rssi} dBm"
+                text = "MAC: ${scooter.address} | RSSI: ${scooter.rssi} dBm"
                 textSize = 12f
-                setTextColor(Color.rgb(170, 185, 200))
+                setTextColor(Color.rgb(150, 165, 180))
                 setPadding(0, 4, 0, 0)
             }
 
@@ -407,7 +516,7 @@ class MainActivity : AppCompatActivity() {
             val params = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 0, 16) }
+            ).apply { setMargins(0, 0, 0, 12) }
 
             deviceListContainer.addView(card, params)
         }
