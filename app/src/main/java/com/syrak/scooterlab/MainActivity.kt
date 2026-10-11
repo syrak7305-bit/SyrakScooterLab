@@ -32,11 +32,12 @@ import androidx.core.content.ContextCompat
 import java.util.Locale
 
 data class ScooterDevice(
-    val device: BluetoothDevice,
+    val device: BluetoothDevice?,
     val name: String,
     val address: String,
     val rssi: Int,
-    val isScooterCandidate: Boolean
+    val isScooterCandidate: Boolean,
+    val isDemo: Boolean = false
 )
 
 class MainActivity : AppCompatActivity() {
@@ -96,7 +97,8 @@ class MainActivity : AppCompatActivity() {
                 name = name,
                 address = address,
                 rssi = result.rssi,
-                isScooterCandidate = candidate
+                isScooterCandidate = candidate,
+                isDemo = false
             )
             updateDeviceList()
         }
@@ -383,15 +385,36 @@ class MainActivity : AppCompatActivity() {
         })
         topHeader.addView(titleContainer)
 
+        // Buttons Container rechts oben (Modelle + Demo)
+        val buttonsLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+        }
+
         val supportedModelsBtn = Button(this).apply {
             text = "Modelle"
-            textSize = 12f
+            textSize = 11f
             isAllCaps = false
             setBackgroundColor(Color.rgb(28, 36, 48))
             setTextColor(Color.rgb(0, 210, 130))
             setOnClickListener { showSupportedModelsDialog() }
         }
-        topHeader.addView(supportedModelsBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+
+        val demoBtn = Button(this).apply {
+            text = "Demo"
+            textSize = 11f
+            isAllCaps = false
+            setBackgroundColor(Color.rgb(40, 30, 20))
+            setTextColor(Color.rgb(255, 165, 0))
+            setOnClickListener { loadDemoScooters() }
+        }
+
+        buttonsLayout.addView(supportedModelsBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply {
+            setMargins(0, 0, dp(6), 0)
+        })
+        buttonsLayout.addView(demoBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+
+        topHeader.addView(buttonsLayout)
 
         content.addView(topHeader)
         content.addView(View(this).apply { layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)) })
@@ -430,7 +453,7 @@ class MainActivity : AppCompatActivity() {
         content.addView(deviceListContainer)
 
         content.addView(makeText(
-            "Es werden Bluetooth-Geräte in der Nähe angezeigt. Tippe auf einen Scooter, um die echte Verbindung aufzubauen und das Live-Dashboard zu öffnen.",
+            "Es werden Bluetooth-Geräte in der Nähe angezeigt. Tippe auf einen Scooter, um die Verbindung aufzubauen.",
             12f, Color.rgb(125, 135, 150)
         ).apply {
             setPadding(0, dp(24), 0, 0)
@@ -448,10 +471,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun loadDemoScooters() {
+        foundDevices.clear()
+        val demoList = listOf(
+            ScooterDevice(null, "Demo Ninebot Max G2", "D2:E4:5A:11:22:33", -45, true, true),
+            ScooterDevice(null, "Demo Ninebot Max G30", "5C:2A:1B:7F:12:34", -52, true, true),
+            ScooterDevice(null, "Demo Ninebot F2 Pro", "AA:BB:CC:DD:EE:FF", -60, true, true),
+            ScooterDevice(null, "Demo Xiaomi Pro 2", "11:22:33:44:55:66", -68, true, true),
+            ScooterDevice(null, "Demo Navee GT3 Max", "99:88:77:66:55:44", -75, true, true)
+        )
+        demoList.forEach { foundDevices[it.address] = it }
+        updateDeviceList()
+        statusText.text = "Demo-Modus aktiv: ${foundDevices.size} Testmodelle geladen."
+    }
+
     private fun showSupportedModelsDialog() {
         val modelsList = """
             • Segway-Ninebot:
-              - Max G30 / G30D / G30LP
+              - Max G30 / G30D / G30LP / Max G2
               - ES1 / ES2 / ES3 / ES4
               - E22 / E25 / E45
               - F20 / F30 / F40 / F2 Pro
@@ -464,7 +501,7 @@ class MainActivity : AppCompatActivity() {
               - Mi Scooter 3 / 4 / 4 Pro
 
             • Navee & SoFlow:
-              - Navee S65 / N65 / V40
+              - Navee S65 / N65 / V40 / GT3 Max
               - SoFlow SO3 / SO4 / SO6 / SO8 / SO1 Pro
 
             • Weitere kompatible BLE-basierte Controller mit Standard-Protokollen.
@@ -477,7 +514,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showMainDashboard(deviceName: String, deviceAddress: String) {
+    private fun showMainDashboard(deviceName: String, deviceAddress: String, isDemo: Boolean) {
         rootContainer.removeAllViews()
 
         val scroll = ScrollView(this).apply { isFillViewport = true }
@@ -501,7 +538,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(8), dp(12), dp(8))
             setBackgroundColor(Color.rgb(20, 30, 28))
         }
-        statusBanner.addView(makeText("■ Controller online  •  $deviceName", 12f, Color.rgb(0, 210, 130), true))
+        statusBanner.addView(makeText(if (isDemo) "■ Controller online  •  $deviceName (Demo)" else "■ Controller online  •  $deviceName", 12f, Color.rgb(0, 210, 130), true))
         content.addView(statusBanner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, 0, 0, dp(12))
         })
@@ -512,7 +549,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.rgb(20, 24, 31))
         }
         deviceCard.addView(makeText(deviceName, 16f, Color.WHITE, true))
-        deviceCard.addView(makeText("BLE Connected  •  $deviceAddress  •  MTU 247", 12f, Color.rgb(130, 140, 155)).apply {
+        deviceCard.addView(makeText(if (isDemo) "Demo Simulation  •  $deviceAddress  •  MTU 247" else "BLE Connected  •  $deviceAddress  •  MTU 247", 12f, Color.rgb(130, 140, 155)).apply {
             setPadding(0, dp(4), 0, dp(12))
         })
         val disconnectBtn = Button(this).apply {
@@ -533,9 +570,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(24), dp(16), dp(20))
             setBackgroundColor(Color.rgb(20, 24, 31))
         }
-        speedCard.addView(makeText("0", 54f, Color.WHITE, true))
+        speedCard.addView(makeText(if (isDemo) "28" else "0", 54f, Color.WHITE, true))
         speedCard.addView(makeText("KM/H", 12f, Color.rgb(220, 60, 60), true))
-        speedCard.addView(makeText("LIVE FEED (WAITING FOR TELEMETRY)", 10f, Color.rgb(0, 200, 120), true).apply {
+        speedCard.addView(makeText(if (isDemo) "LIVE FEED (DEMO SIMULATION)" else "LIVE FEED (WAITING FOR TELEMETRY)", 10f, if (isDemo) Color.rgb(255, 165, 0) else Color.rgb(0, 200, 120), true).apply {
             setPadding(0, dp(4), 0, dp(16))
         })
 
@@ -550,9 +587,9 @@ class MainActivity : AppCompatActivity() {
             addView(makeText(label, 10f, Color.rgb(130, 140, 155)))
             addView(makeText(value, 15f, Color.WHITE, true).apply { setPadding(0, dp(2), 0, 0) })
         }
-        metricsRow.addView(createMetricCol("POWER", "0 W"))
-        metricsRow.addView(createMetricCol("ODOMETER", "--- KM"))
-        metricsRow.addView(createMetricCol("RANGE", "--- KM"))
+        metricsRow.addView(createMetricCol("POWER", if (isDemo) "412 W" else "0 W"))
+        metricsRow.addView(createMetricCol("ODOMETER", if (isDemo) "1284.6 KM" else "--- KM"))
+        metricsRow.addView(createMetricCol("RANGE", if (isDemo) "26.1 KM" else "--- KM"))
         speedCard.addView(metricsRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         content.addView(speedCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, 0, 0, dp(12))
@@ -576,14 +613,14 @@ class MainActivity : AppCompatActivity() {
         val row1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
-            addView(createGridCard("⚡ VOLTAGE", "-- V"))
-            addView(createGridCard("📈 CURRENT", "-- A"))
+            addView(createGridCard("⚡ VOLTAGE", if (isDemo) "40.6 V" else "-- V"))
+            addView(createGridCard("📈 CURRENT", if (isDemo) "10.2 A" else "-- A"))
         }
         val row2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
-            addView(createGridCard("🔋 BATTERY", "-- %"))
-            addView(createGridCard("🌡 MOTOR TEMP", "-- °C"))
+            addView(createGridCard("🔋 BATTERY", if (isDemo) "87 %" else "-- %"))
+            addView(createGridCard("🌡 MOTOR TEMP", if (isDemo) "42 °C" else "-- °C"))
         }
         content.addView(row1)
         content.addView(row2)
@@ -603,7 +640,7 @@ class MainActivity : AppCompatActivity() {
         }
         thermalHeader.addView(makeText("Pack health", 15f, Color.WHITE, true))
         val nominalBadge = TextView(this).apply {
-            text = "  LIVE  "
+            text = if (isDemo) "  NOMINAL  " else "  LIVE  "
             textSize = 10f
             setTextColor(Color.rgb(0, 210, 130))
             gravity = Gravity.END
@@ -618,16 +655,16 @@ class MainActivity : AppCompatActivity() {
             addView(makeText(r, 12f, Color.WHITE, true).apply { gravity = Gravity.END })
         }
 
-        val c1 = createCellDetailRow("Cell min", "--- V")
+        val c1 = createCellDetailRow("Cell min", if (isDemo) "3.621 V" else "--- V")
         c1.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
-        val c2 = createCellDetailRow("Cell max", "--- V")
+        val c2 = createCellDetailRow("Cell max", if (isDemo) "3.688 V" else "--- V")
         c2.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
-        val c3 = createCellDetailRow("Cell delta", "--- mV")
+        val c3 = createCellDetailRow("Cell delta", if (isDemo) "67 mV" else "--- mV")
         c3.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
-        val c4 = createCellDetailRow("Battery temp", "--- °C")
+        val c4 = createCellDetailRow("Battery temp", if (isDemo) "31.4 °C" else "--- °C")
         c4.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
         thermalCard.addView(c1)
@@ -719,7 +756,12 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(14), dp(14), dp(14), dp(14))
             setBackgroundColor(Color.rgb(16, 20, 26))
         }
-        val consoleLogs = listOf(
+        val consoleLogs = if (isDemo) listOf(
+            "> link: connected $deviceAddress (DEMO)",
+            "> gatt: services simulated",
+            "> gatt: mtu configured",
+            "> telemetry: demo stream active"
+        ) else listOf(
             "> link: connected $deviceAddress",
             "> gatt: services discovered",
             "> gatt: mtu configured",
@@ -744,6 +786,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkPermissions(): Boolean {
         val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUTEC_SCAN, Manifest.permission.BLUETOOTH_CONNECT) // corrected in logic below
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        // ... handled safely
+        return true
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startBleScan() {
+        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -751,14 +804,9 @@ class MainActivity : AppCompatActivity() {
         val missing = needed.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             permissionLauncher.launch(missing.toTypedArray())
-            return false
+            return
         }
-        return true
-    }
 
-    @SuppressLint("MissingPermission")
-    private fun startBleScan() {
-        if (!checkPermissions()) return
         if (isScanning) return
         val adapter = bluetoothAdapter
         if (adapter == null || !adapter.isEnabled) {
@@ -813,11 +861,11 @@ class MainActivity : AppCompatActivity() {
                         } catch (_: Exception) {}
                         isScanning = false
                     }
-                    showMainDashboard(item.name, item.address)
+                    showMainDashboard(item.name, item.address, item.isDemo)
                 }
             }
             card.addView(makeText(item.name, 15f, Color.WHITE, true))
-            card.addView(makeText("Signal: ${item.rssi} dBm  •  ${item.address} (Tippen zum Verbinden)", 12f, Color.rgb(145, 155, 170)).apply {
+            card.addView(makeText(if (item.isDemo) "Demo-Gerät  •  Tippen zum Verbinden" else "Signal: ${item.rssi} dBm  •  ${item.address} (Tippen zum Verbinden)", 12f, Color.rgb(145, 155, 170)).apply {
                 setPadding(0, dp(5), 0, 0)
             })
             val params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
