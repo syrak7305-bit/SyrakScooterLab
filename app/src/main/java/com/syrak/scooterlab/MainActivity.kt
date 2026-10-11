@@ -25,6 +25,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import java.util.Locale
@@ -365,10 +366,36 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.rgb(12, 14, 18))
         }
 
-        content.addView(makeText("Syrak ScooterLab", 24f, Color.WHITE, true))
-        content.addView(makeText("Scooter auswählen und verbinden", 14f, Color.rgb(145, 155, 170)).apply {
-            setPadding(0, dp(6), 0, dp(24))
+        // Top Header mit Titel und „Supported Models“-Button oben rechts
+        val topHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(4))
+        }
+
+        val titleContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleContainer.addView(makeText("Syrak ScooterLab", 24f, Color.WHITE, true))
+        titleContainer.addView(makeText("Scooter auswählen und verbinden", 14f, Color.rgb(145, 155, 170)).apply {
+            setPadding(0, dp(4), 0, 0)
         })
+        topHeader.addView(titleContainer)
+
+        // Der neue Button oben rechts
+        val supportedModelsBtn = Button(this).apply {
+            text = "Modelle"
+            textSize = 12f
+            isAllCaps = false
+            setBackgroundColor(Color.rgb(28, 36, 48))
+            setTextColor(Color.rgb(0, 210, 130))
+            setOnClickListener { showSupportedModelsDialog() }
+        }
+        topHeader.addView(supportedModelsBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+
+        content.addView(topHeader)
+        content.addView(View(this).apply { layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)) })
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -420,6 +447,35 @@ class MainActivity : AppCompatActivity() {
             statusText.text = "Bluetooth ist auf diesem Gerät nicht verfügbar."
             scanButton.isEnabled = false
         }
+    }
+
+    private fun showSupportedModelsDialog() {
+        val modelsList = """
+            • Segway-Ninebot:
+              - Max G30 / G30D / G30LP
+              - ES1 / ES2 / ES3 / ES4
+              - E22 / E25 / E45
+              - F20 / F30 / F40 / F2 Pro
+              - D18 / D28 / D38
+              - P65 / P100S / GT1 / GT2
+
+            • Xiaomi:
+              - M365 / M365 Pro
+              - 1S / Essential / Pro 2
+              - Mi Scooter 3 / 4 / 4 Pro
+
+            • Navee & SoFlow:
+              - Navee S65 / N65 / V40
+              - SoFlow SO3 / SO4 / SO6 / SO8 / SO1 Pro
+
+            • Weitere kompatible BLE-basierte Controller mit Standard-Protokollen.
+        """.trimIndent()
+
+        AlertDialog.Builder(this)
+            .setTitle("Unterstützte Scooter-Modelle")
+            .setMessage(modelsList)
+            .setPositiveButton("Verstanden") { dialog, _ -> dialog.dismiss() }
+            .show()
     }
 
     private fun showMainDashboard(deviceName: String, deviceAddress: String) {
