@@ -8,7 +8,7 @@ pluginManagement {
             }
         }
         mavenCentral()
-        gradlePluginPortal()
+        gradlePluginPortal() // WICHTIG für das Kotlin Compose Plugin!
     }
 }
 
