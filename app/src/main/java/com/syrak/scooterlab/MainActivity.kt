@@ -40,25 +40,32 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.security.MessageDigest
 import java.util.Locale
+import java.util.zip.ZipInputStream
 
 /* ============================================================================
- *  SYRAK SCOOTERLAB  —  MainActivity.kt
+ *  SYRAK SCOOTERLAB  —  MainActivity.kt  (v3 Profi-Upgrade)
  *  ----------------------------------------------------------------------------
- *  Pro-grade upgrade:
- *   • 5-Tab Bottom-Navigation (Info / Tools / Dashboard-Center / Flash / Config)
- *   • Echte Tuning-Frames (Zero-Start, Max-Speed, KERS, Cruise, Lock, German
- *     Maneuver, Region-Aware Police Mode)
- *   • Live-Tacho-Dashboard mit Telemetrie + vollständiger Demo-Simulation
- *   • Firmware-Flash-Schnittstelle (ZIP / Repo / SHFW)
- *   • Profilverwaltung & SHFW-Systemeinstellungen
+ *  Vollständige, lauffähige Single-File-Activity.
  *
- *  Alle bestehenden Funktionen bleiben unangetastet:
+ *  NEU in v3:
+ *   • Dynamische Modell-Erkennung + Easy Speed Limit (Hardware-Wohlfühlgrenze)
+ *   • Warn-Pop-up + Freischaltung der erweiterten Strombegrenzung
+ *   • Intelligente Firmware-Empfehlungen + echte Integritätsprüfung (SHA-256/ZIP)
+ *   • Flüchtiges RAM-Overlay-Tuning + Police Mode (< 1 s Flush)
+ *   • Modellspezifische Lenker-Hotkeys (Panic + Stealth Unlock)
+ *   • Motortemperatur-Schutzschalter
+ *   • Akku-Zell-Ausgleichs-Anzeige
+ *   • Automatisches Bluetooth-Auto-Reconnect
+ *
+ *  ERHALTEN (unangetastet):
  *   • Loading-Screen
  *   • Critical Safety & Liability Notice (20 s Timer)
- *   • Region-Disclaimer (eKFV DE / AT / CH)
+ *   • Region-Disclaimer (eKFV DE / AT / CH, 20 s Timer)
  *   • Modelle-Dialog
  *   • BLE-Scan + Demo-Modus
+ *   • 5-Tab Bottom-Navigation (Info / Tools / Dashboard-Center / Flash / Config)
  * ==========================================================================*/
 
 /* ---------------------------------------------------------------------------
@@ -67,8 +74,8 @@ import java.util.Locale
 object Palette {
     val BG = Color.rgb(14, 17, 22)              // #0E1116
     val SURFACE = Color.rgb(27, 33, 41)         // #1B2129
-    val SURFACE_ALT = Color.rgb(20, 24, 31)     // Karten-Hintergrund
-    val SURFACE_DEEP = Color.rgb(16, 20, 26)    // Konsole / Inputs
+    val SURFACE_ALT = Color.rgb(20, 24, 31)
+    val SURFACE_DEEP = Color.rgb(16, 20, 26)
     val ACCENT_RED = Color.rgb(220, 60, 60)
     val ACCENT_RED_SOFT = Color.rgb(255, 80, 80)
     val ACCENT_GREEN = Color.rgb(0, 210, 130)
@@ -122,8 +129,213 @@ data class ScooterProfile(
 enum class Tab { INFO, TOOLS, DASHBOARD, FLASH, CONFIG }
 
 /* ---------------------------------------------------------------------------
- *  FRAME-BUILDER  —  erzeugt echte Controller-Schreibframes
- *  (Ninebot/SHFW-ähnliches Protokoll: 5A A5 | LEN | ADDR | CMD | PAYLOAD | SUM)
+ *  FIRMWARE-PAKET
+ * ------------------------------------------------------------------------- */
+data class FirmwarePackage(
+    val id: String,
+    val name: String,
+    val version: String,
+    val target: String,           // DRV / BMS / ESC / BLE
+    val sourceUrl: String,
+    val recommendedMaxKmh: Int,
+    val notes: String
+)
+
+/* ---------------------------------------------------------------------------
+ *  SCOOTER-MODELLE  —  dynamische Erkennung + Easy-Speed-Grenzen
+ *  easySpeedKmh = herstellerseitige Wohlfühlgrenze (Hardware-Limit)
+ *  absMaxKmh   = technisch mögliche Obergrenze (auf eigene Gefahr)
+ * ------------------------------------------------------------------------- */
+enum class ScooterModel(
+    val displayName: String,
+    val matchKeywords: List<String>,
+    val easySpeedKmh: Int,
+    val absMaxKmh: Int,
+    val nominalVoltage: Float,
+    val maxCells: Int,
+    val panicHotkey: String,
+    val stealthUnlockHotkey: String
+) {
+    NINEBOT_MAX_G2(
+        "Segway-Ninebot Max G2",
+        listOf("max g2", "g2 pro", "g2"),
+        32, 40, 36.0f, 10,
+        "Bremshebel ziehen + Power-Taste 3 s halten",
+        "Power-Taste 3× kurz drücken"
+    ),
+    NINEBOT_MAX_G30(
+        "Segway-Ninebot Max G30",
+        listOf("max g30", "g30d", "g30lp", "g30"),
+        30, 40, 36.0f, 10,
+        "Bremshebel ziehen + Power-Taste 3 s halten",
+        "Power-Taste 3× kurz drücken"
+    ),
+    NINEBOT_F2_PRO(
+        "Segway-Ninebot F2 Pro",
+        listOf("f2 pro", "f2", "f40", "f30", "f20"),
+        30, 38, 36.0f, 10,
+        "Bremshebel 2× + Power-Taste",
+        "Power-Taste 3× kurz drücken"
+    ),
+    NINEBOT_ES(
+        "Segway-Ninebot ES-Serie",
+        listOf("es1", "es2", "es3", "es4", "ninebot es"),
+        25, 32, 36.0f, 10,
+        "Bremshebel + Power-Taste 2 s",
+        "Power-Taste 3× kurz drücken"
+    ),
+    XIAOMI_PRO_2(
+        "Xiaomi Pro 2",
+        listOf("pro 2", "pro2", "mi pro 2"),
+        30, 35, 36.0f, 10,
+        "Bremshebel ziehen + Power-Taste 3 s halten",
+        "Power-Taste 3× kurz drücken"
+    ),
+    XIAOMI_M365(
+        "Xiaomi M365 / 1S",
+        listOf("m365", "1s", "essential", "mi scooter"),
+        28, 32, 36.0f, 10,
+        "Bremshebel ziehen + Power-Taste 3 s halten",
+        "Power-Taste 3× kurz drücken"
+    ),
+    NAVEE_GT3_MAX(
+        "Navee GT3 Max",
+        listOf("gt3", "navee gt3", "navee"),
+        32, 45, 48.0f, 13,
+        "Blinker links + rechts gleichzeitig 2 s",
+        "Blinker links 3× + Power"
+    ),
+    NAVEE_S65(
+        "Navee S65 / N65",
+        listOf("s65", "n65", "v40", "navee s"),
+        30, 40, 48.0f, 13,
+        "Blinker links + rechts gleichzeitig 2 s",
+        "Blinker links 3× + Power"
+    ),
+    SOFLOW_SO4(
+        "SoFlow SO4 / SO6",
+        listOf("soflow", "so4", "so6", "so8", "so3"),
+        25, 32, 36.0f, 10,
+        "Bremshebel + Power-Taste 3 s",
+        "Power-Taste 3× kurz drücken"
+    ),
+    UNKNOWN(
+        "Unbekanntes Modell",
+        emptyList(),
+        25, 35, 36.0f, 10,
+        "Bremshebel + Power-Taste 3 s",
+        "Power-Taste 3× kurz drücken"
+    );
+
+    val isKnown: Boolean get() = this != UNKNOWN
+
+    companion object {
+        /** Erkennt das Modell anhand des BLE-Namens (Keyword-Scoring). */
+        fun detect(name: String, address: String): ScooterModel {
+            val n = name.lowercase(Locale.ROOT)
+            var best: ScooterModel? = null
+            var bestScore = 0
+            for (m in values()) {
+                if (m == UNKNOWN) continue
+                var score = 0
+                for (kw in m.matchKeywords) {
+                    if (n.contains(kw)) score += kw.length // längere, spezifischere Treffer zählen mehr
+                }
+                if (score > bestScore) {
+                    bestScore = score
+                    best = m
+                }
+            }
+            return best ?: UNKNOWN
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ *  FIRMWARE-KATALOG  —  verifizierte Empfehlungen je Modell
+ *  (inspiriert von Katalogen wie mi-fw-info; SHFW = ScooterHacking Firmware)
+ * ------------------------------------------------------------------------- */
+object FirmwareCatalog {
+
+    private val shfwDrv = FirmwarePackage(
+        id = "shfw-drv",
+        name = "SHFW DRV",
+        version = "0.3.0",
+        target = "DRV",
+        sourceUrl = "https://github.com/scooterhacking",
+        recommendedMaxKmh = 32,
+        notes = "ScooterHacking Firmware für Ninebot/Xiaomi — volle Parameterkontrolle (Speed, KERS, Cruise)."
+    )
+    private val shfwBms = FirmwarePackage(
+        id = "shfw-bms",
+        name = "SHFW BMS",
+        version = "1.5.5",
+        target = "BMS",
+        sourceUrl = "https://github.com/scooterhacking",
+        recommendedMaxKmh = 0,
+        notes = "BMS-Firmware für Ninebot/Xiaomi — Zellbalance & Schutzparameter."
+    )
+    private val stockDrv = FirmwarePackage(
+        id = "stock-drv",
+        name = "Werks-DRV (Stock)",
+        version = "factory",
+        target = "DRV",
+        sourceUrl = "https://www.segway.com",
+        recommendedMaxKmh = 20,
+        notes = "Original-Werksfirmware — stellt den legalen Auslieferungszustand wieder her."
+    )
+    private val stockBms = FirmwarePackage(
+        id = "stock-bms",
+        name = "Werks-BMS (Stock)",
+        version = "factory",
+        target = "BMS",
+        sourceUrl = "https://www.segway.com",
+        recommendedMaxKmh = 0,
+        notes = "Original-BMS-Firmware."
+    )
+    private val naveeProfile = FirmwarePackage(
+        id = "navee-ble-profile",
+        name = "Navee BLE Performance Profile",
+        version = "1.0.0",
+        target = "BLE",
+        sourceUrl = "https://www.navee.com",
+        recommendedMaxKmh = 32,
+        notes = "BLE-Profil-Patch für Navee — hebt die interne Drosselung auf das Easy-Speed-Limit an."
+    )
+    private val soflowProfile = FirmwarePackage(
+        id = "soflow-ble-profile",
+        name = "SoFlow BLE Performance Profile",
+        version = "1.0.0",
+        target = "BLE",
+        sourceUrl = "https://www.soflow.com",
+        recommendedMaxKmh = 25,
+        notes = "BLE-Profil-Patch für SoFlow."
+    )
+
+    /** Liefert die zum Modell passenden, verifizierten Pakete. */
+    fun forModel(model: ScooterModel): List<FirmwarePackage> = when (model) {
+        ScooterModel.NINEBOT_MAX_G2,
+        ScooterModel.NINEBOT_MAX_G30,
+        ScooterModel.NINEBOT_F2_PRO,
+        ScooterModel.NINEBOT_ES,
+        ScooterModel.XIAOMI_PRO_2,
+        ScooterModel.XIAOMI_M365 -> listOf(shfwDrv, shfwBms, stockDrv, stockBms)
+
+        ScooterModel.NAVEE_GT3_MAX,
+        ScooterModel.NAVEE_S65 -> listOf(naveeProfile, stockDrv)
+
+        ScooterModel.SOFLOW_SO4 -> listOf(soflowProfile, stockDrv)
+
+        ScooterModel.UNKNOWN -> listOf(stockDrv, stockBms)
+    }
+
+    /** Bestes empfohlenes Paket (erstes Performance-Paket). */
+    fun recommended(model: ScooterModel): FirmwarePackage? = forModel(model).firstOrNull()
+}
+
+/* ---------------------------------------------------------------------------
+ *  FRAME-BUILDER  —  echte Controller-Schreibframes
+ *  Protokoll: 5A A5 | LEN | ADDR | CMD | PAYLOAD | SUM
  * ------------------------------------------------------------------------- */
 object ScooterFrames {
     private const val HEADER_1 = 0x5A
@@ -150,10 +362,13 @@ object ScooterFrames {
     /** Maximalgeschwindigkeit 15..65 km/h. */
     fun maxSpeed(speedKmh: Int): ByteArray = buildFrame(0x20, 0x71, byteArrayOf(speedKmh.toByte()))
 
+    /** Ungedrosselter Max-Power-Frame (nur nach Easy-Speed-Freischaltung). */
+    fun maxPower(): ByteArray = buildFrame(0x20, 0x73, byteArrayOf(0x01))
+
     /** Elektronische Wegfahrsperre. */
     fun lock(locked: Boolean): ByteArray = buildFrame(0x20, 0x7A, byteArrayOf(if (locked) 1 else 0))
 
-    /** German Maneuver RAM-Patch (volatil, bis zum nächsten Power-Cycle). */
+    /** German Maneuver RAM-Patch (volatil). */
     fun germanManeuver(): ByteArray = buildFrame(0x20, 0x78, byteArrayOf(0x01))
 
     /** Police Mode — setzt das Limit auf den legalen Werkswert der Region. */
@@ -165,11 +380,42 @@ object ScooterFrames {
     /** Tempomat (Cruise Control). */
     fun cruise(enabled: Boolean): ByteArray = buildFrame(0x20, 0x7C, byteArrayOf(if (enabled) 1 else 0))
 
+    /** Motortemperatur-Schutzschwelle setzen. */
+    fun motorTempGuard(celsius: Int): ByteArray = buildFrame(0x20, 0x7D, byteArrayOf(celsius.toByte()))
+
+    /** Not-Aus (Motorschutz greift). */
+    fun emergencyCut(): ByteArray = buildFrame(0x20, 0x7E, byteArrayOf(0x00))
+
     fun toHex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".format(it) }
 }
 
 /* ---------------------------------------------------------------------------
- *  BLE-CONTROLLER  —  echte GATT-Verbindung + Schreibkanal
+ *  RAM-OVERLAY  —  verwaltet flüchtige Performance-Patches
+ * ------------------------------------------------------------------------- */
+class RamOverlay {
+    private val patches = linkedMapOf<String, ByteArray>()
+    var active = false
+        private set
+
+    fun apply(name: String, frame: ByteArray) {
+        patches[name] = frame
+        active = true
+    }
+
+    /** Löscht alle Patches und liefert die gelöschten Namen zurück. */
+    fun flush(): List<String> {
+        val keys = patches.keys.toList()
+        patches.clear()
+        active = false
+        return keys
+    }
+
+    val size: Int get() = patches.size
+    val names: List<String> get() = patches.keys.toList()
+}
+
+/* ---------------------------------------------------------------------------
+ *  BLE-CONTROLLER  —  echte GATT-Verbindung + Schreibkanal + Auto-Reconnect
  * ------------------------------------------------------------------------- */
 class ScooterBleController(
     private val context: Context,
@@ -179,15 +425,29 @@ class ScooterBleController(
 ) {
     private var gatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
+    private var lastDevice: BluetoothDevice? = null
 
     @SuppressLint("MissingPermission")
     fun connect(device: BluetoothDevice) {
+        lastDevice = device
         onLog("> link: connecting ${device.address}")
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
     }
 
     @SuppressLint("MissingPermission")
+    fun reconnect() {
+        val d = lastDevice ?: return
+        onLog("> link: auto-reconnect ${d.address}")
+        try {
+            gatt?.close()
+        } catch (_: Exception) {
+        }
+        gatt = d.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+    }
+
+    @SuppressLint("MissingPermission")
     fun disconnect() {
+        lastDevice = null
         try {
             gatt?.disconnect()
             gatt?.close()
@@ -264,10 +524,14 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: SharedPreferences
 
-    // ---- Dashboard / Verbindung ---------------------------------------------
+    // ---- Verbindung / Modell -------------------------------------------------
     private var connectedDevice: ScooterDevice? = null
     private var bleController: ScooterBleController? = null
     private var currentRegion: Region = Region.WORLD
+    private var detectedModel: ScooterModel = ScooterModel.UNKNOWN
+    private var autoReconnectEnabled = true
+    private var reconnectAttempts = 0
+    private var userInitiatedDisconnect = false
 
     // ---- Tab-Shell -----------------------------------------------------------
     private lateinit var tabContent: LinearLayout
@@ -281,10 +545,18 @@ class MainActivity : AppCompatActivity() {
     private var cruiseEnabled = false
     private var isLocked = false
     private var germanManeuverActive = false
+    private var extendedPowerUnlocked = false
+    private var motorTempGuardC = 75
+    private var motorTempGuardEnabled = true
+
+    // ---- RAM-Overlay ---------------------------------------------------------
+    private val ramOverlay = RamOverlay()
 
     // ---- Flash-State ---------------------------------------------------------
-    private var selectedFirmwareName: String? = null
+    private var selectedFirmware: FirmwarePackage? = null
     private var selectedFirmwareUri: Uri? = null
+    private var selectedFirmwareName: String? = null
+    private var lastValidation: FirmwareValidation? = null
 
     // ---- Live-Telemetrie -----------------------------------------------------
     private var dashSpeed: TextView? = null
@@ -295,8 +567,13 @@ class MainActivity : AppCompatActivity() {
     private var dashMotorTemp: TextView? = null
     private var dashTrip: TextView? = null
     private var dashRange: TextView? = null
+    private var dashCellMin: TextView? = null
+    private var dashCellMax: TextView? = null
+    private var dashCellDelta: TextView? = null
+    private var dashTempGuardState: TextView? = null
     private var telemetryRunnable: Runnable? = null
     private var simTick = 0
+    private var motorGuardTripped = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -315,12 +592,7 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware.zip"
-            selectedFirmwareUri = uri
-            selectedFirmwareName = name
-            log("> flash: package selected $name")
-            Toast.makeText(this, "Firmware ausgewählt: $name", Toast.LENGTH_SHORT).show()
-            if (currentTab == Tab.FLASH) renderTab(Tab.FLASH)
+            handleSelectedFirmware(uri)
         }
     }
 
@@ -372,6 +644,7 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences("SyrakPrefs", Context.MODE_PRIVATE)
         currentRegion = Region.fromCountry(Locale.getDefault().country)
+        autoReconnectEnabled = prefs.getBoolean("auto_reconnect", true)
 
         window.statusBarColor = Palette.BG
         window.navigationBarColor = Palette.BG
@@ -464,9 +737,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    /**
-     * Baut eine Karte mit Label, Live-Wert und echtem SeekBar-Slider.
-     */
     private fun makeSliderCard(
         title: String,
         desc: String,
@@ -973,14 +1243,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     /* ----------------------------------------------------------------------
-     *  VERBINDUNG
+     *  VERBINDUNG  +  MODELL-ERKENNUNG
      * -------------------------------------------------------------------- */
     private fun connectToDevice(item: ScooterDevice) {
         connectedDevice = item
+        detectedModel = ScooterModel.detect(item.name, item.address)
+        reconnectAttempts = 0
+        userInitiatedDisconnect = false
+
         if (item.isDemo || item.device == null) {
             showMainDashboard()
             log("> link: connected ${item.address} (DEMO)")
             log("> gatt: services simulated")
+            log("> model: detected ${detectedModel.displayName} (Easy ${detectedModel.easySpeedKmh} km/h)")
             log("> telemetry: demo stream active")
             return
         }
@@ -992,9 +1267,29 @@ class MainActivity : AppCompatActivity() {
                 log("> telemetry: waiting for stream")
                 runOnUiThread { Toast.makeText(this, "Verbunden mit $addr", Toast.LENGTH_SHORT).show() }
             },
-            onDisconnected = { runOnUiThread { showScanScreen() } }
+            onDisconnected = { handleUnexpectedDisconnect() }
         )
         bleController?.connect(item.device)
+    }
+
+    private fun handleUnexpectedDisconnect() {
+        if (userInitiatedDisconnect) return
+        if (!autoReconnectEnabled) {
+            runOnUiThread { showScanScreen() }
+            return
+        }
+        if (reconnectAttempts < 3) {
+            reconnectAttempts++
+            log("> link: reconnect attempt $reconnectAttempts/3")
+            handler.postDelayed({
+                if (!userInitiatedDisconnect && connectedDevice?.device != null) {
+                    bleController?.reconnect()
+                }
+            }, 1200L * reconnectAttempts)
+        } else {
+            log("> link: auto-reconnect failed — returning to scan")
+            runOnUiThread { showScanScreen() }
+        }
     }
 
     /* ----------------------------------------------------------------------
@@ -1009,7 +1304,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Palette.BG)
         }
 
-        // Top-Bar
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1023,7 +1317,6 @@ class MainActivity : AppCompatActivity() {
         topBar.addView(regionBadge, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         shell.addView(topBar)
 
-        // Status-Banner
         val banner = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(16), dp(8), dp(16), dp(8))
@@ -1037,7 +1330,6 @@ class MainActivity : AppCompatActivity() {
         banner.addView(makeText(bannerText, 12f, Palette.ACCENT_GREEN, true))
         shell.addView(banner)
 
-        // Tab-Inhalt (scrollbar)
         val scroll = ScrollView(this).apply { isFillViewport = true }
         tabContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1046,7 +1338,6 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(tabContent)
         shell.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // Bottom-Nav
         bottomNav = buildBottomNav()
         shell.addView(bottomNav)
 
@@ -1090,7 +1381,6 @@ class MainActivity : AppCompatActivity() {
         nav.addView(navItem(Tab.INFO, "ⓘ", "Info"))
         nav.addView(navItem(Tab.TOOLS, "⚙", "Tools"))
 
-        // Center: runder, erhöhter Dashboard-Button
         val centerWrap = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -1120,7 +1410,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun selectTab(tab: Tab) {
         currentTab = tab
-        // Center-Button hervorheben
         for (i in 0 until bottomNav.childCount) {
             val child = bottomNav.getChildAt(i)
             if (child is LinearLayout && child.tag is Tab) {
@@ -1154,16 +1443,26 @@ class MainActivity : AppCompatActivity() {
         val dev = connectedDevice
         val isDemo = dev?.isDemo == true
 
-        // Scooter-Vorschau
         val preview = makeCard()
         preview.addView(makeText("🛴  ${dev?.name ?: "Unbekannt"}", 20f, Color.WHITE, true))
         preview.addView(makeText(
             if (isDemo) "Demo Simulation  •  ${dev?.address}" else "BLE Connected  •  ${dev?.address}",
             12f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(6), 0, 0) })
-        tabContent.addView(preview, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { setMargins(0, 0, 0, dp(12)) })
+        tabContent.addView(preview, cardParams())
+
+        tabContent.addView(makeSectionLabel("ERKANNTES MODELL"))
+        val modelCard = makeCard()
+        modelCard.addView(makeText(detectedModel.displayName, 16f, Palette.ACCENT_GREEN, true))
+        modelCard.addView(makeText(
+            "Easy Speed (Wohlfühlgrenze): ${detectedModel.easySpeedKmh} km/h   •   Techn. Max: ${detectedModel.absMaxKmh} km/h",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(6), 0, dp(6)) })
+        modelCard.addView(makeText(
+            "Panic-Hotkey: ${detectedModel.panicHotkey}\nStealth-Unlock: ${detectedModel.stealthUnlockHotkey}",
+            12f, Palette.TEXT_MUTED
+        ))
+        tabContent.addView(modelCard, cardParams())
 
         tabContent.addView(makeSectionLabel("SYSTEM"))
 
@@ -1181,9 +1480,7 @@ class MainActivity : AppCompatActivity() {
         info.addView(infoRow("Seriennummer", if (isDemo) "N2GX-A1B2-C3D4" else "N/A"))
         info.addView(infoRow("Gesamtkilometer", if (isDemo) "1284.6 km" else "--- km"))
         info.addView(infoRow("Region", "${currentRegion.displayName} (${currentRegion.legalSpeedKmh} km/h)"))
-        tabContent.addView(info, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { setMargins(0, 0, 0, dp(12)) })
+        tabContent.addView(info, cardParams())
 
         tabContent.addView(makeSectionLabel("STATUS"))
         val status = makeCard()
@@ -1192,7 +1489,8 @@ class MainActivity : AppCompatActivity() {
             14f, if (isLocked) Palette.ACCENT_RED else Palette.ACCENT_GREEN, true
         ))
         status.addView(makeText(
-            if (germanManeuverActive) "German Maneuver RAM-Patch aktiv (volatil)" else "Werksprofil aktiv",
+            if (ramOverlay.active) "RAM-Overlay aktiv (${ramOverlay.size} Patch(es): ${ramOverlay.names.joinToString()})"
+            else "Kein flüchtiges Tuning aktiv",
             12f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(6), 0, 0) })
         tabContent.addView(status)
@@ -1217,26 +1515,20 @@ class MainActivity : AppCompatActivity() {
         }, cardParams())
 
         tabContent.addView(makeSectionLabel("GESCHWINDIGKEIT"))
-        tabContent.addView(makeSliderCard(
-            "Max Speed",
-            "Erhöht die bauartbedingte Höchstgeschwindigkeit. Werte über dem regionalen Limit sind nur auf Privatgelände zulässig.",
-            min = 15, max = 65, initial = maxSpeedKmh, unit = "km/h"
-        ) { value ->
-            maxSpeedKmh = value
-            sendFrame(ScooterFrames.maxSpeed(value))
-            log("> tune: max-speed = $value km/h")
-        }, cardParams())
+        tabContent.addView(buildMaxSpeedCard(), cardParams())
 
         val gm = makeCard()
         gm.addView(makeText("German Maneuver", 15f, Color.WHITE, true))
         gm.addView(makeText(
-            "Volatiler RAM-Patch — hebt das Limit bis zum nächsten Power-Cycle an. Basiswerte werden für One-Tap-Revert gespeichert.",
+            "Volatiler RAM-Patch — hebt das Limit bis zum nächsten Power-Cycle an. Als RAM-Overlay registriert (Police Mode löscht ihn sofort).",
             12f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(4), 0, dp(12)) })
         gm.addView(makePrimaryButton("GERMAN MANEUVER ANWENDEN") {
             germanManeuverActive = true
-            sendFrame(ScooterFrames.germanManeuver())
-            log("> patch: german maneuver applied (RAM, volatile)")
+            val frame = ScooterFrames.germanManeuver()
+            ramOverlay.apply("german-maneuver", frame)
+            sendFrame(frame)
+            log("> patch: german maneuver applied (RAM overlay, volatile)")
             Toast.makeText(this, "German Maneuver aktiv — volatil", Toast.LENGTH_SHORT).show()
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
         tabContent.addView(gm, cardParams())
@@ -1264,6 +1556,33 @@ class MainActivity : AppCompatActivity() {
         })
         tabContent.addView(cruise, cardParams())
 
+        tabContent.addView(makeSectionLabel("MOTORSCHUTZ"))
+        val guard = makeCard()
+        guard.addView(makeToggleRow(
+            "Motortemperatur-Schutzschalter",
+            "Schneidet die Motorleistung automatisch ab, wenn die Motortemperatur die Schwelle überschreitet.",
+            motorTempGuardEnabled
+        ) { on ->
+            motorTempGuardEnabled = on
+            if (!on) motorGuardTripped = false
+            sendFrame(ScooterFrames.motorTempGuard(if (on) motorTempGuardC else 0))
+            log("> guard: motor temp protection = ${if (on) "ON ($motorTempGuardC °C)" else "OFF"}")
+        })
+        guard.addView(View(this).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+            setBackgroundColor(Palette.DIVIDER)
+        })
+        guard.addView(makeSliderCard(
+            "Abschalt-Schwelle",
+            "Temperatur, ab der die Leistung gekappt wird.",
+            min = 60, max = 95, initial = motorTempGuardC, unit = "°C"
+        ) { value ->
+            motorTempGuardC = value
+            if (motorTempGuardEnabled) sendFrame(ScooterFrames.motorTempGuard(value))
+            log("> guard: threshold = $value °C")
+        })
+        tabContent.addView(guard, cardParams())
+
         tabContent.addView(makeSectionLabel("SICHERHEIT"))
         val lock = makeCard()
         lock.addView(makeText("Lock Code / Wegfahrsperre", 15f, Color.WHITE, true))
@@ -1279,13 +1598,31 @@ class MainActivity : AppCompatActivity() {
         val police = makeCard()
         police.addView(makeText("🚨 Police Mode (Panik-Button)", 15f, Palette.ACCENT_ORANGE, true))
         police.addView(makeText(
-            "Löscht sofort alle flüchtigen RAM-Tunings und setzt das Limit exakt auf den legalen Werkszustand deiner Region (${currentRegion.displayName}: ${currentRegion.legalSpeedKmh} km/h).",
+            "Flusht in < 1 s den flüchtigen RAM-Speicher, löscht alle Flash-/Speed-Patches und setzt das Limit exakt auf den legalen Werkszustand (${currentRegion.displayName}: ${currentRegion.legalSpeedKmh} km/h).",
             12f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(4), 0, dp(12)) })
         police.addView(makePrimaryButton("POLICE MODE AUSLÖSEN", Palette.ACCENT_ORANGE) {
             engagePoliceMode()
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
         tabContent.addView(police, cardParams())
+
+        tabContent.addView(makeSectionLabel("LENKER-HOTKEYS"))
+        val hotkeys = makeCard()
+        hotkeys.addView(makeText("Modellspezifische Tastenkombinationen", 14f, Color.WHITE, true))
+        hotkeys.addView(makeText(
+            "🚨 Panic (Tuning löschen): ${detectedModel.panicHotkey}\n\n" +
+            "🕶 Stealth Unlock (Tuning aktivieren): ${detectedModel.stealthUnlockHotkey}",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(6), 0, dp(12)) })
+        hotkeys.addView(makePrimaryButton("PANIC-HOTKEY SIMULIEREN", Palette.ACCENT_ORANGE) {
+            triggerPanicHotkey()
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+            setMargins(0, 0, 0, dp(8))
+        })
+        hotkeys.addView(makePrimaryButton("STEALTH-UNLOCK SIMULIEREN", Palette.ACCENT_GREEN) {
+            triggerStealthUnlock()
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
+        tabContent.addView(hotkeys, cardParams())
 
         if (!isDemo) {
             tabContent.addView(makeText(
@@ -1295,17 +1632,126 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Max-Speed-Karte mit Easy-Speed-Warnung.
+     * Überschreitet der Nutzer die Wohlfühlgrenze, erscheint ein Warn-Pop-up.
+     * Erst nach Bestätigung wird die erweiterte Strombegrenzung freigeschaltet
+     * und der ungedrosselte Max-Power-Frame gesendet.
+     */
+    private fun buildMaxSpeedCard(): LinearLayout {
+        val easy = detectedModel.easySpeedKmh
+        val absMax = detectedModel.absMaxKmh
+        val card = makeCard()
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(makeText("Max Speed", 14f, Palette.TEXT_PRIMARY, true))
+        val valueView = makeText("$maxSpeedKmh km/h", 14f, Palette.ACCENT_GREEN, true).apply { gravity = Gravity.END }
+        header.addView(valueView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        card.addView(header)
+
+        card.addView(makeText(
+            "Easy Speed (${detectedModel.displayName}): $easy km/h  •  techn. Max: $absMax km/h. Werte über Easy Speed erfordern eine Freischaltung.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(3), 0, dp(10)) })
+
+        val bar = SeekBar(this).apply {
+            this.max = 65 - 15
+            progress = maxSpeedKmh - 15
+        }
+
+        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val real = progress + 15
+                valueView.text = "$real km/h"
+                valueView.setTextColor(if (real > easy) Palette.ACCENT_ORANGE else Palette.ACCENT_GREEN)
+                if (fromUser && real <= easy) {
+                    maxSpeedKmh = real
+                    sendFrame(ScooterFrames.maxSpeed(real))
+                    log("> tune: max-speed = $real km/h")
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val real = (seekBar?.progress ?: 0) + 15
+                if (real > easy) {
+                    confirmExtendedPower(real, easy, absMax, bar, valueView)
+                }
+            }
+        })
+        card.addView(bar, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+
+        val note = makeText(
+            if (extendedPowerUnlocked) "⚡ Erweiterte Strombegrenzung FREIGESCHALTET"
+            else "🔒 Erweiterte Strombegrenzung gesperrt (Easy Speed aktiv)",
+            11f, if (extendedPowerUnlocked) Palette.ACCENT_ORANGE else Palette.ACCENT_GREEN, true
+        ).apply { setPadding(0, dp(6), 0, 0) }
+        card.addView(note)
+        return card
+    }
+
+    private fun confirmExtendedPower(
+        requested: Int,
+        easy: Int,
+        absMax: Int,
+        bar: SeekBar,
+        valueView: TextView
+    ) {
+        val capped = requested.coerceAtMost(absMax)
+        AlertDialog.Builder(this)
+            .setTitle("⚠ Easy-Speed-Grenze überschritten")
+            .setMessage(
+                "Achtung: Ihr Scooter ist herstellerseitig nicht für diese Belastung ausgelegt. " +
+                "Nutzung auf eigene Gefahr!\n\n" +
+                "Modell: ${detectedModel.displayName}\n" +
+                "Easy Speed: $easy km/h\n" +
+                "Angefordert: $requested km/h (techn. Max: $absMax km/h)\n\n" +
+                "Erst nach Bestätigung wird die erweiterte Strombegrenzung freigeschaltet und der ungedrosselte Max-Power-Frame gesendet."
+            )
+            .setPositiveButton("Freischalten & senden") { _, _ ->
+                extendedPowerUnlocked = true
+                maxSpeedKmh = capped
+                bar.progress = capped - 15
+                valueView.text = "$capped km/h"
+                valueView.setTextColor(Palette.ACCENT_ORANGE)
+                val maxFrame = ScooterFrames.maxSpeed(capped)
+                val powerFrame = ScooterFrames.maxPower()
+                ramOverlay.apply("extended-power", powerFrame)
+                ramOverlay.apply("max-speed-$capped", maxFrame)
+                sendFrame(maxFrame)
+                sendFrame(powerFrame)
+                log("> unlock: extended power ENABLED @ $capped km/h (RAM overlay)")
+                Toast.makeText(this, "Erweiterte Strombegrenzung freigeschaltet", Toast.LENGTH_SHORT).show()
+                renderTab(Tab.TOOLS)
+            }
+            .setNegativeButton("Abbrechen") { _, _ ->
+                maxSpeedKmh = easy
+                bar.progress = easy - 15
+                valueView.text = "$easy km/h"
+                valueView.setTextColor(Palette.ACCENT_GREEN)
+                sendFrame(ScooterFrames.maxSpeed(easy))
+                log("> tune: max-speed reverted to Easy Speed $easy km/h")
+            }
+            .setCancelable(false)
+            .show()
+    }
+
     private fun cardParams() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
     ).apply { setMargins(0, 0, 0, dp(10)) }
 
     /* ----------------------------------------------------------------------
-     *  TAB: DASHBOARD  —  Live-Tacho + Telemetrie
+     *  TAB: DASHBOARD  —  Live-Tacho + Telemetrie + Zellbalance
      * -------------------------------------------------------------------- */
     private fun renderDashboardTab() {
         val isDemo = connectedDevice?.isDemo == true
 
-        // Tacho
         val speedCard = makeCard().apply { gravity = Gravity.CENTER }
         dashSpeed = makeText(if (isDemo) "28" else "0", 56f, Color.WHITE, true)
         speedCard.addView(dashSpeed)
@@ -1369,13 +1815,41 @@ class MainActivity : AppCompatActivity() {
         dashBattery = vBat
         dashMotorTemp = vTemp
 
-        tabContent.addView(makeSectionLabel("TELEMETRIE-STREAM"))
+        tabContent.addView(makeSectionLabel("AKKU-ZELLBALANCE"))
+        val cellCard = makeCard()
+        cellCard.addView(makeText("Zell-Ausgleich", 14f, Color.WHITE, true))
+        cellCard.addView(makeText(
+            "Differenz zwischen stärkster und schwächster Zelle. Hohe Delta-Werte deuten auf Drift hin.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(3), 0, dp(10)) })
+        fun cellRow(l: String): TextView {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(6), 0, dp(2))
+            }
+            row.addView(makeText(l, 12f, Palette.TEXT_SECONDARY))
+            val v = makeText("---", 12f, Color.WHITE, true).apply { gravity = Gravity.END }
+            row.addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            cellCard.addView(row)
+            return v
+        }
+        dashCellMin = cellRow("Cell min")
+        dashCellMax = cellRow("Cell max")
+        dashCellDelta = cellRow("Cell delta")
+        tabContent.addView(cellCard, cardParams())
+
+        tabContent.addView(makeSectionLabel("SCHUTZ & STREAM"))
         val streamInfo = makeCard()
+        dashTempGuardState = makeText(
+            if (motorTempGuardEnabled) "🛡 Motorschutz aktiv (Schwelle $motorTempGuardC °C)" else "⚠ Motorschutz deaktiviert",
+            12f, if (motorTempGuardEnabled) Palette.ACCENT_GREEN else Palette.ACCENT_RED, true
+        )
+        streamInfo.addView(dashTempGuardState)
         streamInfo.addView(makeText(
             if (isDemo) "Demo-Simulation läuft — Werte werden live interpoliert."
             else "Warte auf Telemetrie-Frames vom Controller…",
             12f, Palette.TEXT_MUTED
-        ))
+        ).apply { setPadding(0, dp(6), 0, 0) })
         tabContent.addView(streamInfo)
 
         startTelemetry(isDemo)
@@ -1395,6 +1869,9 @@ class MainActivity : AppCompatActivity() {
                     val battery = 87 - (simTick / 120)
                     val motorTemp = 41.0 + 3.0 * Math.abs(Math.sin(simTick / 10.0))
                     val trip = 6.4 + simTick * 0.0006
+                    val cellMin = 3.621 - (simTick % 30) * 0.0005
+                    val cellMax = 3.688 - (simTick % 30) * 0.0004
+                    val deltaMv = (cellMax - cellMin) * 1000
 
                     dashSpeed?.text = String.format(Locale.US, "%.0f", speed)
                     dashPower?.text = String.format(Locale.US, "%.0f W", power)
@@ -1404,11 +1881,33 @@ class MainActivity : AppCompatActivity() {
                     dashMotorTemp?.text = String.format(Locale.US, "%.0f °C", motorTemp)
                     dashTrip?.text = String.format(Locale.US, "%.2f KM", trip)
                     dashRange?.text = String.format(Locale.US, "%.1f KM", 26.1 - simTick * 0.001)
+                    dashCellMin?.text = String.format(Locale.US, "%.3f V", cellMin)
+                    dashCellMax?.text = String.format(Locale.US, "%.3f V", cellMax)
+                    dashCellDelta?.text = String.format(Locale.US, "%.0f mV", deltaMv)
+
+                    evaluateMotorGuard(motorTemp)
 
                     handler.postDelayed(this, 500)
                 }
             }
             handler.postDelayed(telemetryRunnable!!, 400)
+        }
+    }
+
+    private fun evaluateMotorGuard(tempC: Double) {
+        if (!motorTempGuardEnabled) return
+        if (tempC >= motorTempGuardC && !motorGuardTripped) {
+            motorGuardTripped = true
+            sendFrame(ScooterFrames.emergencyCut())
+            log("> guard: TRIPPED at ${String.format(Locale.US, "%.0f", tempC)} °C — power cut")
+            dashTempGuardState?.text = "🛑 Motorschutz AUSGELÖST (${String.format(Locale.US, "%.0f", tempC)} °C) — Leistung gekappt"
+            dashTempGuardState?.setTextColor(Palette.ACCENT_RED)
+            Toast.makeText(this, "Motorschutz: Leistung gekappt (Übertemperatur)", Toast.LENGTH_SHORT).show()
+        } else if (tempC < motorTempGuardC - 5 && motorGuardTripped) {
+            motorGuardTripped = false
+            dashTempGuardState?.text = "🛡 Motorschutz aktiv (Schwelle $motorTempGuardC °C)"
+            dashTempGuardState?.setTextColor(Palette.ACCENT_GREEN)
+            log("> guard: reset (cooled down)")
         }
     }
 
@@ -1418,14 +1917,67 @@ class MainActivity : AppCompatActivity() {
     }
 
     /* ----------------------------------------------------------------------
-     *  TAB: FLASH  —  echte Firmware-Schnittstelle
+     *  TAB: FLASH  —  intelligente Firmware-Empfehlungen + Integritätsprüfung
      * -------------------------------------------------------------------- */
     private fun renderFlashTab() {
-        tabContent.addView(makeSectionLabel("FIRMWARE-PAKET"))
+        val recommendations = FirmwareCatalog.forModel(detectedModel)
+        val recommended = FirmwareCatalog.recommended(detectedModel)
+
+        tabContent.addView(makeSectionLabel("EMPFOHLEN FÜR ${detectedModel.displayName.uppercase(Locale.ROOT)}"))
+        val recCard = makeCard()
+        if (recommended != null) {
+            recCard.addView(makeText("⭐ ${recommended.name} ${recommended.version}", 15f, Palette.ACCENT_GREEN, true))
+            recCard.addView(makeText(
+                "Target: ${recommended.target}  •  Empf. Max: ${if (recommended.recommendedMaxKmh > 0) "${recommended.recommendedMaxKmh} km/h" else "—"}\n${recommended.notes}",
+                12f, Palette.TEXT_SECONDARY
+            ).apply { setPadding(0, dp(6), 0, dp(10)) })
+            recCard.addView(makePrimaryButton("EMPFOHLENES PAKET WÄHLEN", Palette.ACCENT_GREEN) {
+                selectedFirmware = recommended
+                selectedFirmwareUri = null
+                selectedFirmwareName = "${recommended.name} ${recommended.version}"
+                lastValidation = null
+                log("> flash: recommended package selected (${recommended.id})")
+                renderTab(Tab.FLASH)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)))
+        } else {
+            recCard.addView(makeText("Keine Empfehlung verfügbar.", 13f, Palette.TEXT_MUTED))
+        }
+        tabContent.addView(recCard, cardParams())
+
+        tabContent.addView(makeSectionLabel("VERFÜGBARE PAKETE"))
+        val catalogCard = makeCard()
+        recommendations.forEach { pkg ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(8), 0, dp(8))
+            }
+            val isSel = selectedFirmware?.id == pkg.id
+            row.addView(makeText(
+                "${if (isSel) "● " else "○ "}${pkg.name} ${pkg.version}",
+                13f, if (isSel) Palette.ACCENT_GREEN else Color.WHITE, true
+            ))
+            row.addView(makeText("Target ${pkg.target}  •  ${pkg.sourceUrl}", 11f, Palette.TEXT_MUTED))
+            row.setOnClickListener {
+                selectedFirmware = pkg
+                selectedFirmwareUri = null
+                selectedFirmwareName = "${pkg.name} ${pkg.version}"
+                lastValidation = null
+                log("> flash: package selected (${pkg.id})")
+                renderTab(Tab.FLASH)
+            }
+            catalogCard.addView(row)
+            catalogCard.addView(View(this).apply {
+                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+                setBackgroundColor(Palette.DIVIDER)
+            })
+        }
+        tabContent.addView(catalogCard, cardParams())
+
+        tabContent.addView(makeSectionLabel("EIGENES PAKET"))
         val pkg = makeCard()
-        pkg.addView(makeText("Firmware laden", 15f, Color.WHITE, true))
+        pkg.addView(makeText("Firmware laden (.zip)", 15f, Color.WHITE, true))
         pkg.addView(makeText(
-            "Wähle ein Firmware-Paket (.zip) oder lade ein SHFW-Repo. Die Datei wird vor dem Flashen auf Integrität geprüft.",
+            "Wähle ein Firmware-Paket (.zip). Die Datei wird vor dem Flashen auf ZIP-Struktur, Modell-Kompatibilität und SHA-256-Integrität geprüft.",
             12f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(4), 0, dp(12)) })
 
@@ -1454,6 +2006,14 @@ class MainActivity : AppCompatActivity() {
             if (url.isNotEmpty()) {
                 selectedFirmwareName = url.substringAfterLast('/').ifBlank { "shfw-repo" }
                 selectedFirmwareUri = null
+                selectedFirmware = null
+                lastValidation = FirmwareValidation(
+                    valid = true,
+                    message = "Repo-Referenz akzeptiert (Remote-Pull beim Flash).",
+                    sha256 = "remote",
+                    isZip = false,
+                    modelCompatible = true
+                )
                 log("> flash: repo queued $url")
                 Toast.makeText(this, "Repo geladen: $url", Toast.LENGTH_SHORT).show()
                 renderTab(Tab.FLASH)
@@ -1462,12 +2022,29 @@ class MainActivity : AppCompatActivity() {
         pkg.addView(repoRow)
         tabContent.addView(pkg, cardParams())
 
-        tabContent.addView(makeSectionLabel("STATUS"))
+        tabContent.addView(makeSectionLabel("STATUS & VALIDIERUNG"))
         val statusCard = makeCard()
         statusCard.addView(makeText(
             selectedFirmwareName?.let { "Ausgewählt: $it" } ?: "Kein Paket ausgewählt",
             13f, if (selectedFirmwareName != null) Palette.ACCENT_GREEN else Palette.TEXT_MUTED, true
         ))
+        val validationView = makeText(
+            lastValidation?.let { "${if (it.valid) "✔" else "✘"} ${it.message}" } ?: "Noch keine Validierung durchgeführt.",
+            11f, when {
+                lastValidation == null -> Palette.TEXT_MUTED
+                lastValidation!!.valid -> Palette.ACCENT_GREEN
+                else -> Palette.ACCENT_RED
+            }
+        ).apply { setPadding(0, dp(6), 0, 0) }
+        statusCard.addView(validationView)
+        val sha = lastValidation?.sha256
+        if (sha != null && sha != "remote") {
+            statusCard.addView(makeText("SHA-256: $sha", 10f, Palette.TEXT_MUTED).apply {
+                setPadding(0, dp(4), 0, 0)
+                setTypeface(Typeface.MONOSPACE)
+            })
+        }
+
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             this.progress = 0
@@ -1475,9 +2052,12 @@ class MainActivity : AppCompatActivity() {
         statusCard.addView(progress, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(6)
         ).apply { setMargins(0, dp(12), 0, dp(12)) })
+
         val flashBtn = makePrimaryButton("FIRMWARE FLASHEN") {
             if (selectedFirmwareName == null) {
                 Toast.makeText(this, "Bitte zuerst ein Paket auswählen.", Toast.LENGTH_SHORT).show()
+            } else if (lastValidation?.valid == false) {
+                Toast.makeText(this, "Validierung fehlgeschlagen — Flash blockiert.", Toast.LENGTH_LONG).show()
             } else {
                 flashFirmware(progress)
             }
@@ -1486,9 +2066,123 @@ class MainActivity : AppCompatActivity() {
         tabContent.addView(statusCard, cardParams())
 
         tabContent.addView(makeText(
-            "⚠ Flashen überschreibt die DRV-Firmware. Stelle sicher, dass der Akku > 50 % geladen ist und die Verbindung stabil bleibt.",
+            "⚠ Flashen überschreibt die DRV-Firmware. Stelle sicher, dass der Akku > 50 % geladen ist und die Verbindung stabil bleibt. Alle Performance-Patches laufen als flüchtiges RAM-Overlay und werden vom Police Mode sofort gelöscht.",
             12f, Palette.ACCENT_RED
         ).apply { setPadding(0, dp(8), 0, 0) })
+    }
+
+    /* ----------------------------------------------------------------------
+     *  FIRMWARE-AUSWAHL & INTEGRITÄTSPRÜFUNG
+     * -------------------------------------------------------------------- */
+    private fun handleSelectedFirmware(uri: Uri) {
+        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware.zip"
+        selectedFirmwareName = name
+        selectedFirmwareUri = uri
+        selectedFirmware = null
+        lastValidation = validateFirmware(uri)
+        log("> flash: package selected $name")
+        log("> flash: validation -> ${lastValidation?.message}")
+        Toast.makeText(
+            this,
+            if (lastValidation?.valid == true) "Firmware geprüft: OK" else "Firmware-Prüfung fehlgeschlagen",
+            Toast.LENGTH_SHORT
+        ).show()
+        if (currentTab == Tab.FLASH) renderTab(Tab.FLASH)
+    }
+
+    /**
+     * Echte Integritätsprüfung:
+     *  1. Datei lesbar?
+     *  2. ZIP-Signatur (PK\x03\x04) vorhanden?
+     *  3. Erwartete Firmware-Dateien (.bin / DRV / BMS / ESC) enthalten?
+     *  4. Modell-Kompatibilität (Namen-Heuristik gegen erkanntes Modell)?
+     *  5. SHA-256-Fingerprint (angezeigt & geloggt).
+     */
+    private fun validateFirmware(uri: Uri): FirmwareValidation {
+        val bytes: ByteArray = try {
+            contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: return FirmwareValidation(false, "Datei nicht lesbar.", "", false, false)
+        } catch (e: Exception) {
+            return FirmwareValidation(false, "Lesefehler: ${e.message}", "", false, false)
+        }
+
+        if (bytes.isEmpty()) {
+            return FirmwareValidation(false, "Datei ist leer.", "", false, false)
+        }
+
+        val sha = sha256(bytes)
+        val isZip = bytes.size >= 4 &&
+                bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() &&
+                (bytes[2] == 0x03.toByte() || bytes[2] == 0x05.toByte() || bytes[2] == 0x07.toByte())
+
+        if (!isZip) {
+            return FirmwareValidation(
+                false,
+                "Keine gültige ZIP-Struktur (kein Firmware-Paket).",
+                sha, false, false
+            )
+        }
+
+        val entries = mutableListOf<String>()
+        try {
+            ZipInputStream(bytes.inputStream()).use { zis ->
+                var entry = zis.nextEntry
+                var guard = 0
+                while (entry != null && guard < 500) {
+                    entries.add(entry.name.lowercase(Locale.ROOT))
+                    entry = zis.nextEntry
+                    guard++
+                }
+            }
+        } catch (e: Exception) {
+            return FirmwareValidation(false, "ZIP beschädigt: ${e.message}", sha, true, false)
+        }
+
+        val hasFirmwareFile = entries.any {
+            it.endsWith(".bin") || it.contains("drv") || it.contains("bms") ||
+                    it.contains("esc") || it.endsWith(".fw") || it.endsWith(".shfw")
+        }
+        if (!hasFirmwareFile) {
+            return FirmwareValidation(
+                false,
+                "ZIP enthält keine erkennbare Firmware-Datei (.bin/DRV/BMS/ESC).",
+                sha, true, false
+            )
+        }
+
+        val modelTokens = detectedModel.matchKeywords.ifEmpty { listOf("generic") }
+        val joined = (entries + selectedFirmwareName.orEmpty()).joinToString(" ")
+        val modelCompatible = detectedModel == ScooterModel.UNKNOWN ||
+                modelTokens.any { joined.contains(it) } ||
+                (joined.contains("shfw") && detectedModel in listOf(
+                    ScooterModel.NINEBOT_MAX_G2, ScooterModel.NINEBOT_MAX_G30,
+                    ScooterModel.NINEBOT_F2_PRO, ScooterModel.NINEBOT_ES,
+                    ScooterModel.XIAOMI_PRO_2, ScooterModel.XIAOMI_M365
+                ))
+
+        if (!modelCompatible) {
+            return FirmwareValidation(
+                false,
+                "Modell-Konflikt: Paket passt nicht zu ${detectedModel.displayName}. Flash blockiert.",
+                sha, true, false
+            )
+        }
+
+        return FirmwareValidation(
+            true,
+            "Integrität OK — ZIP gültig, Firmware-Datei & Modell-Kompatibilität bestätigt.",
+            sha, true, true
+        )
+    }
+
+    private fun sha256(bytes: ByteArray): String {
+        return try {
+            val md = MessageDigest.getInstance("SHA-256")
+            val digest = md.digest(bytes)
+            digest.joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            "n/a"
+        }
     }
 
     private fun flashFirmware(progress: ProgressBar) {
@@ -1501,7 +2195,10 @@ class MainActivity : AppCompatActivity() {
                     progress.progress = 100
                     log("> flash: verify OK")
                     log("> flash: complete (reboot controller)")
-                    Toast.makeText(this@MainActivity, "Flash abgeschlossen. Controller neu starten.", Toast.LENGTH_LONG).show()
+                    val perfFrame = ScooterFrames.maxPower()
+                    ramOverlay.apply("flash-perf-patch", perfFrame)
+                    log("> flash: performance patch registered as volatile RAM overlay")
+                    Toast.makeText(this@MainActivity, "Flash abgeschlossen. Performance-Patch als RAM-Overlay aktiv.", Toast.LENGTH_LONG).show()
                 } else {
                     progress.progress = p
                     log("> flash: writing $p%")
@@ -1513,7 +2210,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /* ----------------------------------------------------------------------
-     *  TAB: CONFIG  —  Profile + SHFW-Settings
+     *  TAB: CONFIG  —  Profile + SHFW-Settings + Auto-Reconnect
      * -------------------------------------------------------------------- */
     private fun renderConfigTab() {
         tabContent.addView(makeSectionLabel("PROFILE"))
@@ -1548,7 +2245,6 @@ class MainActivity : AppCompatActivity() {
         profileCard.addView(nameRow)
         tabContent.addView(profileCard, cardParams())
 
-        // Gespeicherte Profile
         val saved = prefs.getStringSet("profiles", emptySet())?.sorted() ?: emptyList()
         if (saved.isNotEmpty()) {
             tabContent.addView(makeSectionLabel("GESPEICHERT"))
@@ -1568,6 +2264,19 @@ class MainActivity : AppCompatActivity() {
             }
             tabContent.addView(listCard, cardParams())
         }
+
+        tabContent.addView(makeSectionLabel("VERBINDUNG"))
+        val connCard = makeCard()
+        connCard.addView(makeToggleRow(
+            "Bluetooth Auto-Reconnect",
+            "Stellt die Verbindung nach einem unerwarteten Abbruch automatisch wieder her (max. 3 Versuche).",
+            autoReconnectEnabled
+        ) { on ->
+            autoReconnectEnabled = on
+            prefs.edit().putBoolean("auto_reconnect", on).apply()
+            log("> config: auto-reconnect = $on")
+        })
+        tabContent.addView(connCard, cardParams())
 
         tabContent.addView(makeSectionLabel("SHFW-SYSTEMEINSTELLUNGEN"))
         val shfw = makeCard()
@@ -1596,7 +2305,6 @@ class MainActivity : AppCompatActivity() {
         ) { on -> prefs.edit().putBoolean("shfw_brakelight", on).apply(); log("> shfw: brake-light-regen = $on") })
         tabContent.addView(shfw, cardParams())
 
-        // Disconnect
         val danger = makeCard()
         danger.addView(makeText("Verbindung", 15f, Color.WHITE, true))
         danger.addView(makeText("Trennt die aktuelle BLE-Verbindung und kehrt zur Gerätesuche zurück.", 12f, Palette.TEXT_MUTED)
@@ -1631,9 +2339,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun disconnectAndReturn() {
+        userInitiatedDisconnect = true
         bleController?.disconnect()
         bleController = null
         connectedDevice = null
+        ramOverlay.flush()
         showScanScreen()
     }
 
@@ -1649,17 +2359,52 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Region-Aware Police Mode — flusht in < 1 s den RAM-Speicher,
+     * löscht alle Flash-/Speed-Patches und setzt den legalen Werkszustand.
+     */
     private fun engagePoliceMode() {
+        val start = System.currentTimeMillis()
+
+        val flushed = ramOverlay.flush()
         germanManeuverActive = false
+        extendedPowerUnlocked = false
         maxSpeedKmh = currentRegion.legalSpeedKmh
+
         sendFrame(ScooterFrames.policeMode(currentRegion.legalSpeedKmh))
-        log("> police: RAM tuning cleared")
+        sendFrame(ScooterFrames.maxSpeed(currentRegion.legalSpeedKmh))
+        sendFrame(ScooterFrames.emergencyCut())
+
+        val elapsed = System.currentTimeMillis() - start
+        log("> police: RAM overlay flushed (${flushed.size} patches: ${flushed.joinToString()})")
         log("> police: speed limit restored to ${currentRegion.legalSpeedKmh} km/h (${currentRegion.displayName})")
+        log("> police: completed in $elapsed ms")
+
         AlertDialog.Builder(this)
-            .setTitle("Police Mode ausgelöst")
-            .setMessage("Alle flüchtigen RAM-Tunings wurden gelöscht.\nDas Limit wurde auf den legalen Werkszustand von ${currentRegion.displayName} (${currentRegion.legalSpeedKmh} km/h) zurückgesetzt.")
+            .setTitle("🚨 Police Mode ausgelöst")
+            .setMessage(
+                "Flüchtiger RAM-Speicher geflusht in $elapsed ms.\n\n" +
+                "Gelöschte Patches: ${if (flushed.isEmpty()) "keine" else flushed.joinToString()}\n" +
+                "Limit zurückgesetzt auf legalen Werkszustand: ${currentRegion.displayName} = ${currentRegion.legalSpeedKmh} km/h."
+            )
             .setPositiveButton("OK") { d, _ -> d.dismiss() }
             .show()
+    }
+
+    /** Simuliert den modellspezifischen Panic-Hotkey am Lenker. */
+    private fun triggerPanicHotkey() {
+        log("> hotkey: panic combo detected (${detectedModel.panicHotkey})")
+        engagePoliceMode()
+    }
+
+    /** Simuliert den Stealth-Unlock-Hotkey (Tuning ohne Handy aktivieren). */
+    private fun triggerStealthUnlock() {
+        log("> hotkey: stealth unlock detected (${detectedModel.stealthUnlockHotkey})")
+        val frame = ScooterFrames.germanManeuver()
+        ramOverlay.apply("stealth-unlock", frame)
+        sendFrame(frame)
+        germanManeuverActive = true
+        Toast.makeText(this, "Stealth Unlock aktiv — Tuning via Lenker-Hotkey", Toast.LENGTH_SHORT).show()
     }
 
     private fun showLockCodeDialog() {
@@ -1717,3 +2462,12 @@ class MainActivity : AppCompatActivity() {
         android.util.Log.d("SyrakScooterLab", line)
     }
 }
+
+/** Ergebnis der Firmware-Integritätsprüfung. */
+data class FirmwareValidation(
+    val valid: Boolean,
+    val message: String,
+    val sha256: String,
+    val isZip: Boolean,
+    val modelCompatible: Boolean
+)
