@@ -1,272 +1,590 @@
 
 package com.syrak.scooterlab
 
-import android.app.Activity
-import android.os.Bundle
+import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Bundle
+import android.os.CountDownTimer
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import java.util.Locale
 
-class MainActivity : Activity() {
+data class ScooterDevice(
+    val device: BluetoothDevice,
+    val name: String,
+    val address: String,
+    val rssi: Int,
+    val isScooterCandidate: Boolean
+)
 
-    private val bg = Color.rgb(10, 11, 16)
-    private val panel = Color.rgb(30, 34, 46)
-    private val red = Color.rgb(255, 55, 65)
-    private val cyan = Color.rgb(50, 220, 240)
-    private val green = Color.rgb(0, 230, 140)
-    private lateinit var root: LinearLayout
-    private lateinit var status: TextView
+class MainActivity : AppCompatActivity() {
+
+    private var bluetoothAdapter: BluetoothAdapter? = null
+    private lateinit var rootContainer: LinearLayout
+    private val handler = Handler(Looper.getMainLooper())
+    private var activeTimer: CountDownTimer? = null
+    private var loadingRunnable: Runnable? = null
+
+    private var isScanning = false
+    private val foundDevices = linkedMapOf<String, ScooterDevice>()
+    private lateinit var statusText: TextView
+    private lateinit var scanButton: Button
+    private lateinit var deviceListContainer: LinearLayout
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            statusText.text = "Bluetooth-Berechtigungen erteilt. Scooter einschalten."
+            startBleScan()
+        } else {
+            statusText.text = "Bluetooth-Berechtigungen werden zum Suchen benötigt."
+            scanButton.isEnabled = true
+        }
+    }
+
+    private val leScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult?) {
+            result ?: return
+
+            val device = result.device
+            val address = device.address
+            val name = try {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                    ContextCompat.checkSelfPermission(
+                        this@MainActivity,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    device.name ?: result.scanRecord?.deviceName ?: "Unbekanntes Gerät"
+                } else {
+                    result.scanRecord?.deviceName ?: "Unbekanntes Gerät"
+                }
+            } catch (_: SecurityException) {
+                result.scanRecord?.deviceName ?: "Unbekanntes Gerät"
+            }
+
+            val keywords = listOf(
+                "scooter", "ninebot", "xiaomi", "navee",
+                "m365", "segway", "soflow"
+            )
+            val candidate = keywords.any { name.contains(it, ignoreCase = true) }
+
+            foundDevices[address] = ScooterDevice(
+                device = device,
+                name = name,
+                address = address,
+                rssi = result.rssi,
+                isScooterCandidate = candidate
+            )
+            updateDeviceList()
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            isScanning = false
+            runOnUiThread {
+                scanButton.isEnabled = true
+                statusText.text = "Bluetooth-Suche fehlgeschlagen (Code $errorCode)."
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = bg
-        window.navigationBarColor = Color.BLACK
-        window.decorView.systemUiVisibility = 0
-        showDashboard()
-    }
 
-    private fun rounded(color: Int, stroke: Int = 0): GradientDrawable {
-        return GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = 24f
-            if (stroke != 0) setStroke(2, stroke)
+        window.statusBarColor = Color.rgb(12, 14, 18)
+        window.navigationBarColor = Color.rgb(12, 14, 18)
+
+        rootContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(12, 14, 18))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
+
+        setContentView(rootContainer)
+        showLoadingScreen()
     }
 
-    private fun text(
+    override fun onDestroy() {
+        loadingRunnable?.let { handler.removeCallbacks(it) }
+        activeTimer?.cancel()
+
+        if (isScanning) {
+            try {
+                if (hasBluetoothConnectPermission()) {
+                    bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback)
+                }
+            } catch (_: Exception) {
+                // Activity is closing.
+            }
+        }
+
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
+
+    private fun makeText(
         value: String,
         size: Float,
-        color: Int = Color.WHITE,
+        color: Int,
         bold: Boolean = false
-    ): TextView {
-        return TextView(this).apply {
-            text = value
-            textSize = size
-            setTextColor(color)
-            if (bold) setTypeface(null, Typeface.BOLD)
-            setPadding(0, 4, 0, 4)
-        }
+    ) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        if (bold) setTypeface(null, Typeface.BOLD)
     }
 
-    private fun section(title: String) {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 18, 0, 8)
-        }
-        View(this).apply {
-            setBackgroundColor(red)
-            row.addView(this, LinearLayout.LayoutParams(4, 20))
-        }
-        row.addView(text("  ${title.uppercase()}", 12f, Color.LTGRAY, true))
-        root.addView(row)
-    }
+    private fun showLoadingScreen() {
+        rootContainer.removeAllViews()
 
-    private fun card(): LinearLayout {
-        return LinearLayout(this).apply {
+        val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(18, 16, 18, 16)
-            background = rounded(panel, Color.rgb(48, 53, 70))
-            root.addView(
-                this,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = 10 }
-            )
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(28), dp(28), dp(28))
         }
-    }
 
-    private fun line(label: String, value: String) {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val title = makeText("SYRAK SCOOTERLAB", 22f, Color.WHITE, true)
+        title.gravity = Gravity.CENTER
+
+        val subtitle = makeText("SCOOTER DIAGNOSTICS", 11f, Color.rgb(0, 200, 120), true)
+        subtitle.gravity = Gravity.CENTER
+        subtitle.setPadding(0, dp(8), 0, 0)
+
+        val progress = ProgressBar(
+            this, null, android.R.attr.progressBarStyleHorizontal
+        ).apply {
+            isIndeterminate = true
         }
-        row.addView(
-            text(label, 13f, Color.LTGRAY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        row.addView(text(value, 13f, Color.WHITE, true))
-        root.addView(row)
-    }
 
-    private fun metricGrid() {
-        val values = listOf(
-            "⚡ VOLTAGE" to "40.6 V",
-            "▥ CURRENT" to "10.2 A",
-            "▰ BATTERY" to "87%",
-            "♨ MOTOR TEMP" to "42 °C"
-        )
+        val status = makeText("Anwendung wird gestartet …", 13f, Color.LTGRAY)
+        status.gravity = Gravity.CENTER
+        status.setPadding(0, dp(18), 0, 0)
 
-        values.chunked(2).forEach { pair ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-            }
-            pair.forEach { (label, value) ->
-                val tile = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(14, 14, 8, 14)
-                    background = rounded(panel)
-                    addView(text(label, 10f, cyan, true))
-                    addView(text(value, 21f, Color.WHITE, true))
+        layout.addView(title)
+        layout.addView(subtitle)
+
+        layout.addView(progress, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(4)
+        ).apply {
+            setMargins(dp(24), dp(32), dp(24), 0)
+        })
+
+        layout.addView(status)
+        rootContainer.addView(layout, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+
+        val steps = listOf(
+            "Anwendung wird vorbereitet …",
+            "Bluetooth wird überprüft …",
+            "Bereit."
+        )
+        var index = 0
+
+        loadingRunnable = object : Runnable {
+            override fun run() {
+                if (index < steps.size) {
+                    status.text = steps[index++]
+                    handler.postDelayed(this, 600)
+                } else {
+                    showCriticalDisclaimer()
                 }
-                row.addView(
-                    tile,
-                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                        .apply { setMargins(0, 0, 8, 8) }
-                )
             }
-            root.addView(row)
         }
+        handler.postDelayed(loadingRunnable!!, 400)
     }
 
-    private fun actionButton(
-        label: String,
-        color: Int = red,
-        action: () -> Unit
-    ) {
-        val button = Button(this).apply {
-            text = label
-            textSize = 13f
-            setTextColor(Color.WHITE)
-            isAllCaps = false
-            background = rounded(color)
-            setOnClickListener { action() }
+    private fun showCriticalDisclaimer() {
+        rootContainer.removeAllViews()
+
+        val scroll = ScrollView(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(24), dp(24), dp(24))
         }
-        root.addView(
-            button,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 54
-            ).apply {
-                topMargin = 8
-                bottomMargin = 8
-            }
+
+        content.addView(makeText(
+            "Wichtige Sicherheitshinweise",
+            22f, Color.WHITE, true
+        ).apply {
+            setPadding(0, 0, 0, dp(20))
+        })
+
+        val sections = listOf(
+            "Mindestalter" to
+                "Die App richtet sich an volljährige Nutzer. Minderjährige sollten Änderungen an Fahrzeugen nur mit Zustimmung und Unterstützung eines verantwortlichen Erwachsenen durchführen.",
+
+            "Sicherheit" to
+                "Trage geeignete Schutzausrüstung und überprüfe Bremsen, Reifen und Lenkung regelmäßig. Fahre niemals abgelenkt oder unter Alkohol- oder Drogeneinfluss.",
+
+            "Mögliche Schäden" to
+                "Diagnose- oder Firmwareänderungen können zu Fehlfunktionen, Schäden am Controller oder an der Batterie führen. Verwende nur Funktionen, deren Wirkung du verstehst.",
+
+            "Gesetze und Versicherung" to
+                "Prüfe vor Änderungen die geltenden Vorschriften und Versicherungsbedingungen. Eine technische Änderung kann dazu führen, dass ein Fahrzeug nicht mehr im öffentlichen Verkehr verwendet werden darf.",
+
+            "Keine Herstellerzugehörigkeit" to
+                "Syrak ScooterLab ist ein unabhängiges Projekt und wird nicht von Segway-Ninebot, Xiaomi, Navee oder anderen Fahrzeugherstellern unterstützt oder betrieben.",
+
+            "Keine Garantie" to
+                "Die App wird ohne Garantie für Verfügbarkeit oder Eignung für einen bestimmten Zweck bereitgestellt. Prüfe alle angezeigten Informationen selbst.",
+
+            "Verantwortung" to
+                "Beende die App, wenn du diese Hinweise nicht verstanden hast oder die möglichen Risiken nicht akzeptierst."
         )
+
+        sections.forEach { (heading, body) ->
+            content.addView(makeText(
+                heading, 14f, Color.rgb(230, 70, 70), true
+            ).apply {
+                setPadding(0, 0, 0, dp(4))
+            })
+
+            content.addView(makeText(
+                body, 13f, Color.rgb(185, 190, 200)
+            ).apply {
+                setPadding(0, 0, 0, dp(16))
+                setLineSpacing(dp(2).toFloat(), 1f)
+            })
+        }
+
+        scroll.addView(content)
+        rootContainer.addView(scroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(12), dp(24), dp(20))
+            setBackgroundColor(Color.rgb(18, 21, 27))
+        }
+
+        val agree = Button(this).apply {
+            text = "Ich habe die Hinweise gelesen (20)"
+            isEnabled = false
+        }
+
+        val exit = Button(this).apply {
+            text = "App beenden"
+            setOnClickListener { finishAffinity() }
+        }
+
+        footer.addView(agree)
+        footer.addView(exit)
+        rootContainer.addView(footer)
+
+        activeTimer?.cancel()
+        activeTimer = object : CountDownTimer(20000, 1000) {
+            override fun onTick(millisUntilFinished: Long) {
+                agree.text = "Ich habe die Hinweise gelesen (${millisUntilFinished / 1000})"
+            }
+
+            override fun onFinish() {
+                agree.text = "Weiter"
+                agree.isEnabled = true
+                agree.setOnClickListener { showCountryDisclaimer() }
+            }
+        }.start()
     }
 
-    private fun showDashboard() {
+    private fun showCountryDisclaimer() {
+        activeTimer?.cancel()
+        rootContainer.removeAllViews()
+
+        val country = Locale.getDefault()
+            .getDisplayCountry(Locale.GERMAN)
+            .ifBlank { "deinem Land" }
+
+        val scroll = ScrollView(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(24), dp(24), dp(24))
+        }
+
+        content.addView(makeText(
+            "Rechtlicher Hinweis", 22f, Color.WHITE, true
+        ).apply {
+            setPadding(0, 0, 0, dp(16))
+        })
+
+        val body = if (Locale.getDefault().country.equals("DE", true)) {
+            "In Deutschland gelten für Elektrokleinstfahrzeuge besondere technische und rechtliche Anforderungen.\n\n" +
+                "• Veränderungen können die Betriebserlaubnis beeinflussen.\n\n" +
+                "• Ein Fahrzeug darf im öffentlichen Verkehr nur eingesetzt werden, wenn es die geltenden Vorschriften erfüllt.\n\n" +
+                "• Prüfe mögliche Auswirkungen auf Versicherungsschutz und Zulassung vor jeder Änderung.\n\n" +
+                "• Nutze Diagnose- und Testfunktionen verantwortungsvoll und beachte die geltenden Gesetze."
+        } else {
+            "Informiere dich vor der Nutzung über die Vorschriften für Elektrokleinstfahrzeuge in $country.\n\n" +
+                "Technische Änderungen können Auswirkungen auf Zulassung, zulässige Nutzung und Versicherungsschutz haben."
+        }
+
+        content.addView(makeText(
+            body, 14f, Color.rgb(185, 190, 200)
+        ).apply {
+            setLineSpacing(dp(3).toFloat(), 1f)
+        })
+
+        scroll.addView(content)
+        rootContainer.addView(scroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(12), dp(24), dp(20))
+            setBackgroundColor(Color.rgb(18, 21, 27))
+        }
+
+        val accept = Button(this).apply {
+            text = "Verstanden (20)"
+            isEnabled = false
+        }
+        val exit = Button(this).apply {
+            text = "App beenden"
+            setOnClickListener { finishAffinity() }
+        }
+
+        footer.addView(accept)
+        footer.addView(exit)
+        rootContainer.addView(footer)
+
+        activeTimer?.cancel()
+        activeTimer = object : CountDownTimer(20000, 1000) {
+            override fun onTick(millisUntilFinished: Long) {
+                accept.text = "Verstanden (${millisUntilFinished / 1000})"
+            }
+
+            override fun onFinish() {
+                accept.text = "Akzeptieren und fortfahren"
+                accept.isEnabled = true
+                accept.setOnClickListener { showMainDashboard() }
+            }
+        }.start()
+    }
+
+    private fun showMainDashboard() {
+        rootContainer.removeAllViews()
+
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(bg)
             isFillViewport = true
         }
-
-        root = LinearLayout(this).apply {
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(18, 18, 18, 24)
+            setPadding(dp(22), dp(24), dp(22), dp(24))
         }
 
-        scroll.addView(root)
-        setContentView(scroll)
+        content.addView(makeText(
+            "Syrak ScooterLab", 24f, Color.WHITE, true
+        ))
+        content.addView(makeText(
+            "Scooter auswählen und verbinden", 14f, Color.rgb(145, 155, 170)
+        ).apply {
+            setPadding(0, dp(6), 0, dp(24))
+        })
 
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val logo = TextView(this).apply {
-            text = "⚡"
-            textSize = 28f
-            setTextColor(Color.WHITE)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            background = rounded(red)
-            setPadding(10, 4, 10, 4)
+            setPadding(dp(20), dp(28), dp(20), dp(28))
+            setBackgroundColor(Color.rgb(20, 24, 31))
         }
-        header.addView(logo)
-        val brand = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(12, 0, 0, 0)
-            addView(text("SYRAK", 23f, Color.WHITE, true))
-            addView(text("S C O O T E R L A B", 9f, Color.GRAY))
-        }
-        header.addView(
-            brand,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        header.addView(text("● DEMO", 11f, green, true))
-        root.addView(header)
 
-        status = text("●  DEMO MODE · NO CONTROLLER CONNECTED", 12f, cyan)
-        status.setPadding(12, 12, 12, 12)
-        status.background = rounded(Color.rgb(13, 37, 44))
-        root.addView(
-            status,
-            LinearLayout.LayoutParams(
+        panel.addView(makeText(
+            "Bluetooth-Verbindung", 17f, Color.WHITE, true
+        ).apply { gravity = Gravity.CENTER })
+
+        statusText = makeText(
+            "Scooter einschalten und Suche starten.", 13f,
+            Color.rgb(185, 190, 200)
+        ).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(4))
+        }
+        panel.addView(statusText)
+        content.addView(panel)
+
+        scanButton = Button(this).apply {
+            text = "NACH SCOOTERN SUCHEN"
+            isAllCaps = false
+            setOnClickListener { startBleScan() }
+        }
+        content.addView(scanButton, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, dp(16), 0, dp(16))
+        })
+
+        deviceListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        content.addView(deviceListContainer)
+
+        content.addView(makeText(
+            "Es werden Bluetooth-Geräte in der Nähe angezeigt. " +
+                "Ein gefundener Gerätename bestätigt noch keine Kompatibilität.",
+            12f, Color.rgb(125, 135, 150)
+        ).apply {
+            setPadding(0, dp(24), 0, 0)
+        })
+
+        scroll.addView(content)
+        rootContainer.addView(scroll)
+
+        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        bluetoothAdapter = manager?.adapter
+
+        if (bluetoothAdapter == null) {
+            statusText.text = "Bluetooth ist auf diesem Gerät nicht verfügbar."
+            scanButton.isEnabled = false
+        }
+    }
+
+    private fun hasBluetoothConnectPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun checkPermissions(): Boolean {
+        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+
+        val missing = needed.filter {
+            ContextCompat.checkSelfPermission(this, it) !=
+                PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missing.isNotEmpty()) {
+            permissionLauncher.launch(missing.toTypedArray())
+            return false
+        }
+        return true
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startBleScan() {
+        if (!checkPermissions()) return
+        if (isScanning) return
+
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) {
+            statusText.text = "Bitte Bluetooth in den Geräteeinstellungen einschalten."
+            return
+        }
+
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            statusText.text = "Bluetooth-Suche ist nicht verfügbar."
+            return
+        }
+
+        foundDevices.clear()
+        updateDeviceList()
+        isScanning = true
+        scanButton.isEnabled = false
+        statusText.text = "Suche läuft …"
+
+        try {
+            scanner.startScan(leScanCallback)
+        } catch (_: SecurityException) {
+            isScanning = false
+            scanButton.isEnabled = true
+            statusText.text = "Keine Berechtigung für die Bluetooth-Suche."
+            return
+        } catch (_: Exception) {
+            isScanning = false
+            scanButton.isEnabled = true
+            statusText.text = "Bluetooth-Suche konnte nicht gestartet werden."
+            return
+        }
+
+        handler.postDelayed({
+            if (isScanning) {
+                try {
+                    scanner.stopScan(leScanCallback)
+                } catch (_: Exception) {
+                    // Scanner may already be stopped.
+                }
+                isScanning = false
+                scanButton.isEnabled = true
+                statusText.text = "Suche beendet. Geräte gefunden: ${foundDevices.size}"
+            }
+        }, 10000)
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun updateDeviceList() {
+        if (!::deviceListContainer.isInitialized) return
+
+        deviceListContainer.removeAllViews()
+
+        foundDevices.values.sortedByDescending { it.rssi }.forEach { item ->
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                setBackgroundColor(
+                    if (item.isScooterCandidate) Color.rgb(25, 40, 32)
+                    else Color.rgb(20, 24, 31)
+                )
+            }
+
+            card.addView(makeText(
+                item.name, 15f, Color.WHITE, true
+            ))
+
+            card.addView(makeText(
+                "Signal: ${item.rssi} dBm",
+                12f, Color.rgb(145, 155, 170)
+            ).apply {
+                setPadding(0, dp(5), 0, 0)
+            })
+
+            val params = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = 18; bottomMargin = 14 }
-        )
+            ).apply {
+                setMargins(0, 0, 0, dp(10))
+            }
 
-        val connection = card()
-        connection.addView(text("Scooter connection", 17f, Color.WHITE, true))
-        connection.addView(text("Bluetooth controller not connected", 12f, Color.LTGRAY))
-        actionButton("SCAN FOR SCOOTERS", green) {
-            status.text = "● DEMO MODE · BLUETOOTH SCAN NOT IMPLEMENTED"
+            deviceListContainer.addView(card, params)
         }
-
-        section("Live dashboard")
-        val speed = card()
-        speed.gravity = Gravity.CENTER
-        speed.addView(text("SPEED", 11f, Color.GRAY, true))
-        speed.addView(text("--", 66f, red, true))
-        speed.addView(text("KM/H", 13f, Color.LTGRAY))
-        speed.addView(text("NO LIVE DATA", 10f, green, true))
-
-        val stats = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-        listOf("POWER\n-- W", "DISTANCE\n-- KM", "RANGE\n-- KM").forEach {
-            val item = text(it, 12f, Color.WHITE, true)
-            item.gravity = Gravity.CENTER
-            stats.addView(
-                item,
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            )
-        }
-        speed.addView(stats)
-
-        section("Power")
-        metricGrid()
-
-        section("Thermal & cells")
-        val battery = card()
-        battery.addView(text("PACK HEALTH  ·  DEMO", 15f, green, true))
-        battery.addView(text("Cell min                         -- V", 13f, Color.LTGRAY))
-        battery.addView(text("Cell max                        -- V", 13f, Color.LTGRAY))
-        battery.addView(text("Cell delta                      -- mV", 13f, Color.LTGRAY))
-        battery.addView(text("Battery temperature          -- °C", 13f, Color.LTGRAY))
-
-        section("Safety")
-        val safety = card()
-        safety.addView(text("Emergency stop", 17f, Color.WHITE, true))
-        safety.addView(
-            text("This demo cannot stop or control a scooter.", 13f, Color.LTGRAY)
-        )
-        actionButton("SAFETY INFORMATION") {
-            status.text = "DEMO ONLY · USE THE PHYSICAL BRAKE"
-        }
-
-        section("Tuning")
-        val tuning = card()
-        tuning.addView(text("Speed settings preview", 17f, Color.WHITE, true))
-        tuning.addView(
-            text("No firmware changes are sent to the scooter.", 13f, Color.LTGRAY)
-        )
-        actionButton("TUNING UNAVAILABLE IN DEMO") {
-            status.text = "TUNING DISABLED · NO CONTROLLER CONNECTION"
-        }
-
-        section("Console")
-        val console = card()
-        console.addView(text("> app: ready", 12f, cyan))
-        console.addView(text("> connection: none", 12f, cyan))
-        console.addView(text("> mode: simulated dashboard", 12f, cyan))
-        console.addView(text("> firmware commands: disabled", 12f, cyan))
     }
 }
