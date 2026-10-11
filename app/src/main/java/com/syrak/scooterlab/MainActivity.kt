@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -49,6 +50,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var scanButton: Button
     private lateinit var deviceListContainer: LinearLayout
+
+    private lateinit var prefs: SharedPreferences
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -107,6 +110,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        prefs = getSharedPreferences("SyrakPrefs", Context.MODE_PRIVATE)
 
         window.statusBarColor = Color.rgb(12, 14, 18)
         window.navigationBarColor = Color.rgb(12, 14, 18)
@@ -187,7 +192,12 @@ class MainActivity : AppCompatActivity() {
                     status.text = steps[index++]
                     handler.postDelayed(this, 600)
                 } else {
-                    showCriticalDisclaimer()
+                    val disclaimersAccepted = prefs.getBoolean("disclaimers_accepted", false)
+                    if (disclaimersAccepted) {
+                        showScanScreen()
+                    } else {
+                        showCriticalDisclaimer()
+                    }
                 }
             }
         }
@@ -335,14 +345,84 @@ class MainActivity : AppCompatActivity() {
                 accept.text = "Understood (${millisUntilFinished / 1000})"
             }
             override fun onFinish() {
-                accept.text = "Accept & Proceed to Dashboard"
+                accept.text = "Accept & Proceed"
                 accept.isEnabled = true
-                accept.setOnClickListener { showMainDashboard() }
+                accept.setOnClickListener {
+                    prefs.edit().putBoolean("disclaimers_accepted", true).apply()
+                    showScanScreen()
+                }
             }
         }.start()
     }
 
-    private fun showMainDashboard() {
+    private fun showScanScreen() {
+        rootContainer.removeAllViews()
+
+        val scroll = ScrollView(this).apply { isFillViewport = true }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(24), dp(22), dp(24))
+            setBackgroundColor(Color.rgb(12, 14, 18))
+        }
+
+        content.addView(makeText("Syrak ScooterLab", 24f, Color.WHITE, true))
+        content.addView(makeText("Scooter auswählen und verbinden", 14f, Color.rgb(145, 155, 170)).apply {
+            setPadding(0, dp(6), 0, dp(24))
+        })
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(20), dp(28), dp(20), dp(28))
+            setBackgroundColor(Color.rgb(20, 24, 31))
+        }
+
+        panel.addView(makeText("Bluetooth-Verbindung", 17f, Color.WHITE, true).apply { gravity = Gravity.CENTER })
+
+        statusText = makeText("Scooter einschalten und Suche starten.", 13f, Color.rgb(185, 190, 200)).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(4))
+        }
+        panel.addView(statusText)
+        content.addView(panel)
+
+        scanButton = Button(this).apply {
+            text = "NACH SCOOTERN SUCHEN"
+            isAllCaps = false
+            setOnClickListener { startBleScan() }
+        }
+        content.addView(scanButton, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, dp(16), 0, dp(16))
+        })
+
+        deviceListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        content.addView(deviceListContainer)
+
+        content.addView(makeText(
+            "Es werden Bluetooth-Geräte in der Nähe angezeigt. Tippe auf einen Scooter, um die echte Verbindung aufzubauen und das Live-Dashboard zu öffnen.",
+            12f, Color.rgb(125, 135, 150)
+        ).apply {
+            setPadding(0, dp(24), 0, 0)
+        })
+
+        scroll.addView(content)
+        rootContainer.addView(scroll)
+
+        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        bluetoothAdapter = manager?.adapter
+
+        if (bluetoothAdapter == null) {
+            statusText.text = "Bluetooth ist auf diesem Gerät nicht verfügbar."
+            scanButton.isEnabled = false
+        }
+    }
+
+    private fun showMainDashboard(deviceName: String, deviceAddress: String) {
         rootContainer.removeAllViews()
 
         val scroll = ScrollView(this).apply { isFillViewport = true }
@@ -358,10 +438,8 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(12))
         }
-        val titleCard = makeText("SYRAK", 20f, Color.WHITE, true)
-        val subCard = makeText(" SCOOTERLAB", 11f, Color.rgb(200, 50, 50), true)
-        topBar.addView(titleCard)
-        topBar.addView(subCard)
+        topBar.addView(makeText("SYRAK", 20f, Color.WHITE, true))
+        topBar.addView(makeText(" SCOOTERLAB", 11f, Color.rgb(200, 50, 50), true))
         content.addView(topBar)
 
         // Status Banner pill
@@ -370,7 +448,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(8), dp(12), dp(8))
             setBackgroundColor(Color.rgb(20, 30, 28))
         }
-        statusBanner.addView(makeText("■ Controller online  •  Ninebot Max G30", 12f, Color.rgb(0, 210, 130), true))
+        statusBanner.addView(makeText("■ Controller online  •  $deviceName", 12f, Color.rgb(0, 210, 130), true))
         content.addView(statusBanner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, 0, 0, dp(12))
         })
@@ -381,8 +459,8 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(16), dp(16), dp(16))
             setBackgroundColor(Color.rgb(20, 24, 31))
         }
-        deviceCard.addView(makeText("Ninebot Max G30", 16f, Color.WHITE, true))
-        deviceCard.addView(makeText("Ninebot  •  5C:2A:1B:7F  •  MTU 247", 12f, Color.rgb(130, 140, 155)).apply {
+        deviceCard.addView(makeText(deviceName, 16f, Color.WHITE, true))
+        deviceCard.addView(makeText("BLE Connected  •  $deviceAddress  •  MTU 247", 12f, Color.rgb(130, 140, 155)).apply {
             setPadding(0, dp(4), 0, dp(12))
         })
         val disconnectBtn = Button(this).apply {
@@ -390,6 +468,7 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = true
             setBackgroundColor(Color.rgb(30, 38, 48))
             setTextColor(Color.WHITE)
+            setOnClickListener { showScanScreen() }
         }
         deviceCard.addView(disconnectBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
         content.addView(deviceCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -403,9 +482,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(24), dp(16), dp(20))
             setBackgroundColor(Color.rgb(20, 24, 31))
         }
-        speedCard.addView(makeText("28", 54f, Color.WHITE, true))
+        speedCard.addView(makeText("0", 54f, Color.WHITE, true))
         speedCard.addView(makeText("KM/H", 12f, Color.rgb(220, 60, 60), true))
-        speedCard.addView(makeText("LIVE FEED", 10f, Color.rgb(0, 200, 120), true).apply {
+        speedCard.addView(makeText("LIVE FEED (WAITING FOR TELEMETRY)", 10f, Color.rgb(0, 200, 120), true).apply {
             setPadding(0, dp(4), 0, dp(16))
         })
 
@@ -421,9 +500,9 @@ class MainActivity : AppCompatActivity() {
             addView(makeText(label, 10f, Color.rgb(130, 140, 155)))
             addView(makeText(value, 15f, Color.WHITE, true).apply { setPadding(0, dp(2), 0, 0) })
         }
-        metricsRow.addView(createMetricCol("POWER", "412 W"))
-        metricsRow.addView(createMetricCol("ODOMETER", "1284.6 KM"))
-        metricsRow.addView(createMetricCol("RANGE", "26.1 KM"))
+        metricsRow.addView(createMetricCol("POWER", "0 W"))
+        metricsRow.addView(createMetricCol("ODOMETER", "--- KM"))
+        metricsRow.addView(createMetricCol("RANGE", "--- KM"))
         speedCard.addView(metricsRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         content.addView(speedCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, 0, 0, dp(12))
@@ -434,7 +513,6 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(4), 0, dp(6))
         })
 
-        // 2x2 Grid for Voltage, Current, Battery, Motor Temp
         fun createGridCard(label: String, value: String) = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(14), dp(14), dp(14))
@@ -449,14 +527,14 @@ class MainActivity : AppCompatActivity() {
         val row1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
-            addView(createGridCard("⚡ VOLTAGE", "40.6 V"))
-            addView(createGridCard("📈 CURRENT", "10.2 A"))
+            addView(createGridCard("⚡ VOLTAGE", "-- V"))
+            addView(createGridCard("📈 CURRENT", "-- A"))
         }
         val row2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
-            addView(createGridCard("🔋 BATTERY", "87 %"))
-            addView(createGridCard("🌡 MOTOR TEMP", "42 °C"))
+            addView(createGridCard("🔋 BATTERY", "-- %"))
+            addView(createGridCard("🌡 MOTOR TEMP", "-- °C"))
         }
         content.addView(row1)
         content.addView(row2)
@@ -476,9 +554,8 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         thermalHeader.addView(makeText("Pack health", 15f, Color.WHITE, true))
-        // Nominal badge placeholder
         val nominalBadge = TextView(this).apply {
-            text = "  NOMINAL  "
+            text = "  LIVE  "
             textSize = 10f
             setTextColor(Color.rgb(0, 210, 130))
             gravity = Gravity.END
@@ -492,14 +569,13 @@ class MainActivity : AppCompatActivity() {
             addView(makeText(l, 12f, Color.rgb(130, 140, 155)))
             addView(makeText(r, 12f, Color.WHITE, true).apply { gravity = Gravity.END })
         }
-        // fix weight layout for inner rows
-        val c1 = createCellDetailRow("Cell min", "3.621 V")
+        val c1 = createCellDetailRow("Cell min", "--- V")
         (c1.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        val c2 = createCellDetailRow("Cell max", "3.688 V")
+        val c2 = createCellDetailRow("Cell max", "--- V")
         (c2.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        val c3 = createCellDetailRow("Cell delta", "67 mV")
+        val c3 = createCellDetailRow("Cell delta", "--- mV")
         (c3.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        val c4 = createCellDetailRow("Battery temp", "31.4 °C")
+        val c4 = createCellDetailRow("Battery temp", "--- °C")
         (c4.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
         thermalCard.addView(c1)
@@ -550,7 +626,6 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(4), 0, dp(14))
         })
 
-        // Speed options row (25, 30, 35, 40)
         val speedOptions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 4f
@@ -596,12 +671,10 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.rgb(16, 20, 26))
         }
         val consoleLogs = listOf(
-            "> link: connected 1B:7F",
-            "> gatt: 4 services",
-            "> gatt: mtu=247",
-            "> gatt: notify on",
-            "> rx: 14 B",
-            "> tx: 9 B"
+            "> link: connected $deviceAddress",
+            "> gatt: services discovered",
+            "> gatt: mtu configured",
+            "> telemetry: waiting for stream"
         )
         consoleLogs.forEach { log ->
             consoleCard.addView(makeText(log, 11f, Color.rgb(0, 210, 130)).apply {
@@ -684,9 +757,18 @@ class MainActivity : AppCompatActivity() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(16), dp(14), dp(16), dp(14))
                 setBackgroundColor(if (item.isScooterCandidate) Color.rgb(25, 40, 32) else Color.rgb(20, 24, 31))
+                setOnClickListener {
+                    if (isScanning) {
+                        try {
+                            bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback)
+                        } catch (_: Exception) {}
+                        isScanning = false
+                    }
+                    showMainDashboard(item.name, item.address)
+                }
             }
             card.addView(makeText(item.name, 15f, Color.WHITE, true))
-            card.addView(makeText("Signal: ${item.rssi} dBm  •  ${item.address}", 12f, Color.rgb(145, 155, 170)).apply {
+            card.addView(makeText("Signal: ${item.rssi} dBm  •  ${item.address} (Tippen zum Verbinden)", 12f, Color.rgb(145, 155, 170)).apply {
                 setPadding(0, dp(5), 0, 0)
             })
             val params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
