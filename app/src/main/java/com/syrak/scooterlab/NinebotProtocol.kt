@@ -41,7 +41,7 @@ object NinebotProtocol {
     fun buildWrite(destination: Int, register: Int, data: ByteArray): NinebotFrame {
         val payload = ByteArray(1 + data.size)
         payload[0] = register.toByte()
-        data.copyInto(payload, destinationIndex = 1)
+        data.copyInto(payload, destinationOffset = 1)
         return NinebotFrame(ADDR_APP, destination, CMD_WRITE, payload)
     }
 
