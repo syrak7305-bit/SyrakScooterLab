@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Syrak ScooterLab"
+rootProject.name = "SyrakScooterLab"
 include(":app")
