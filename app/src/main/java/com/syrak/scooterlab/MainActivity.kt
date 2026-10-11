@@ -784,16 +784,6 @@ class MainActivity : AppCompatActivity() {
                 ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun checkPermissions(): Boolean {
-        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUTEC_SCAN, Manifest.permission.BLUETOOTH_CONNECT) // corrected in logic below
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        // ... handled safely
-        return true
-    }
-
     @SuppressLint("MissingPermission")
     private fun startBleScan() {
         val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
