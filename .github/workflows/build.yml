@@ -2,9 +2,10 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,22 +14,47 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Show checkout information
+        run: |
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "Branch: $GITHUB_REF"
+          git status --short
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
+          java-version: "17"
+          distribution: temurin
 
-      - name: Grant execute permission for gradlew
+      - name: Grant execute permission
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
+      - name: Verify Compose plugin configuration
+        run: |
+          grep -n "kotlin-compose" gradle/libs.versions.toml
+          grep -n "libs.plugins.kotlin.compose" app/build.gradle.kts
+          grep -n "compose = true" app/build.gradle.kts
+
+      - name: Show Gradle version
+        run: ./gradlew --version
+
+      - name: Build Debug APK without caches
+        run: |
+          ./gradlew \
+            --no-build-cache \
+            --no-configuration-cache \
+            --refresh-dependencies \
+            assembleDebug \
+            --stacktrace \
+            --info
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: SyrakScooterLab-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
