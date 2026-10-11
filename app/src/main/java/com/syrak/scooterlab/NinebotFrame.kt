@@ -36,7 +36,7 @@ data class NinebotFrame(
         out[3] = source.toByte()
         out[4] = destination.toByte()
         out[5] = command.toByte()
-        payload.copyInto(out, destinationIndex = 6)
+        payload.copyInto(out, destinationOffset = 6)
         val crc = Crc16.xmodem(out, offset = 2, length = 1 + len)
         out[6 + payload.size] = (crc and 0xFF).toByte()
         out[7 + payload.size] = ((crc ushr 8) and 0xFF).toByte()
