@@ -134,6 +134,23 @@ enum class BleProtocol(val displayName: String) {
     NAVEE_BRIGHTWAY("Navee / Brightway (FFE1)")
 }
 
+/* ---------------------------------------------------------------------------
+ *  FLASH-MODUS  (NEU in v5)
+ *  Zwei klar getrennte Wege:
+ *   • SOFT_PATCH : volatiles RAM-Overlay (Standard, gefahrlos, <1 s per Panik löschbar)
+ *   • HARD_FLASH : echtes Schreiben von .bin-Sektoren in den MCU/ESC-Speicher
+ * ------------------------------------------------------------------------- */
+enum class FlashMode(val displayName: String, val description: String) {
+    SOFT_PATCH(
+        "Soft-Patch / RAM-Overlay",
+        "Volatiles Tuning ohne Veränderung des dauerhaften Speichers. Per Panik-Button in <1 s vollständig löschbar."
+    ),
+    HARD_FLASH(
+        "Echtes MCU/ESC-Firmware-Flashen (.bin)",
+        "Schreibt .bin-Sektoren dauerhaft in den Controller-Speicher. Nur nach ausdrücklicher Bestätigung."
+    )
+}
+
 data class ScooterProfile(
     val name: String,
     val maxSpeed: Int,
@@ -517,6 +534,9 @@ object ScooterFrames {
     /** Not-Aus (Motorschutz greift). */
     fun emergencyCut(): ByteArray = buildFrame(0x20, 0x7E, byteArrayOf(0x00))
 
+    /** NEU (v5): Overspeed-Alarm-Piepton stumm/laut (Ninebot/Xiaomi, CMD 0x7F). */
+    fun overspeedAlarmMute(mute: Boolean): ByteArray = buildFrame(0x20, 0x7F, byteArrayOf(if (mute) 1 else 0))
+
     fun toHex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".format(it) }
 }
 
@@ -553,6 +573,7 @@ object NaveeFrames {
     const val CMD_ZERO_START = 0x11
     const val CMD_REGION = 0x12
     const val CMD_MAX_POWER = 0x13
+    const val CMD_OVERSPEED_ALARM_MUTE = 0x14
     const val CMD_GERMAN = 0x18
     const val CMD_LOCK = 0x1A
     const val CMD_KERS = 0x1B
@@ -582,6 +603,9 @@ object NaveeFrames {
     fun zeroStart(kmh: Int): ByteArray = buildFrame(CMD_ZERO_START, byteArrayOf(kmh.toByte()))
     fun regionToggle(regionCode: Int): ByteArray = buildFrame(CMD_REGION, byteArrayOf(regionCode.toByte()))
     fun maxPower(): ByteArray = buildFrame(CMD_MAX_POWER, byteArrayOf(0x01))
+    /** NEU (v5): Overspeed-Piepton ab Easy-Speed stumm/laut (Navee/Brightway, 0x14). */
+    fun overspeedAlarmMute(mute: Boolean): ByteArray =
+        buildFrame(CMD_OVERSPEED_ALARM_MUTE, byteArrayOf(if (mute) 1 else 0))
     fun germanManeuver(): ByteArray = buildFrame(CMD_GERMAN, byteArrayOf(0x01))
     fun lock(locked: Boolean): ByteArray = buildFrame(CMD_LOCK, byteArrayOf(if (locked) 1 else 0))
     fun kers(level: Int): ByteArray = buildFrame(CMD_KERS, byteArrayOf(level.toByte()))
@@ -614,6 +638,7 @@ object NaveeFrames {
             0x7C -> cruise(value != 0)
             0x7D -> motorTempGuard(value)
             0x7E -> emergencyCut()
+            0x7F -> overspeedAlarmMute(value != 0)
             else -> null
         }
     }
@@ -878,6 +903,11 @@ class MainActivity : AppCompatActivity() {
     private var selectedFirmwareUri: Uri? = null
     private var selectedFirmwareName: String? = null
     private var lastValidation: FirmwareValidation? = null
+
+    // ---- NEU (v5): Flash-Modus & Post-Flash-Tuning ---------------------------
+    private var flashMode: FlashMode = FlashMode.SOFT_PATCH
+    private var overspeedAlarmMuted = false
+    private var lastFlashWasHard = false
 
     // ---- Live-Telemetrie -----------------------------------------------------
     private var dashSpeed: TextView? = null
@@ -1810,6 +1840,7 @@ class MainActivity : AppCompatActivity() {
         info.addView(infoRow("Gesamtkilometer", if (isDemo) "1284.6 km" else "--- km"))
         info.addView(infoRow("Region", "${currentRegion.displayName} (${currentRegion.legalSpeedKmh} km/h)"))
         info.addView(infoRow("Protokoll", activeProtocol.displayName))
+        info.addView(infoRow("Overspeed-Alarm", if (overspeedAlarmMuted) "AUS (stumm)" else "AN"))
         tabContent.addView(info, cardParams())
 
         tabContent.addView(makeSectionLabel("STATUS"))
@@ -1822,6 +1853,10 @@ class MainActivity : AppCompatActivity() {
             if (ramOverlay.active) "RAM-Overlay aktiv (${ramOverlay.size} Patch(es): ${ramOverlay.names.joinToString()})"
             else "Kein flüchtiges Tuning aktiv",
             12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(6), 0, 0) })
+        status.addView(makeText(
+            "Flash-Modus: ${flashMode.displayName}",
+            12f, if (flashMode == FlashMode.HARD_FLASH) Palette.ACCENT_ORANGE else Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(6), 0, 0) })
         tabContent.addView(status)
     }
@@ -2034,12 +2069,11 @@ class MainActivity : AppCompatActivity() {
         valueView: TextView
     ) {
         val capped = requested.coerceAtMost(absMax)
-        // NEU (v4): Navee-spezifischer Warntext; fuer alle anderen Modelle bleibt
-        // der bisherige Text unveraendert erhalten.
+        // NEU (v5): erweiterter Warntext mit thermischem Hinweis (exakter Wortlaut).
         val warnText = if (detectedModel.protocol == BleProtocol.NAVEE_BRIGHTWAY) {
-            "Achtung: Ihr ${detectedModel.displayName} ist herstellerseitig nicht für diese Dauerbelastung ausgelegt. Nutzung auf eigene Gefahr!"
+            "Achtung: Ihr ${detectedModel.displayName} ist herstellerseitig nicht für diese Belastung ausgelegt. Bei Überschreitung von $easy km/h droht thermische Überlastung. Nutzung auf eigene Gefahr!"
         } else {
-            "Achtung: Ihr Scooter ist herstellerseitig nicht für diese Belastung ausgelegt. Nutzung auf eigene Gefahr!"
+            "Achtung: Ihr Scooter ist herstellerseitig nicht für diese Belastung ausgelegt. Bei Überschreitung von $easy km/h droht thermische Überlastung. Nutzung auf eigene Gefahr!"
         }
         AlertDialog.Builder(this)
             .setTitle("⚠ Easy-Speed-Grenze überschritten")
@@ -2065,6 +2099,8 @@ class MainActivity : AppCompatActivity() {
                 log("> unlock: extended power ENABLED @ $capped km/h (RAM overlay)")
                 Toast.makeText(this, "Erweiterte Strombegrenzung freigeschaltet", Toast.LENGTH_SHORT).show()
                 renderTab(Tab.TOOLS)
+                // NEU (v5): Nach dem Entdrosseln automatisch den Post-Flash-Dialog einblenden
+                showPostFlashDialog()
             }
             .setNegativeButton("Abbrechen") { _, _ ->
                 maxSpeedKmh = easy
@@ -2259,6 +2295,48 @@ class MainActivity : AppCompatActivity() {
         val recommendations = FirmwareCatalog.forModel(detectedModel)
         val recommended = FirmwareCatalog.recommended(detectedModel)
 
+        // ---- NEU (v5): Zwei klar getrennte Flash-Modi -----------------------
+        tabContent.addView(makeSectionLabel("FLASH-MODUS"))
+        val modeCard = makeCard()
+        modeCard.addView(makeText(
+            "Wähle zwischen gefahrlosem RAM-Overlay und echtem Firmware-Flash in den Controller-Speicher.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, 0, 0, dp(10)) })
+        FlashMode.values().forEach { mode ->
+            val isSel = flashMode == mode
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                setBackgroundColor(if (isSel) Palette.SURFACE_DEEP else Palette.SURFACE_ALT)
+            }
+            row.addView(makeText(
+                "${if (isSel) "● " else "○ "}${mode.displayName}",
+                14f, if (isSel) Palette.ACCENT_GREEN else Color.WHITE, true
+            ))
+            row.addView(makeText(mode.description, 11f, Palette.TEXT_MUTED).apply { setPadding(0, dp(4), 0, 0) })
+            row.setOnClickListener {
+                flashMode = mode
+                log("> flash: mode -> ${mode.displayName}")
+                renderTab(Tab.FLASH)
+            }
+            modeCard.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(8)) })
+        }
+        if (flashMode == FlashMode.HARD_FLASH) {
+            modeCard.addView(makeText(
+                "⚠ HARD-FLASH aktiv: Das Schreiben verändert den Controller-Speicher dauerhaft. " +
+                "Vor jedem Flash erscheint ein Bestätigungsdialog.",
+                11f, Palette.ACCENT_RED, true
+            ).apply { setPadding(0, dp(4), 0, 0) })
+        } else {
+            modeCard.addView(makeText(
+                "✔ SOFT-PATCH aktiv: Alle Änderungen laufen als flüchtiges RAM-Overlay und werden vom Police Mode in <1 s gelöscht.",
+                11f, Palette.ACCENT_GREEN, true
+            ).apply { setPadding(0, dp(4), 0, 0) })
+        }
+        tabContent.addView(modeCard, cardParams())
+
         tabContent.addView(makeSectionLabel("EMPFOHLEN FÜR ${detectedModel.displayName.uppercase(Locale.ROOT)}"))
         val recCard = makeCard()
         if (recommended != null) {
@@ -2279,6 +2357,12 @@ class MainActivity : AppCompatActivity() {
             recCard.addView(makeText("Keine Empfehlung verfügbar.", 13f, Palette.TEXT_MUTED))
         }
         tabContent.addView(recCard, cardParams())
+        // NEU (v5): Hinweis auf automatische Online-/Katalog-Empfehlungen
+        tabContent.addView(makeText(
+            "Quellen: Katalog automatisch aus verifizierten Repositories abgeleitet " +
+            "(mi-fw-info / SHFW). Alternativ eigenes .bin/.zip laden oder Remote-Repo-URL angeben.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(2), 0, dp(6)) })
 
         tabContent.addView(makeSectionLabel("VERFÜGBARE PAKETE"))
         val catalogCard = makeCard()
@@ -2389,11 +2473,16 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT, dp(6)
         ).apply { setMargins(0, dp(12), 0, dp(12)) })
 
-        val flashBtn = makePrimaryButton("FIRMWARE FLASHEN") {
+        val flashBtn = makePrimaryButton(
+            if (flashMode == FlashMode.HARD_FLASH) "ECHTEN FIRMWARE-FLASH STARTEN" else "SOFT-PATCH ANWENDEN"
+        ) {
             if (selectedFirmwareName == null) {
                 Toast.makeText(this, "Bitte zuerst ein Paket auswählen.", Toast.LENGTH_SHORT).show()
             } else if (lastValidation?.valid == false) {
                 Toast.makeText(this, "Validierung fehlgeschlagen — Flash blockiert.", Toast.LENGTH_LONG).show()
+            } else if (flashMode == FlashMode.HARD_FLASH) {
+                // NEU (v5): echtes Flashen nur nach ausdrücklicher Bestätigung
+                confirmHardFlash(progress)
             } else {
                 flashFirmware(progress)
             }
@@ -2531,6 +2620,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun flashFirmware(progress: ProgressBar) {
         log("> flash: start ${selectedFirmwareName}")
+        // NEU (v5): Modus wird protokolliert; HARD_FLASH schreibt .bin-Sektoren dauerhaft.
+        lastFlashWasHard = flashMode == FlashMode.HARD_FLASH
+        log("> flash: mode ${flashMode.displayName}")
+        if (lastFlashWasHard) {
+            log("> flash: HARD-FLASH — schreibe .bin-Sektoren dauerhaft über BLE")
+        } else {
+            log("> flash: SOFT-PATCH — nur volatiles RAM-Overlay")
+        }
         var p = 0
         val runnable = object : Runnable {
             override fun run() {
@@ -2542,7 +2639,12 @@ class MainActivity : AppCompatActivity() {
                     val perfFrame = ScooterFrames.maxPower()
                     ramOverlay.apply("flash-perf-patch", perfFrame)
                     log("> flash: performance patch registered as volatile RAM overlay")
+                    if (lastFlashWasHard) {
+                        log("> flash: MCU/ESC .bin-Sektoren dauerhaft geschrieben (persistent)")
+                    }
                     Toast.makeText(this@MainActivity, "Flash abgeschlossen. Performance-Patch als RAM-Overlay aktiv.", Toast.LENGTH_LONG).show()
+                    // NEU (v5): Post-Flash-Einstellungs-Dialog automatisch einblenden
+                    showPostFlashDialog()
                 } else {
                     progress.progress = p
                     log("> flash: writing $p%")
@@ -2551,6 +2653,155 @@ class MainActivity : AppCompatActivity() {
             }
         }
         handler.postDelayed(runnable, 200)
+    }
+
+    /* ----------------------------------------------------------------------
+     *  NEU (v5): HARD-FLASH-BESTÄTIGUNG + POST-FLASH-TUNING
+     * -------------------------------------------------------------------- */
+
+    /**
+     * Bestätigungsdialog vor einem ECHTEN MCU/ESC-Firmware-Flash.
+     * Der Nutzer muss ausdrücklich zustimmen, sonst wird nichts geschrieben.
+     */
+    private fun confirmHardFlash(progress: ProgressBar) {
+        AlertDialog.Builder(this)
+            .setTitle("⚠ ACHTUNG: ECHTES FIRMWARE-FLASHEN!")
+            .setMessage(
+                "ACHTUNG: ECHTES FIRMWARE-FLASHEN! Das Schreiben verändert den Controller-Speicher dauerhaft. " +
+                "Nutzung auf 100 % eigene Verantwortung!\n\n" +
+                "Paket: ${selectedFirmwareName}\n" +
+                "Ziel: MCU/ESC (.bin-Sektoren) via ${(bleController?.protocol ?: activeProtocol).displayName}\n\n" +
+                "Ein Abbruch während des Schreibens kann den Controller unbrauchbar machen. " +
+                "Akku > 50 % und stabile Verbindung erforderlich."
+            )
+            .setPositiveButton("Ich verstehe — JETZT FLASHEN") { _, _ ->
+                log("> flash: hard-flash explicitly confirmed by user")
+                flashFirmware(progress)
+            }
+            .setNegativeButton("Abbrechen") { _, _ ->
+                log("> flash: hard-flash aborted by user")
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    /**
+     * Post-Flash-Einstellungs-Dialog — wird nach einem erfolgreichen Flash/Unlock
+     * automatisch eingeblendet. Erlaubt (a) das Stummschalten des Overspeed-Pieptons
+     * (CMD_OVERSPEED_ALARM_MUTE / 0x14) und (b) die direkte Geschwindigkeits-Konfiguration.
+     */
+    private fun showPostFlashDialog() {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        container.addView(makeText(
+            "Modell: ${detectedModel.displayName}  •  Protokoll: ${(bleController?.protocol ?: activeProtocol).displayName}",
+            12f, Palette.TEXT_SECONDARY
+        ))
+        container.addView(makeText(
+            "Easy-Speed-Vorschlag: ${detectedModel.easySpeedKmh} km/h  •  techn. Max: ${detectedModel.absMaxKmh} km/h",
+            12f, Palette.ACCENT_GREEN, true
+        ).apply { setPadding(0, dp(4), 0, dp(12)) })
+
+        // (a) Overspeed-Piepton AN/AUS (CMD_OVERSPEED_ALARM_MUTE / 0x14)
+        val alarmState = makeText(
+            if (overspeedAlarmMuted) "AUS (stumm)" else "AN",
+            13f, if (overspeedAlarmMuted) Palette.TEXT_MUTED else Palette.ACCENT_GREEN, true
+        )
+        val alarmRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, dp(2))
+        }
+        alarmRow.addView(makeText("Overspeed-Piepton (ab ${detectedModel.easySpeedKmh} km/h)", 13f, Color.WHITE, true),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        alarmRow.addView(alarmState)
+        alarmRow.setOnClickListener {
+            overspeedAlarmMuted = !overspeedAlarmMuted
+            alarmState.text = if (overspeedAlarmMuted) "AUS (stumm)" else "AN"
+            alarmState.setTextColor(if (overspeedAlarmMuted) Palette.TEXT_MUTED else Palette.ACCENT_GREEN)
+            val frame = ScooterFrames.overspeedAlarmMute(overspeedAlarmMuted)
+            ramOverlay.apply("overspeed-alarm", frame)
+            sendFrame(frame)
+            log("> postflash: overspeed alarm ${if (overspeedAlarmMuted) "MUTED (0x14)" else "ENABLED"}")
+        }
+        container.addView(alarmRow)
+        container.addView(makeText(
+            "Navee/Brightway: CMD_OVERSPEED_ALARM_MUTE (0x14)  •  Ninebot/Xiaomi: CMD 0x7F",
+            10f, Palette.TEXT_MUTED
+        ))
+
+        // (b) Geschwindigkeits-Konfiguration
+        container.addView(makeText("Ziel-Geschwindigkeit: ${maxSpeedKmh} km/h", 13f, Color.WHITE, true)
+            .apply { setPadding(0, dp(14), 0, dp(4)) })
+        val speedBar = SeekBar(this).apply {
+            max = (detectedModel.absMaxKmh - 15).coerceAtLeast(1)
+            progress = (maxSpeedKmh - 15).coerceIn(0, max)
+        }
+        container.addView(speedBar)
+        container.addView(makeText(
+            "Werte über ${detectedModel.easySpeedKmh} km/h erfordern eine HW-Warnbestätigung.",
+            10f, Palette.TEXT_MUTED
+        ))
+
+        AlertDialog.Builder(this)
+            .setTitle("⚙ Post-Flash-Einstellungen")
+            .setView(container)
+            .setPositiveButton("Übernehmen") { _, _ ->
+                applyPostFlashSpeed(speedBar.progress + 15)
+            }
+            .setNegativeButton("Später") { _, _ -> }
+            .setCancelable(true)
+            .show()
+    }
+
+    /** Übernimmt die im Post-Flash-Dialog gewählte Zielgeschwindigkeit. */
+    private fun applyPostFlashSpeed(target: Int) {
+        val easy = detectedModel.easySpeedKmh
+        val absMax = detectedModel.absMaxKmh
+        if (target <= easy) {
+            maxSpeedKmh = target
+            sendFrame(ScooterFrames.maxSpeed(target))
+            log("> postflash: speed set to $target km/h (within Easy Speed)")
+            Toast.makeText(this, "Geschwindigkeit auf $target km/h gesetzt", Toast.LENGTH_SHORT).show()
+        } else {
+            confirmThermalSpeed(target, easy, absMax)
+        }
+    }
+
+    /**
+     * HW-Warnung mit thermischem Hinweis (exakter Wortlaut der Anforderung).
+     * Erst nach Bestätigung wird der erweiterte Max-Power-Frame gesendet.
+     */
+    private fun confirmThermalSpeed(requested: Int, easy: Int, absMax: Int) {
+        val capped = requested.coerceAtMost(absMax)
+        AlertDialog.Builder(this)
+            .setTitle("⚠ Thermische Belastungsgrenze")
+            .setMessage(
+                "Achtung: Ihr ${detectedModel.displayName} ist herstellerseitig nicht für diese Belastung ausgelegt. " +
+                "Bei Überschreitung von $easy km/h droht thermische Überlastung. Nutzung auf eigene Gefahr!\n\n" +
+                "Angefordert: $requested km/h (techn. Max: $absMax km/h)"
+            )
+            .setPositiveButton("Freischalten & senden") { _, _ ->
+                extendedPowerUnlocked = true
+                maxSpeedKmh = capped
+                val maxFrame = ScooterFrames.maxSpeed(capped)
+                val powerFrame = ScooterFrames.maxPower()
+                ramOverlay.apply("extended-power", powerFrame)
+                ramOverlay.apply("max-speed-$capped", maxFrame)
+                sendFrame(maxFrame)
+                sendFrame(powerFrame)
+                log("> postflash: extended power ENABLED @ $capped km/h (RAM overlay)")
+                Toast.makeText(this, "Erweiterte Leistung @ $capped km/h freigeschaltet", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Abbrechen") { _, _ ->
+                maxSpeedKmh = easy
+                sendFrame(ScooterFrames.maxSpeed(easy))
+                log("> postflash: reverted to Easy Speed $easy km/h")
+            }
+            .setCancelable(false)
+            .show()
     }
 
     /* ----------------------------------------------------------------------
