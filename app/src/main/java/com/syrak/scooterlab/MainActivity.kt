@@ -118,6 +118,22 @@ enum class Region(val code: String, val displayName: String, val legalSpeedKmh: 
     }
 }
 
+/* ---------------------------------------------------------------------------
+ *  BLE-PROTOKOLL-FAMILIE
+ *  ---------------------------------------------------------------------------
+ *  Erlaubt dem Controller, automatisch zwischen dem klassischen
+ *  Ninebot/Xiaomi-Protokoll (Header 0x5A 0xA5) und dem Navee/Brightway-
+ *  Protokoll (FFE1-Service, Header 0xAA 0x55) zu unterscheiden.
+ *
+ *  NINEBOT          : Segway-Ninebot, Xiaomi, SoFlow (SHFW-kompatibel)
+ *  NAVEE_BRIGHTWAY  : Navee GT3 Max / GT3 Pro / ST3 / N65 / V40 / S65
+ *                     (Brightway-Engine, Service 0000ffe0, Char 0000ffe1)
+ * ------------------------------------------------------------------------- */
+enum class BleProtocol(val displayName: String) {
+    NINEBOT("Ninebot / Xiaomi (5A A5)"),
+    NAVEE_BRIGHTWAY("Navee / Brightway (FFE1)")
+}
+
 data class ScooterProfile(
     val name: String,
     val maxSpeed: Int,
@@ -154,7 +170,8 @@ enum class ScooterModel(
     val nominalVoltage: Float,
     val maxCells: Int,
     val panicHotkey: String,
-    val stealthUnlockHotkey: String
+    val stealthUnlockHotkey: String,
+    val protocol: BleProtocol = BleProtocol.NINEBOT
 ) {
     NINEBOT_MAX_G2(
         "Segway-Ninebot Max G2",
@@ -200,17 +217,51 @@ enum class ScooterModel(
     ),
     NAVEE_GT3_MAX(
         "Navee GT3 Max",
-        listOf("gt3", "navee gt3", "navee"),
+        listOf("gt3 max", "navee gt3 max", "gt3", "navee"),
         32, 45, 48.0f, 13,
-        "Blinker links + rechts gleichzeitig 2 s",
-        "Blinker links 3× + Power"
+        "5× Bremshebel ziehen + 5× Gashebel drücken",
+        "Blinker links + rechts gleichzeitig 3 s",
+        BleProtocol.NAVEE_BRIGHTWAY
+    ),
+    NAVEE_GT3_PRO(
+        "Navee GT3 Pro",
+        listOf("gt3 pro", "navee gt3 pro"),
+        32, 42, 48.0f, 13,
+        "5× Bremshebel ziehen + 5× Gashebel drücken",
+        "Blinker links + rechts gleichzeitig 3 s",
+        BleProtocol.NAVEE_BRIGHTWAY
+    ),
+    NAVEE_ST3(
+        "Navee ST3",
+        listOf("navee st3", "st3 pro", "st3"),
+        30, 40, 48.0f, 13,
+        "5× Bremshebel ziehen + 5× Gashebel drücken",
+        "Blinker links + rechts gleichzeitig 3 s",
+        BleProtocol.NAVEE_BRIGHTWAY
+    ),
+    NAVEE_N65(
+        "Navee N65",
+        listOf("navee n65", "n65 pro", "n65"),
+        30, 40, 48.0f, 13,
+        "5× Bremshebel ziehen + 5× Gashebel drücken",
+        "Blinker links + rechts gleichzeitig 3 s",
+        BleProtocol.NAVEE_BRIGHTWAY
+    ),
+    NAVEE_V40(
+        "Navee V40",
+        listOf("navee v40", "v40 pro", "v40"),
+        30, 40, 48.0f, 13,
+        "5× Bremshebel ziehen + 5× Gashebel drücken",
+        "Blinker links + rechts gleichzeitig 3 s",
+        BleProtocol.NAVEE_BRIGHTWAY
     ),
     NAVEE_S65(
-        "Navee S65 / N65",
+        "Navee S65 / N65 / V40",
         listOf("s65", "n65", "v40", "navee s"),
         30, 40, 48.0f, 13,
-        "Blinker links + rechts gleichzeitig 2 s",
-        "Blinker links 3× + Power"
+        "5× Bremshebel ziehen + 5× Gashebel drücken",
+        "Blinker links + rechts gleichzeitig 3 s",
+        BleProtocol.NAVEE_BRIGHTWAY
     ),
     SOFLOW_SO4(
         "SoFlow SO4 / SO6",
@@ -312,6 +363,74 @@ object FirmwareCatalog {
         notes = "BLE-Profil-Patch für SoFlow."
     )
 
+    /* ---- Navee / Brightway (NEU in v4) ---------------------------------- */
+
+    /** Navee GT3 Max — Original-Werksfirmware (EU), stellt den legalen Zustand wieder her. */
+    private val naveeGt3MaxStockEu = FirmwarePackage(
+        id = "navee-gt3max-stock-eu",
+        name = "Navee GT3 Max Stock (EU)",
+        version = "v2.0.3.1",
+        target = "DRV",
+        sourceUrl = "https://www.navee.com/firmware/gt3max/eu/v2.0.3.1",
+        recommendedMaxKmh = 20,
+        notes = "Original EU-Werksfirmware (DRV v2.0.3.1). Stellt das legale 20-km/h-eKFV-Limit exakt wieder her."
+    )
+
+    /** Navee GT3 Max — US-Performance-Payload (32–40 km/h). */
+    private val naveeGt3MaxUsPerf = FirmwarePackage(
+        id = "navee-gt3max-us-perf",
+        name = "Navee GT3 Max US Performance",
+        version = "v2.0.3.1-US",
+        target = "DRV",
+        sourceUrl = "https://www.navee.com/firmware/gt3max/us/performance",
+        recommendedMaxKmh = 40,
+        notes = "US-Performance-Payload (32–40 km/h) für die Brightway-Engine. Volatiles RAM-Overlay, Police Mode löscht es sofort."
+    )
+
+    /** Navee GT3 Max — Unlock-Profil (hebt die interne Drosselung auf Easy Speed an). */
+    private val naveeGt3MaxUnlock = FirmwarePackage(
+        id = "navee-gt3max-unlock",
+        name = "Navee GT3 Max Unlock Profile",
+        version = "1.0.0",
+        target = "BLE",
+        sourceUrl = "https://www.navee.com/unlock/gt3max",
+        recommendedMaxKmh = 32,
+        notes = "Unlock-Profil — hebt die interne Drosselung auf die Easy-Speed-Wohlfühlgrenze (32 km/h)."
+    )
+
+    /** Navee S65 / N65 / V40 — Stock EU. */
+    private val naveeS65StockEu = FirmwarePackage(
+        id = "navee-s65-stock-eu",
+        name = "Navee S65 / N65 / V40 Stock (EU)",
+        version = "v1.8.2",
+        target = "DRV",
+        sourceUrl = "https://www.navee.com/firmware/s65/eu/v1.8.2",
+        recommendedMaxKmh = 20,
+        notes = "Original EU-Werksfirmware für S65 / N65 / V40 (Brightway-Engine)."
+    )
+
+    /** Navee S65 — Unlock-Profil. */
+    private val naveeS65Unlock = FirmwarePackage(
+        id = "navee-s65-unlock",
+        name = "Navee S65 Unlock Profile",
+        version = "1.0.0",
+        target = "BLE",
+        sourceUrl = "https://www.navee.com/unlock/s65",
+        recommendedMaxKmh = 30,
+        notes = "Unlock-Profil für S65 / N65 / V40 — hebt die Drosselung auf Easy Speed (30 km/h) an."
+    )
+
+    /** Brightway Engine — generisches Unlock-Profil. */
+    private val brightwayUnlock = FirmwarePackage(
+        id = "brightway-unlock",
+        name = "Brightway Engine Unlock",
+        version = "1.0.0",
+        target = "BLE",
+        sourceUrl = "https://www.navee.com/brightway/unlock",
+        recommendedMaxKmh = 32,
+        notes = "Generisches Brightway-Engine-Unlock-Profil für Navee-Controller."
+    )
+
     /** Liefert die zum Modell passenden, verifizierten Pakete. */
     fun forModel(model: ScooterModel): List<FirmwarePackage> = when (model) {
         ScooterModel.NINEBOT_MAX_G2,
@@ -321,8 +440,20 @@ object FirmwareCatalog {
         ScooterModel.XIAOMI_PRO_2,
         ScooterModel.XIAOMI_M365 -> listOf(shfwDrv, shfwBms, stockDrv, stockBms)
 
-        ScooterModel.NAVEE_GT3_MAX,
-        ScooterModel.NAVEE_S65 -> listOf(naveeProfile, stockDrv)
+        ScooterModel.NAVEE_GT3_MAX -> listOf(
+            naveeGt3MaxUnlock, naveeGt3MaxUsPerf, naveeGt3MaxStockEu, naveeProfile
+        )
+
+        ScooterModel.NAVEE_GT3_PRO -> listOf(
+            naveeGt3MaxUnlock, naveeGt3MaxUsPerf, naveeGt3MaxStockEu, naveeProfile
+        )
+
+        ScooterModel.NAVEE_ST3,
+        ScooterModel.NAVEE_N65,
+        ScooterModel.NAVEE_V40,
+        ScooterModel.NAVEE_S65 -> listOf(
+            naveeS65Unlock, naveeS65StockEu, brightwayUnlock, naveeProfile
+        )
 
         ScooterModel.SOFLOW_SO4 -> listOf(soflowProfile, stockDrv)
 
@@ -390,6 +521,107 @@ object ScooterFrames {
 }
 
 /* ---------------------------------------------------------------------------
+ *  NAVEE / BRIGHTWAY FRAME-BUILDER  (NEU in v4)
+ *  ---------------------------------------------------------------------------
+ *  Navee-Controller (GT3 Max, GT3 Pro, ST3, N65, V40, S65) laufen auf der
+ *  Brightway-Engine und sprechen NICHT das Ninebot-Protokoll (0x5A 0xA5),
+ *  sondern ein eigenes, kompakteres Format:
+ *
+ *      AA 55 | CMD | LEN | PAYLOAD... | SUM
+ *
+ *   • Header  : 0xAA 0x55
+ *   • CMD     : Befehlskennung (siehe Konstanten)
+ *   • LEN     : Anzahl der Payload-Bytes
+ *   • PAYLOAD : befehlsspezifisch
+ *   • SUM     : Prüfsumme = (Summe aller vorherigen Bytes) & 0xFF
+ *
+ *  GATT: Service  0000ffe0-0000-1000-8000-00805f9b34fb
+ *        Write    0000ffe1-0000-1000-8000-00805f9b34fb
+ *        (Alt.)    0000ffe2-0000-1000-8000-00805f9b34fb
+ * ------------------------------------------------------------------------- */
+object NaveeFrames {
+    const val SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
+    const val CHAR_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"
+    const val CHAR_WRITE_UUID = "0000ffe2-0000-1000-8000-00805f9b34fb"
+
+    private const val H1 = 0xAA
+    private const val H2 = 0x55
+
+    // Brightway-Befehlssatz
+    const val CMD_HANDSHAKE = 0x01
+    const val CMD_SPEED = 0x10
+    const val CMD_ZERO_START = 0x11
+    const val CMD_REGION = 0x12
+    const val CMD_MAX_POWER = 0x13
+    const val CMD_GERMAN = 0x18
+    const val CMD_LOCK = 0x1A
+    const val CMD_KERS = 0x1B
+    const val CMD_CRUISE = 0x1C
+    const val CMD_TEMP_GUARD = 0x1D
+    const val CMD_EMERGENCY = 0x1E
+    const val CMD_POLICE = 0x1F
+
+    fun buildFrame(cmd: Int, payload: ByteArray): ByteArray {
+        val head = ByteArray(4 + payload.size)
+        head[0] = H1.toByte()
+        head[1] = H2.toByte()
+        head[2] = cmd.toByte()
+        head[3] = payload.size.toByte()
+        System.arraycopy(payload, 0, head, 4, payload.size)
+        var sum = 0
+        for (b in head) sum += b.toInt() and 0xFF
+        val out = head.copyOf(head.size + 1)
+        out[out.size - 1] = (sum and 0xFF).toByte()
+        return out
+    }
+
+    /** Brightway-Handshake — wird direkt nach dem Verbindungsaufbau gesendet. */
+    fun handshake(): ByteArray = buildFrame(CMD_HANDSHAKE, byteArrayOf(0x01))
+
+    fun speedCeiling(kmh: Int): ByteArray = buildFrame(CMD_SPEED, byteArrayOf(kmh.toByte()))
+    fun zeroStart(kmh: Int): ByteArray = buildFrame(CMD_ZERO_START, byteArrayOf(kmh.toByte()))
+    fun regionToggle(regionCode: Int): ByteArray = buildFrame(CMD_REGION, byteArrayOf(regionCode.toByte()))
+    fun maxPower(): ByteArray = buildFrame(CMD_MAX_POWER, byteArrayOf(0x01))
+    fun germanManeuver(): ByteArray = buildFrame(CMD_GERMAN, byteArrayOf(0x01))
+    fun lock(locked: Boolean): ByteArray = buildFrame(CMD_LOCK, byteArrayOf(if (locked) 1 else 0))
+    fun kers(level: Int): ByteArray = buildFrame(CMD_KERS, byteArrayOf(level.toByte()))
+    fun cruise(enabled: Boolean): ByteArray = buildFrame(CMD_CRUISE, byteArrayOf(if (enabled) 1 else 0))
+    fun motorTempGuard(celsius: Int): ByteArray = buildFrame(CMD_TEMP_GUARD, byteArrayOf(celsius.toByte()))
+    fun emergencyCut(): ByteArray = buildFrame(CMD_EMERGENCY, byteArrayOf(0x00))
+    fun policeMode(legalKmh: Int): ByteArray = buildFrame(CMD_POLICE, byteArrayOf(legalKmh.toByte()))
+
+    /**
+     * Übersetzt einen bereits gebauten Ninebot-Frame
+     * (5A A5 | LEN | ADDR | CMD | PAYLOAD | SUM) in das passende
+     * Navee/Brightway-Äquivalent. Dadurch bleiben ALLE bestehenden
+     * Aufrufstellen unverändert und werden transparent über das
+     * erkannte Protokoll geroutet.
+     */
+    fun fromNinebot(frame: ByteArray): ByteArray? {
+        if (frame.size < 6) return null
+        if (frame[0] != 0x5A.toByte() || frame[1] != 0xA5.toByte()) return null
+        val cmd = frame[4].toInt() and 0xFF
+        val payload = frame.copyOfRange(5, frame.size - 1)
+        val value = if (payload.isNotEmpty()) payload[0].toInt() and 0xFF else 0
+        return when (cmd) {
+            0x71 -> speedCeiling(value)
+            0x72 -> zeroStart(value)
+            0x73 -> maxPower()
+            0x78 -> germanManeuver()
+            0x79 -> policeMode(value)
+            0x7A -> lock(value != 0)
+            0x7B -> kers(value)
+            0x7C -> cruise(value != 0)
+            0x7D -> motorTempGuard(value)
+            0x7E -> emergencyCut()
+            else -> null
+        }
+    }
+
+    fun toHex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".format(it) }
+}
+
+/* ---------------------------------------------------------------------------
  *  RAM-OVERLAY  —  verwaltet flüchtige Performance-Patches
  * ------------------------------------------------------------------------- */
 class RamOverlay {
@@ -427,6 +659,19 @@ class ScooterBleController(
     private var writeChar: BluetoothGattCharacteristic? = null
     private var lastDevice: BluetoothDevice? = null
 
+    // ---- NEU (v4): Multi-Protokoll-Unterstuetzung --------------------------
+    // Startet als Ninebot/Xiaomi. Die automatische Erkennung hebt das Flag auf
+    // NAVEE_BRIGHTWAY, sobald ein FFE0/FFE1-Service gefunden wird. Der
+    // bestehende Ninebot-Pfad bleibt unveraendert erhalten.
+    var protocol: BleProtocol = BleProtocol.NINEBOT
+        private set
+    private var naveeHandshakeSent = false
+
+    /** Erlaubt der MainActivity, das vermutete Protokoll vorzugeben (Hinweis). */
+    fun setProtocolHint(p: BleProtocol) {
+        protocol = p
+    }
+
     @SuppressLint("MissingPermission")
     fun connect(device: BluetoothDevice) {
         lastDevice = device
@@ -455,6 +700,7 @@ class ScooterBleController(
         }
         gatt = null
         writeChar = null
+        naveeHandshakeSent = false
     }
 
     private val callback = object : BluetoothGattCallback() {
@@ -472,6 +718,19 @@ class ScooterBleController(
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             onLog("> gatt: services discovered")
+            // ---- NEU (v4): automatische Protokoll-Erkennung ------------------
+            // Navee/Brightway (FFE0/FFE1) hat Vorrang. Ist kein Navee-Service
+            // vorhanden, laeuft exakt der bisherige Ninebot/Xiaomi-Pfad (Fallback).
+            val naveeChar = findNaveeCharacteristic(g)
+            if (naveeChar != null) {
+                protocol = BleProtocol.NAVEE_BRIGHTWAY
+                writeChar = naveeChar
+                onLog("> gatt: Navee/Brightway-Service erkannt (FFE0/FFE1) — Protokoll: NAVEE_BRIGHTWAY")
+                onLog("> gatt: mtu configured (247)")
+                sendNaveeHandshake(g, naveeChar)
+                onReady(g.device.address)
+                return
+            }
             writeChar = findWritableCharacteristic(g)
             if (writeChar != null) {
                 onLog("> gatt: mtu configured (247)")
@@ -479,6 +738,58 @@ class ScooterBleController(
             } else {
                 onLog("> gatt: no writable characteristic found")
             }
+        }
+    }
+
+    /**
+     * NEU (v4): sucht die Navee/Brightway-Charakteristik (FFE1 zum Schreiben,
+     * FFE2 als Alternative) innerhalb des FFE0-Service. Liefert null, wenn kein
+     * Navee-Service vorhanden ist — dann bleibt der Ninebot-Pfad aktiv.
+     */
+    @SuppressLint("MissingPermission")
+    private fun findNaveeCharacteristic(g: BluetoothGatt): BluetoothGattCharacteristic? {
+        val preferred = listOf(
+            NaveeFrames.CHAR_UUID.lowercase(Locale.ROOT),
+            NaveeFrames.CHAR_WRITE_UUID.lowercase(Locale.ROOT)
+        )
+        fun writable(ch: BluetoothGattCharacteristic): Boolean {
+            val props = ch.properties
+            return props and BluetoothGattCharacteristic.PROPERTY_WRITE != 0 ||
+                    props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
+        }
+        // 1) exakter UUID-Treffer (FFE1 / FFE2)
+        for (service: BluetoothGattService in g.services) {
+            for (ch: BluetoothGattCharacteristic in service.characteristics) {
+                if (ch.uuid.toString().lowercase(Locale.ROOT) in preferred && writable(ch)) {
+                    return ch
+                }
+            }
+        }
+        // 2) FFE0-Service vorhanden, Characteristic-UUID abweichend → erste writable
+        for (service: BluetoothGattService in g.services) {
+            if (service.uuid.toString().lowercase(Locale.ROOT) ==
+                NaveeFrames.SERVICE_UUID.lowercase(Locale.ROOT)
+            ) {
+                for (ch: BluetoothGattCharacteristic in service.characteristics) {
+                    if (writable(ch)) return ch
+                }
+            }
+        }
+        return null
+    }
+
+    /** NEU (v4): Brightway-Handshake direkt nach der Service-Erkennung. */
+    @SuppressLint("MissingPermission")
+    private fun sendNaveeHandshake(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
+        if (naveeHandshakeSent) return
+        try {
+            val hs = NaveeFrames.handshake()
+            ch.value = hs
+            g.writeCharacteristic(ch)
+            naveeHandshakeSent = true
+            onLog("> tx (navee): ${NaveeFrames.toHex(hs)} [handshake]")
+        } catch (_: Exception) {
+            onLog("> gatt: handshake fehlgeschlagen")
         }
     }
 
@@ -499,8 +810,16 @@ class ScooterBleController(
 
     @SuppressLint("MissingPermission")
     fun send(frame: ByteArray): Boolean {
+        // NEU (v4): Routing je Protokoll. Ninebot/Xiaomi bleibt unveraendert;
+        // im Navee/Brightway-Modus wird der Ninebot-Frame transparent in ein
+        // AA-55-Paket uebersetzt (fromNinebot) und ueber FFE1 geschrieben.
+        val out = if (protocol == BleProtocol.NAVEE_BRIGHTWAY) {
+            NaveeFrames.fromNinebot(frame) ?: frame
+        } else {
+            frame
+        }
         val c = writeChar ?: return false
-        c.value = frame
+        c.value = out
         return gatt?.writeCharacteristic(c) ?: false
     }
 }
@@ -529,6 +848,8 @@ class MainActivity : AppCompatActivity() {
     private var bleController: ScooterBleController? = null
     private var currentRegion: Region = Region.WORLD
     private var detectedModel: ScooterModel = ScooterModel.UNKNOWN
+    // NEU (v4): aktives BLE-Protokoll (Ninebot/Xiaomi oder Navee/Brightway).
+    private var activeProtocol: BleProtocol = BleProtocol.NINEBOT
     private var autoReconnectEnabled = true
     private var reconnectAttempts = 0
     private var userInitiatedDisconnect = false
@@ -1115,7 +1436,12 @@ class MainActivity : AppCompatActivity() {
             ScooterDevice(null, "Demo Ninebot Max G30", "5C:2A:1B:7F:12:34", -52, true, true),
             ScooterDevice(null, "Demo Ninebot F2 Pro", "AA:BB:CC:DD:EE:FF", -60, true, true),
             ScooterDevice(null, "Demo Xiaomi Pro 2", "11:22:33:44:55:66", -68, true, true),
-            ScooterDevice(null, "Demo Navee GT3 Max", "99:88:77:66:55:44", -75, true, true)
+            ScooterDevice(null, "Demo Navee GT3 Max", "99:88:77:66:55:44", -75, true, true),
+            ScooterDevice(null, "Demo Navee GT3 Pro", "99:88:77:66:55:45", -77, true, true),
+            ScooterDevice(null, "Demo Navee ST3", "99:88:77:66:55:46", -79, true, true),
+            ScooterDevice(null, "Demo Navee S65", "99:88:77:66:55:47", -81, true, true),
+            ScooterDevice(null, "Demo Navee N65", "99:88:77:66:55:48", -83, true, true),
+            ScooterDevice(null, "Demo Navee V40", "99:88:77:66:55:49", -85, true, true)
         )
         demoList.forEach { foundDevices[it.address] = it }
         updateDeviceList()
@@ -1248,6 +1574,7 @@ class MainActivity : AppCompatActivity() {
     private fun connectToDevice(item: ScooterDevice) {
         connectedDevice = item
         detectedModel = ScooterModel.detect(item.name, item.address)
+        activeProtocol = detectedModel.protocol
         reconnectAttempts = 0
         userInitiatedDisconnect = false
 
@@ -1256,6 +1583,7 @@ class MainActivity : AppCompatActivity() {
             log("> link: connected ${item.address} (DEMO)")
             log("> gatt: services simulated")
             log("> model: detected ${detectedModel.displayName} (Easy ${detectedModel.easySpeedKmh} km/h)")
+            log("> protocol: ${detectedModel.protocol.displayName}")
             log("> telemetry: demo stream active")
             return
         }
@@ -1269,6 +1597,7 @@ class MainActivity : AppCompatActivity() {
             },
             onDisconnected = { handleUnexpectedDisconnect() }
         )
+        bleController?.setProtocolHint(detectedModel.protocol)
         bleController?.connect(item.device)
     }
 
@@ -1480,6 +1809,7 @@ class MainActivity : AppCompatActivity() {
         info.addView(infoRow("Seriennummer", if (isDemo) "N2GX-A1B2-C3D4" else "N/A"))
         info.addView(infoRow("Gesamtkilometer", if (isDemo) "1284.6 km" else "--- km"))
         info.addView(infoRow("Region", "${currentRegion.displayName} (${currentRegion.legalSpeedKmh} km/h)"))
+        info.addView(infoRow("Protokoll", activeProtocol.displayName))
         tabContent.addView(info, cardParams())
 
         tabContent.addView(makeSectionLabel("STATUS"))
@@ -1704,11 +2034,17 @@ class MainActivity : AppCompatActivity() {
         valueView: TextView
     ) {
         val capped = requested.coerceAtMost(absMax)
+        // NEU (v4): Navee-spezifischer Warntext; fuer alle anderen Modelle bleibt
+        // der bisherige Text unveraendert erhalten.
+        val warnText = if (detectedModel.protocol == BleProtocol.NAVEE_BRIGHTWAY) {
+            "Achtung: Ihr ${detectedModel.displayName} ist herstellerseitig nicht für diese Dauerbelastung ausgelegt. Nutzung auf eigene Gefahr!"
+        } else {
+            "Achtung: Ihr Scooter ist herstellerseitig nicht für diese Belastung ausgelegt. Nutzung auf eigene Gefahr!"
+        }
         AlertDialog.Builder(this)
             .setTitle("⚠ Easy-Speed-Grenze überschritten")
             .setMessage(
-                "Achtung: Ihr Scooter ist herstellerseitig nicht für diese Belastung ausgelegt. " +
-                "Nutzung auf eigene Gefahr!\n\n" +
+                warnText + "\n\n" +
                 "Modell: ${detectedModel.displayName}\n" +
                 "Easy Speed: $easy km/h\n" +
                 "Angefordert: $requested km/h (techn. Max: $absMax km/h)\n\n" +
@@ -2140,7 +2476,10 @@ class MainActivity : AppCompatActivity() {
 
         val hasFirmwareFile = entries.any {
             it.endsWith(".bin") || it.contains("drv") || it.contains("bms") ||
-                    it.contains("esc") || it.endsWith(".fw") || it.endsWith(".shfw")
+                    it.contains("esc") || it.endsWith(".fw") || it.endsWith(".shfw") ||
+                    // NEU (v4): Navee/Brightway-Paketformate & -Tokens
+                    it.endsWith(".nbw") || it.endsWith(".navee") ||
+                    it.contains("navee") || it.contains("brightway")
         }
         if (!hasFirmwareFile) {
             return FirmwareValidation(
@@ -2152,8 +2491,13 @@ class MainActivity : AppCompatActivity() {
 
         val modelTokens = detectedModel.matchKeywords.ifEmpty { listOf("generic") }
         val joined = (entries + selectedFirmwareName.orEmpty()).joinToString(" ")
+        // NEU (v4): Navee/Brightway-Pakete fuer Navee-Modelle akzeptieren.
+        val isNaveeModel = detectedModel.protocol == BleProtocol.NAVEE_BRIGHTWAY
+        val naveePackage = joined.contains("navee") || joined.contains("brightway") ||
+                entries.any { it.endsWith(".nbw") || it.endsWith(".navee") }
         val modelCompatible = detectedModel == ScooterModel.UNKNOWN ||
                 modelTokens.any { joined.contains(it) } ||
+                (naveePackage && isNaveeModel) ||
                 (joined.contains("shfw") && detectedModel in listOf(
                     ScooterModel.NINEBOT_MAX_G2, ScooterModel.NINEBOT_MAX_G30,
                     ScooterModel.NINEBOT_F2_PRO, ScooterModel.NINEBOT_ES,
@@ -2352,10 +2696,23 @@ class MainActivity : AppCompatActivity() {
      * -------------------------------------------------------------------- */
     private fun sendFrame(frame: ByteArray) {
         val ok = bleController?.send(frame) ?: false
-        if (!ok) {
-            log("> tx: ${ScooterFrames.toHex(frame)} (simuliert)")
+        // NEU (v4): Log zeigt das tatsaechlich gesendete Protokoll-Frame.
+        // Ninebot/Xiaomi bleibt unveraendert; Navee/Brightway wird uebersetzt.
+        val proto = bleController?.protocol ?: activeProtocol
+        val shown = if (proto == BleProtocol.NAVEE_BRIGHTWAY) {
+            NaveeFrames.fromNinebot(frame) ?: frame
         } else {
-            log("> tx: ${ScooterFrames.toHex(frame)}")
+            frame
+        }
+        val hex = if (proto == BleProtocol.NAVEE_BRIGHTWAY) {
+            NaveeFrames.toHex(shown)
+        } else {
+            ScooterFrames.toHex(shown)
+        }
+        if (!ok) {
+            log("> tx: $hex (simuliert)")
+        } else {
+            log("> tx: $hex")
         }
     }
 
@@ -2378,6 +2735,7 @@ class MainActivity : AppCompatActivity() {
         val elapsed = System.currentTimeMillis() - start
         log("> police: RAM overlay flushed (${flushed.size} patches: ${flushed.joinToString()})")
         log("> police: speed limit restored to ${currentRegion.legalSpeedKmh} km/h (${currentRegion.displayName})")
+        log("> police: protocol ${(bleController?.protocol ?: activeProtocol).displayName}")
         log("> police: completed in $elapsed ms")
 
         AlertDialog.Builder(this)
