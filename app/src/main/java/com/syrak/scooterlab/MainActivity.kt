@@ -18,6 +18,7 @@ import android.os.CountDownTimer
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -366,7 +367,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.rgb(12, 14, 18))
         }
 
-        // Top Header mit Titel und „Supported Models“-Button oben rechts
         val topHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -383,7 +383,6 @@ class MainActivity : AppCompatActivity() {
         })
         topHeader.addView(titleContainer)
 
-        // Der neue Button oben rechts
         val supportedModelsBtn = Button(this).apply {
             text = "Modelle"
             textSize = 12f
@@ -488,7 +487,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.rgb(12, 14, 18))
         }
 
-        // Top Brand Header bar
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -498,7 +496,6 @@ class MainActivity : AppCompatActivity() {
         topBar.addView(makeText(" SCOOTERLAB", 11f, Color.rgb(200, 50, 50), true))
         content.addView(topBar)
 
-        // Status Banner pill
         val statusBanner = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
@@ -509,7 +506,6 @@ class MainActivity : AppCompatActivity() {
             setMargins(0, 0, 0, dp(12))
         })
 
-        // Connected Device Card
         val deviceCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(16))
@@ -531,7 +527,6 @@ class MainActivity : AppCompatActivity() {
             setMargins(0, 0, 0, dp(12))
         })
 
-        // Live Feed Speedometer Card
         val speedCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -544,7 +539,6 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(4), 0, dp(16))
         })
 
-        // 3 Metrics Bottom Row (Power, Odometer, Range)
         val metricsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 3f
@@ -564,7 +558,6 @@ class MainActivity : AppCompatActivity() {
             setMargins(0, 0, 0, dp(12))
         })
 
-        // Power Section Header
         content.addView(makeText("  POWER", 11f, Color.rgb(220, 60, 60), true).apply {
             setPadding(0, dp(4), 0, dp(6))
         })
@@ -595,7 +588,6 @@ class MainActivity : AppCompatActivity() {
         content.addView(row1)
         content.addView(row2)
 
-        // Thermal & Cells Section Header
         content.addView(makeText("  THERMAL & CELLS", 11f, Color.rgb(220, 60, 60), true).apply {
             setPadding(0, dp(12), 0, dp(6))
         })
@@ -625,14 +617,18 @@ class MainActivity : AppCompatActivity() {
             addView(makeText(l, 12f, Color.rgb(130, 140, 155)))
             addView(makeText(r, 12f, Color.WHITE, true).apply { gravity = Gravity.END })
         }
+
         val c1 = createCellDetailRow("Cell min", "--- V")
-        (c1.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        c1.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+
         val c2 = createCellDetailRow("Cell max", "--- V")
-        (c2.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        c2.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+
         val c3 = createCellDetailRow("Cell delta", "--- mV")
-        (c3.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        c3.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+
         val c4 = createCellDetailRow("Battery temp", "--- °C")
-        (c4.getChildAt(1) as TextView).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        c4.getChildAt(1).layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
         thermalCard.addView(c1)
         thermalCard.addView(c2)
@@ -642,7 +638,6 @@ class MainActivity : AppCompatActivity() {
             setMargins(0, 0, 0, dp(12))
         })
 
-        // Safety Section Header
         content.addView(makeText("  SAFETY", 11f, Color.rgb(220, 60, 60), true).apply {
             setPadding(0, dp(4), 0, dp(6))
         })
@@ -667,7 +662,6 @@ class MainActivity : AppCompatActivity() {
             setMargins(0, 0, 0, dp(12))
         })
 
-        // Tuning Section Header
         content.addView(makeText("  TUNING", 11f, Color.rgb(220, 60, 60), true).apply {
             setPadding(0, dp(4), 0, dp(6))
         })
@@ -716,7 +710,6 @@ class MainActivity : AppCompatActivity() {
             setMargins(0, 0, 0, dp(12))
         })
 
-        // Console Section Header
         content.addView(makeText("  CONSOLE", 11f, Color.rgb(220, 60, 60), true).apply {
             setPadding(0, dp(4), 0, dp(6))
         })
