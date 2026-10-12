@@ -220,32 +220,34 @@ data class LogEntry(val time: String, val category: LogCategory, val text: Strin
  * ------------------------------------------------------------------------- */
 enum class FirmwareSource(
     val displayName: String,
-    val baseUrl: String,
+    // KEINE FAKES: bewusst KEINE erfundenen Download-URLs. Stattdessen ehrliche
+    // Referenz-Texte, damit die UI identisch bleibt, aber nichts vorgetaeuscht wird.
+    val reference: String,
     val description: String
 ) {
     MI_FW_INFO(
         "mi-fw-info (Streamlit)",
-        "https://mi-fw-info.streamlit.app",
+        "Community-Datenbank • Referenz: mi-fw-info (Streamlit-App). Kein offizieller Download-Endpunkt hinterlegt.",
         "Community-Datenbank fuer Navee/Brightway- & Xiaomi-Custom-Patches (DRV/BMS)."
     ),
     SCOOTER_HACKING(
         "ScooterHacking / SHFW",
-        "https://scooterhacking.org",
+        "Community-Projekt • Referenz: ScooterHacking (SHFW). Kein offizieller Download-Endpunkt hinterlegt.",
         "SHFW-Repository fuer Segway-Ninebot & Xiaomi - volle Parameterkontrolle."
     ),
     NAVEE_FLASHER(
         "Navee Flasher Repo",
-        "https://github.com/navee-flasher",
+        "Community-Projekt • Referenz: Navee-Flasher-Repository. Kein offizieller Download-Endpunkt hinterlegt.",
         "Verifizierte MCU/DRV-Binaries fuer GT3 Max, GT3 Pro, ST3, N65, S65, V40."
     ),
     M365_DOWNG(
         "M365 DownG / Ninebot Flasher",
-        "https://github.com/m365-downg",
+        "Community-Projekt • Referenz: M365 DownG / Ninebot Flasher. Kein offizieller Download-Endpunkt hinterlegt.",
         "DownG- & Ninebot-Flasher-Repositories (Ninebot/Xiaomi Stock & Custom)."
     ),
     FACTORY(
         "Hersteller / Werks-OTA",
-        "https://www.segway.com",
+        "Hersteller-Kanal • Referenz: offizielles Werks-OTA (Segway-Ninebot). Kein direkter Download-Endpunkt hinterlegt.",
         "Offizielle Werks-Firmware (legaler Auslieferungszustand)."
     )
 }
@@ -337,43 +339,43 @@ enum class ScooterModel(
  * ------------------------------------------------------------------------- */
 object FirmwareCatalog {
     private val shfwDrv = FirmwarePackage("shfw-drv", "SHFW DRV", "0.3.0", "DRV",
-        "https://github.com/scooterhacking", 32, "ScooterHacking Firmware für Ninebot/Xiaomi — volle Parameterkontrolle.")
+        "Referenz: ScooterHacking-Repository (kein offizieller Endpunkt)", 32, "ScooterHacking Firmware für Ninebot/Xiaomi — volle Parameterkontrolle.")
     private val shfwBms = FirmwarePackage("shfw-bms", "SHFW BMS", "1.5.5", "BMS",
-        "https://github.com/scooterhacking", 0, "BMS-Firmware für Ninebot/Xiaomi — Zellbalance & Schutzparameter.")
+        "Referenz: ScooterHacking-Repository (kein offizieller Endpunkt)", 0, "BMS-Firmware für Ninebot/Xiaomi — Zellbalance & Schutzparameter.")
     private val stockDrv = FirmwarePackage("stock-drv", "Werks-DRV (Stock)", "factory", "DRV",
-        "https://www.segway.com", 20, "Original-Werksfirmware — legaler Auslieferungszustand.")
+        "Referenz: Segway-Ninebot Werks-OTA (kein offizieller Endpunkt)", 20, "Original-Werksfirmware — legaler Auslieferungszustand.")
     private val stockBms = FirmwarePackage("stock-bms", "Werks-BMS (Stock)", "factory", "BMS",
-        "https://www.segway.com", 0, "Original-BMS-Firmware.")
+        "Referenz: Segway-Ninebot Werks-OTA (kein offizieller Endpunkt)", 0, "Original-BMS-Firmware.")
     private val naveeProfile = FirmwarePackage("navee-ble-profile", "Navee BLE Performance Profile", "1.0.0", "BLE",
-        "https://www.navee.com", 32, "BLE-Profil-Patch für Navee.")
+        "Referenz: Navee Werks-Firmware (kein offizieller Endpunkt)", 32, "BLE-Profil-Patch für Navee.")
     private val soflowProfile = FirmwarePackage("soflow-ble-profile", "SoFlow BLE Performance Profile", "1.0.0", "BLE",
-        "https://www.soflow.com", 25, "BLE-Profil-Patch für SoFlow.")
+        "Referenz: SoFlow Werks-Firmware (kein offizieller Endpunkt)", 25, "BLE-Profil-Patch für SoFlow.")
     private val naveeGt3MaxStockEu = FirmwarePackage("navee-gt3max-stock-eu", "Navee GT3 Max Stock (EU)", "v2.0.3.1", "DRV",
-        "https://www.navee.com/firmware/gt3max/eu/v2.0.3.1", 20, "Original EU-Werksfirmware. Stellt das legale 20-km/h-eKFV-Limit wieder her.")
+        "Referenz: Navee GT3 Max EU-Werks-Firmware (kein offizieller Endpunkt)", 20, "Original EU-Werksfirmware. Stellt das legale 20-km/h-eKFV-Limit wieder her.")
     private val naveeGt3MaxUsPerf = FirmwarePackage("navee-gt3max-us-perf", "Navee GT3 Max US Performance", "v2.0.3.1-US", "DRV",
-        "https://www.navee.com/firmware/gt3max/us/performance", 40, "US-Performance-Payload für die Brightway-Engine.")
+        "Referenz: Navee GT3 Max US-Performance (kein offizieller Endpunkt)", 40, "US-Performance-Payload für die Brightway-Engine.")
     private val naveeGt3MaxUnlock = FirmwarePackage("navee-gt3max-unlock", "Navee GT3 Max Unlock Profile", "1.0.0", "BLE",
-        "https://www.navee.com/unlock/gt3max", 32, "Unlock-Profil — hebt die interne Drosselung auf die Easy-Speed-Grenze (32 km/h).")
+        "Referenz: Navee GT3 Max Unlock-Profil (kein offizieller Endpunkt)", 32, "Unlock-Profil — hebt die interne Drosselung auf die Easy-Speed-Grenze (32 km/h).")
     private val naveeS65StockEu = FirmwarePackage("navee-s65-stock-eu", "Navee S65 / N65 / V40 Stock (EU)", "v1.8.2", "DRV",
-        "https://www.navee.com/firmware/s65/eu/v1.8.2", 20, "Original EU-Werksfirmware für S65 / N65 / V40.")
+        "Referenz: Navee S65/N65/V40 EU-Werks-Firmware (kein offizieller Endpunkt)", 20, "Original EU-Werksfirmware für S65 / N65 / V40.")
     private val naveeS65Unlock = FirmwarePackage("navee-s65-unlock", "Navee S65 Unlock Profile", "1.0.0", "BLE",
-        "https://www.navee.com/unlock/s65", 30, "Unlock-Profil für S65 / N65 / V40.")
+        "Referenz: Navee S65 Unlock-Profil (kein offizieller Endpunkt)", 30, "Unlock-Profil für S65 / N65 / V40.")
     private val brightwayUnlock = FirmwarePackage("brightway-unlock", "Brightway Engine Unlock", "1.0.0", "BLE",
-        "https://www.navee.com/brightway/unlock", 32, "Generisches Brightway-Engine-Unlock-Profil.")
+        "Referenz: Brightway Engine Unlock-Profil (kein offizieller Endpunkt)", 32, "Generisches Brightway-Engine-Unlock-Profil.")
 
     // ---- Community-Quellen (Neo-Hacker Pro) --------------------------------
     private val miFwInfoNavee = FirmwarePackage("mi-fw-navee", "mi-fw-info Navee/Brightway Patch", "community", "DRV",
-        "https://mi-fw-info.streamlit.app", 32, "Community-Patch (mi-fw-info) fuer Navee/Brightway.")
+        "Referenz: mi-fw-info (Streamlit) (kein offizieller Endpunkt)", 32, "Community-Patch (mi-fw-info) fuer Navee/Brightway.")
     private val miFwInfoXiaomi = FirmwarePackage("mi-fw-xiaomi", "mi-fw-info Xiaomi Custom", "community", "DRV",
-        "https://mi-fw-info.streamlit.app", 32, "Community-Patch (mi-fw-info) fuer Xiaomi.")
+        "Referenz: mi-fw-info (Streamlit) (kein offizieller Endpunkt)", 32, "Community-Patch (mi-fw-info) fuer Xiaomi.")
     private val shfwRepo = FirmwarePackage("shfw-repo", "SHFW Repository Build", "nightly", "DRV",
-        "https://scooterhacking.org", 32, "SHFW-Build aus dem ScooterHacking-Repository.")
+        "Referenz: ScooterHacking / SHFW (kein offizieller Endpunkt)", 32, "SHFW-Build aus dem ScooterHacking-Repository.")
     private val naveeFlasherGt3 = FirmwarePackage("navee-flasher-gt3", "Navee Flasher GT3 Max/Pro", "verified", "DRV",
-        "https://github.com/navee-flasher", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer GT3 Max/Pro.")
+        "Referenz: Navee-Flasher-Repository (kein offizieller Endpunkt)", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer GT3 Max/Pro.")
     private val naveeFlasherSt3 = FirmwarePackage("navee-flasher-st3", "Navee Flasher ST3/N65/S65/V40", "verified", "DRV",
-        "https://github.com/navee-flasher", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer ST3/N65/S65/V40.")
+        "Referenz: Navee-Flasher-Repository (kein offizieller Endpunkt)", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer ST3/N65/S65/V40.")
     private val m365Downg = FirmwarePackage("m365-downg", "M365 DownG / Ninebot Flasher", "stock", "DRV",
-        "https://github.com/m365-downg", 25, "Stock-/Downgrade-Binary via M365 DownG / Ninebot Flasher.")
+        "Referenz: M365 DownG / Ninebot Flasher (kein offizieller Endpunkt)", 25, "Stock-/Downgrade-Binary via M365 DownG / Ninebot Flasher.")
 
     /** Liefert alle Pakete, die einer Community-Quelle zugeordnet sind. */
     fun fromSource(source: FirmwareSource, model: ScooterModel): List<FirmwarePackage> {
@@ -633,6 +635,8 @@ object TelemetryDecoder {
      * unplausibel, bleibt es null (Tacho zeigt dann '--' statt eines Falschwerts).
      */
     fun decodeNinebot(frame: ByteArray): Telemetry? {
+        // FIX 4: Header-Bytes nur nach Bereichspruefung lesen.
+        if (!hasRange(frame, 0, 2)) return null
         if (frame.size < NB_MIN_LEN) return null
         if (frame[0] != 0x5A.toByte() || frame[1] != 0xA5.toByte()) return null
         val p = NB_PAYLOAD_START
@@ -680,6 +684,8 @@ object TelemetryDecoder {
      * im Frame enthalten sind; nicht empfangene Felder bleiben null.
      */
     fun decodeNavee(frame: ByteArray): Telemetry? {
+        // FIX 4: Header-Bytes nur nach Bereichspruefung lesen.
+        if (!hasRange(frame, 0, 2)) return null
         if (frame.size < NV_MIN_LEN) return null
         if (frame[0] != 0xAA.toByte() || frame[1] != 0x55.toByte()) return null
         val p = NV_PAYLOAD_START
@@ -712,30 +718,39 @@ object TelemetryDecoder {
      * gesamte Array verworfen (verhindert Muell-Grafiken bei falschem Offset).
      */
     private fun decodeCellArray(frame: ByteArray, start: Int, count: Int): List<Float>? {
-        if (start < 0 || count <= 0) return null
-        val end = start + count * 2
-        if (end > frame.size) return null
+        if (count <= 0) return null
+        // FIX 4: Gesamtbereich VOR der Schleife pruefen (start + count*2 Bytes).
+        if (!hasRange(frame, start, count * 2)) return null
         val cells = ArrayList<Float>(count)
         for (i in 0 until count) {
-            val v = u16le(frame, start + i * 2) / 1000f
+            val v = u16leOrNull(frame, start + i * 2)?.div(1000f) ?: return null
             if (v < 1.5f || v > 4.5f) return null
             cells.add(v)
         }
         return cells
     }
 
+    // ---- FIX 4: zentrale, absolute Bereichspruefung -----------------------
+    /**
+     * Liefert true NUR wenn [offset, offset+length) vollstaendig innerhalb von
+     * [data] liegt (und length > 0). Wird vor JEDEM Byte-Zugriff im Decoder
+     * aufgerufen, damit ein zu kurzer Frame NIEMALS einen IndexOutOfBounds
+     * ausloesen kann (z. B. Feld bei Offset 40 in einem 17-Byte-Frame).
+     */
+    private fun hasRange(data: ByteArray, offset: Int, length: Int): Boolean =
+        offset >= 0 && length > 0 && offset + length <= data.size
+
     // ---- absturzsichere Zugriffe (liefern null ausserhalb des Arrays) ------
     private fun u8OrNull(b: ByteArray, i: Int): Int? =
-        if (i >= 0 && i < b.size) (b[i].toInt() and 0xFF) else null
+        if (hasRange(b, i, 1)) (b[i].toInt() and 0xFF) else null
 
     private fun i8OrNull(b: ByteArray, i: Int): Int? =
-        if (i >= 0 && i < b.size) b[i].toInt() else null
-
-    private fun u16le(b: ByteArray, i: Int): Int =
-        (b[i].toInt() and 0xFF) or ((b[i + 1].toInt() and 0xFF) shl 8)
+        if (hasRange(b, i, 1)) b[i].toInt() else null
 
     private fun u16leOrNull(b: ByteArray, i: Int): Int? =
-        if (i >= 0 && i + 1 < b.size) u16le(b, i) else null
+        if (hasRange(b, i, 2))
+            (b[i].toInt() and 0xFF) or ((b[i + 1].toInt() and 0xFF) shl 8)
+        else null
 
     private fun i16leOrNull(b: ByteArray, i: Int): Int? {
         val v = u16leOrNull(b, i) ?: return null
@@ -784,24 +799,29 @@ class BleEngine(
 
         /** Wartezeit auf ein Controller-ACK (Notify), bevor ein Fallback versucht wird. */
         private const val RESPONSE_TIMEOUT_MS = 900L
+
+        /** FIX 7: max. Wartezeit auf das per-Chunk-ACK beim Flash (sonst Abbruch). */
+        private const val FLASH_CHUNK_TIMEOUT_MS = 3000L
     }
 
-    private var gatt: BluetoothGatt? = null
-    private var writeChar: BluetoothGattCharacteristic? = null
-    private var notifyChar: BluetoothGattCharacteristic? = null
-    private var lastDevice: BluetoothDevice? = null
-    private var negotiatedMtu = 23
+    @Volatile private var gatt: BluetoothGatt? = null
+    @Volatile private var writeChar: BluetoothGattCharacteristic? = null
+    @Volatile private var notifyChar: BluetoothGattCharacteristic? = null
+    @Volatile private var lastDevice: BluetoothDevice? = null
+    @Volatile private var negotiatedMtu = 23
+    /** FIX 3: waehrend connectGatt() gesetzt -> ein sofortiger Callback gilt als aktuell. */
+    @Volatile private var connectingDevice: BluetoothDevice? = null
 
-    var protocol: BleProtocol = BleProtocol.NINEBOT
+    @Volatile var protocol: BleProtocol = BleProtocol.NINEBOT
         private set
-    private var naveeHandshakeSent = false
+    @Volatile private var naveeHandshakeSent = false
 
     /** true, sobald der Brightway-Unlock-Handshake quittiert wurde (Scooter entsperrt). */
-    private var naveeUnlocked = false
+    @Volatile private var naveeUnlocked = false
     /** true, sobald Notifications real aktiv sind (CCCD-Write OK) — Voraussetzung fuer ACK-Wait. */
-    private var notifyActive = false
+    @Volatile private var notifyActive = false
     /** Zeitstempel des letzten empfangenen Notify-Frames (fuer ACK-Auswertung). */
-    private var lastRxMillis = 0L
+    @Volatile private var lastRxMillis = 0L
     /** Laufender ACK-Timeout (Fallback-Kette). */
     private var responseTimeout: Runnable? = null
     /** Befehl, auf dessen Controller-ACK gerade gewartet wird. */
@@ -820,15 +840,24 @@ class BleEngine(
 
     private val writeLock = Any()
     private val writeQueue = ArrayDeque<PendingWrite>()
-    private var writeInFlight = false
-    private var currentWrite: PendingWrite? = null
+    @Volatile private var writeInFlight = false
+    @Volatile private var currentWrite: PendingWrite? = null
+
+    /**
+     * FIX 5: Garantiert, dass afterMtu() (Notify-Setup + Unlock-Handshake + onReady)
+     * pro Verbindung GENAU EINMAL laeuft. Wird bei Disconnect/Reconnect ueber
+     * resetConnectionState() zurueckgesetzt. Zugriff immer unter synchronized(writeLock).
+     */
+    @Volatile private var initializationStarted = false
 
     // ---- Flash-Status -----------------------------------------------------
-    private var flashChunks: List<ByteArray> = emptyList()
-    private var flashTotalBytes = 0
-    private var flashWrittenBytes = 0
-    private var flashIndex = 0
-    private var flashActive = false
+    @Volatile private var flashChunks: List<ByteArray> = emptyList()
+    @Volatile private var flashTotalBytes = 0
+    @Volatile private var flashWrittenBytes = 0
+    @Volatile private var flashIndex = 0
+    @Volatile private var flashActive = false
+    /** FIX 7: laufender per-Chunk-ACK-Timeout (verhindert haengenden Flash). */
+    @Volatile private var flashChunkTimeout: Runnable? = null
 
     fun setProtocolHint(p: BleProtocol) { protocol = p }
 
@@ -852,9 +881,19 @@ class BleEngine(
     @SuppressLint("MissingPermission")
     fun connect(device: BluetoothDevice) {
         lastDevice = device
+        resetConnectionState()   // FIX 5: frischer Init-Zustand fuer die neue Verbindung
+        // FIX 3: connectingDevice VOR connectGatt() setzen -> ein evtl. sofort
+        // eintreffender Callback wird als "aktuell" erkannt (keine Race-Condition).
+        synchronized(writeLock) { connectingDevice = device }
         listener.onLog("> link: connectGatt(${device.address})")
-        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-        if (gatt == null) listener.onLog("> link: FEHLER — connectGatt() lieferte null")
+        val newGatt = try {
+            device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: Exception) {
+            listener.onLog("> link: connectGatt() Exception: ${e.message}")
+            null
+        }
+        synchronized(writeLock) { gatt = newGatt; connectingDevice = null }
+        if (newGatt == null) listener.onLog("> link: FEHLER — connectGatt() lieferte null")
     }
 
     @SuppressLint("MissingPermission")
@@ -862,22 +901,96 @@ class BleEngine(
         val d = lastDevice ?: return
         listener.onLog("> link: auto-reconnect ${d.address}")
         try { gatt?.close() } catch (_: Exception) {}
-        gatt = d.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        resetConnectionState()   // FIX 5: neue Verbindung -> Init-Zustand neu
+        // FIX 3: connectingDevice setzen + alte Referenz loesen -> sauberer Reconnect.
+        synchronized(writeLock) { gatt = null; connectingDevice = d }
+        val newGatt = try {
+            d.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: Exception) {
+            listener.onLog("> link: connectGatt() Exception: ${e.message}")
+            null
+        }
+        synchronized(writeLock) { gatt = newGatt; connectingDevice = null }
     }
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
         lastDevice = null
-        try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
-        gatt = null
+        val old = synchronized(writeLock) { val o = gatt; gatt = null; connectingDevice = null; o }
+        try { old?.disconnect(); old?.close() } catch (_: Exception) {}
         writeChar = null
         notifyChar = null
+        resetConnectionState()            // FIX 5: Init-Zustand zuruecksetzen
+        failPendingWrites("disconnect")   // FIX 2: alle wartenden Ops sauber verwerfen
+    }
+
+    /**
+     * FIX 5: Setzt den gesamten Verbindungs-/Initialisierungszustand zurueck.
+     * Wird bei Disconnect und vor jedem Reconnect/Connect aufgerufen, damit
+     * afterMtu() pro Verbindung garantiert nur EINMAL laeuft.
+     */
+    private fun resetConnectionState() {
+        synchronized(writeLock) {
+            initializationStarted = false
+            awaitingAck = null
+        }
+        cancelResponseTimeout()
         naveeHandshakeSent = false
         naveeUnlocked = false
         notifyActive = false
-        awaitingAck = null
+        lastRxMillis = 0L
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  FIX 3: GUARDS GEGEN VERALTETE GATT-CALLBACKS                       */
+    /* ------------------------------------------------------------------ */
+    /**
+     * FIX 3: Liefert true, wenn [g] die aktuell gueltige GATT-Instanz ist.
+     * Verspaetete Callbacks einer alten/abgebrochenen Verbindung werden damit
+     * verworfen, statt den Zustand der neuen Verbindung zu ueberschreiben.
+     */
+    private fun isCurrentGatt(g: BluetoothGatt): Boolean =
+        synchronized(writeLock) {
+            gatt === g || (connectingDevice != null && deviceMatches(g, connectingDevice))
+        }
+
+    /** FIX 3: sicherer Geraete-Vergleich (SecurityException-tolerant). */
+    private fun deviceMatches(g: BluetoothGatt, d: BluetoothDevice?): Boolean {
+        if (d == null) return false
+        return try { g.device == d } catch (_: Exception) { false }
+    }
+
+    /** Schliesst eine veraltete GATT-Instanz sauber und ohne UI-Blockade. */
+    private fun closeStaleGatt(g: BluetoothGatt) {
+        try { g.close() } catch (_: Exception) {}
+    }
+
+    /**
+     * FIX 2: Bricht ALLE wartenden Schreiboperationen ab, ruft deren onResult(false)
+     * und entsperrt die Queue. Wird bei Fehler, Disconnect oder Timeout aufgerufen,
+     * damit die App NIEMALS haengen bleibt. Die in-flight-Operation wird ebenfalls
+     * negativ bescheidt, sofern sie nicht ohnehin schon in der Queue stand.
+     */
+    private fun failPendingWrites(reason: String) {
+        val drained = ArrayList<PendingWrite>()
+        var inFlight: PendingWrite? = null
+        synchronized(writeLock) {
+            drained.addAll(writeQueue)
+            writeQueue.clear()
+            inFlight = currentWrite
+            currentWrite = null
+            writeInFlight = false
+            awaitingAck = null
+        }
         cancelResponseTimeout()
-        synchronized(writeLock) { writeQueue.clear(); writeInFlight = false; currentWrite = null }
+        listener.onLog("> tx: failPendingWrites($reason) — ${drained.size} wartende Op(s) verworfen")
+        for (op in drained) {
+            try { op.onResult?.invoke(false) } catch (_: Exception) {}
+        }
+        val hang = inFlight
+        if (hang != null && drained.none { it === hang }) {
+            try { hang.onResult?.invoke(false) } catch (_: Exception) {}
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -887,6 +1000,8 @@ class BleEngine(
 
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            // FIX 3: verspaeteten Callback einer alten/abgebrochenen Verbindung verwerfen.
+            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     listener.onLog("> link: GATT-Fehler status=$status")
@@ -894,27 +1009,28 @@ class BleEngine(
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         listener.onLog("> link: CONNECTED ${g.device.address} — discoverServices()")
+                        resetConnectionState()   // FIX 5: Init-Zustand pro Verbindung frisch
                         listener.onConnected(g.device.address)
                         g.discoverServices()
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         listener.onLog("> link: DISCONNECTED (status=$status)")
-                        naveeUnlocked = false
-                        notifyActive = false
-                        awaitingAck = null
-                        cancelResponseTimeout()
-                        synchronized(writeLock) { writeQueue.clear(); writeInFlight = false; currentWrite = null }
+                        resetConnectionState()            // FIX 5
+                        failPendingWrites("disconnected") // FIX 2: Queue nie haengen lassen
                         listener.onDisconnected(status != BluetoothGatt.GATT_SUCCESS)
                     }
                 }
             } catch (e: Exception) {
                 listener.onLog("> link: Exception in onConnectionStateChange: ${e.message}")
+                failPendingWrites("onConnectionStateChange exception") // FIX 2
                 listener.onDisconnected(true)
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
+            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     listener.onLog("> gatt: Service-Discovery FEHLGESCHLAGEN status=$status")
@@ -961,6 +1077,8 @@ class BleEngine(
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
+            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
                 negotiatedMtu = if (status == BluetoothGatt.GATT_SUCCESS) mtu else 23
                 listener.onLog("> gatt: MTU = $negotiatedMtu (status=$status) -> Chunk-Payload ${maxWritePayload()} B")
@@ -971,16 +1089,23 @@ class BleEngine(
         }
 
         override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) listener.onRssi(rssi)
+            try {
+                if (status == BluetoothGatt.GATT_SUCCESS) listener.onRssi(rssi)
+            } catch (e: Exception) {
+                listener.onLog("> link: Exception in onReadRemoteRssi: ${e.message}")
+            }
         }
 
         @SuppressLint("MissingPermission")
         override fun onCharacteristicWrite(
             g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int
         ) {
+            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
+            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
                 cancelResponseTimeout()
-                val op = currentWrite
+                val op: PendingWrite?
+                synchronized(writeLock) { op = currentWrite }
                 val success = status == BluetoothGatt.GATT_SUCCESS
                 if (op != null) {
                     when {
@@ -1017,26 +1142,28 @@ class BleEngine(
                             if (success && op.expectResponse && notifyActive &&
                                 lastRxMillis > 0L && op.alternatives.isNotEmpty()
                             ) {
-                                awaitingAck = op
+                                synchronized(writeLock) { awaitingAck = op }
                                 armAckTimeout(op)
                             }
                         }
                     }
                 }
-                currentWrite = null
-                synchronized(writeLock) { writeInFlight = false }
+                synchronized(writeLock) {
+                    currentWrite = null
+                    writeInFlight = false
+                }
                 processNextWrite()
             } catch (e: Exception) {
                 listener.onLog("> tx: Exception in onCharacteristicWrite: ${e.message}")
-                currentWrite = null
-                synchronized(writeLock) { writeInFlight = false }
-                processNextWrite()
+                failPendingWrites("onCharacteristicWrite exception") // FIX 2: nie haengen
             }
         }
 
         override fun onDescriptorWrite(
             g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
         ) {
+            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
+            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
                 if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
                     notifyActive = true
@@ -1057,13 +1184,28 @@ class BleEngine(
         override fun onCharacteristicChanged(
             g: BluetoothGatt, ch: BluetoothGattCharacteristic
         ) {
+            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
+            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
                 lastRxMillis = System.currentTimeMillis()
-                cancelResponseTimeout()
-                awaitingAck = null
                 val v = ch.value
-                if (v != null && v.isNotEmpty()) handleNotification(v)
-                else listener.onLog("> rx: Notify ohne Wert (characteristic.value == null)")
+                if (v == null || v.isEmpty()) {
+                    listener.onLog("> rx: Notify ohne Wert (characteristic.value == null)")
+                    return
+                }
+                // FIX 1: NICHT jede Notification ist ein Kommando-ACK. Nur wenn die
+                // empfangenen Bytes den aktuell erwarteten Befehl wirklich quittieren
+                // (gleiche Kommando-ID + gueltige Pruefsumme), darf der ACK-Timeout
+                // abgebrochen und awaitingAck freigegeben werden. Normale Telemetrie
+                // wird ausschliesslich dekodiert und zaehlt NICHT als Bestaetigung.
+                val pending: PendingWrite?
+                synchronized(writeLock) { pending = awaitingAck }
+                if (pending != null && isControllerAckFor(pending, v)) {
+                    listener.onLog("> tx[${pending.label}]: echtes Controller-ACK empfangen (${hexOf(v)})")
+                    cancelResponseTimeout()
+                    synchronized(writeLock) { awaitingAck = null }
+                }
+                handleNotification(v)
             } catch (e: Exception) {
                 listener.onLog("> rx: Exception in onCharacteristicChanged: ${e.message}")
             }
@@ -1072,43 +1214,63 @@ class BleEngine(
 
     @SuppressLint("MissingPermission")
     private fun afterMtu(g: BluetoothGatt) {
-        // Notifications aktivieren (CCCD 0x2902)
-        val nChar = notifyChar
-        if (nChar != null) {
-            val props = nChar.properties
-            val canNotify = props and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
-            val canIndicate = props and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
-            if (canNotify || canIndicate) {
-                g.setCharacteristicNotification(nChar, true)
-                val cccd = nChar.getDescriptor(CCCD_UUID)
-                if (cccd != null) {
-                    val enable = if (canIndicate && !canNotify)
-                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-                    else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    // ABWAERTSKOMPATIBEL (kein API-33-Symbol):
-                    @Suppress("DEPRECATION")
-                    cccd.value = enable
-                    @Suppress("DEPRECATION")
-                    val ok = g.writeDescriptor(cccd)
-                    listener.onLog("> gatt: Notify aktiviert (CCCD 0x2902) — ok=$ok")
+        try {
+            // FIX 5: afterMtu() darf pro Verbindung GENAU EINMAL laufen. Wird es sowohl
+            // durch ein abgelehntes requestMtu() als auch durch onMtuChanged() aufgerufen,
+            // darf der Notify-/Handshake-/onReady-Block NICHT doppelt feuern.
+            val alreadyStarted = synchronized(writeLock) {
+                if (initializationStarted) {
+                    true
                 } else {
-                    listener.onLog("> gatt: kein CCCD-Descriptor an ${nChar.uuid} — Notify evtl. inaktiv")
+                    initializationStarted = true
+                    false
                 }
-            } else {
-                listener.onLog("> gatt: Char ${nChar.uuid} unterstützt kein Notify/Indicate")
             }
-        }
+            if (alreadyStarted) {
+                listener.onLog("> gatt: afterMtu() bereits ausgefuehrt — ignoriere Doppelaufruf")
+                return
+            }
 
-        // Navee-Unlock-Handshake (echt): Der Scooter gilt erst als entsperrt,
-        // wenn der Handshake quittiert wurde. Vor jedem Tuning-Befehl wird der
-        // Zustand geprueft und bei Bedarf erneut gesendet (siehe enqueueCommand).
-        if (protocol == BleProtocol.NAVEE_BRIGHTWAY && !naveeHandshakeSent) {
-            val hs = NaveeFrames.handshake()
-            naveeHandshakeSent = true
-            enqueueWrite(hs, "navee-unlock") { ok -> if (ok) naveeUnlocked = true }
-        }
+            // Notifications aktivieren (CCCD 0x2902)
+            val nChar = notifyChar
+            if (nChar != null) {
+                val props = nChar.properties
+                val canNotify = props and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
+                val canIndicate = props and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+                if (canNotify || canIndicate) {
+                    g.setCharacteristicNotification(nChar, true)
+                    val cccd = nChar.getDescriptor(CCCD_UUID)
+                    if (cccd != null) {
+                        val enable = if (canIndicate && !canNotify)
+                            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                        else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        // ABWAERTSKOMPATIBEL (kein API-33-Symbol):
+                        @Suppress("DEPRECATION")
+                        cccd.value = enable
+                        @Suppress("DEPRECATION")
+                        val ok = g.writeDescriptor(cccd)
+                        listener.onLog("> gatt: Notify aktiviert (CCCD 0x2902) — ok=$ok")
+                    } else {
+                        listener.onLog("> gatt: kein CCCD-Descriptor an ${nChar.uuid} — Notify evtl. inaktiv")
+                    }
+                } else {
+                    listener.onLog("> gatt: Char ${nChar.uuid} unterstützt kein Notify/Indicate")
+                }
+            }
 
-        listener.onReady(g.device?.address ?: "?", protocol, negotiatedMtu)
+            // Navee-Unlock-Handshake (echt): Der Scooter gilt erst als entsperrt,
+            // wenn der Handshake quittiert wurde. Vor jedem Tuning-Befehl wird der
+            // Zustand geprueft und bei Bedarf erneut gesendet (siehe enqueueCommand).
+            if (protocol == BleProtocol.NAVEE_BRIGHTWAY && !naveeHandshakeSent) {
+                val hs = NaveeFrames.handshake()
+                naveeHandshakeSent = true
+                enqueueWrite(hs, "navee-unlock") { ok -> if (ok) naveeUnlocked = true }
+            }
+
+            listener.onReady(g.device?.address ?: "?", protocol, negotiatedMtu)
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "afterMtu: ${e.message}")
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -1222,12 +1384,13 @@ class BleEngine(
     private fun armAckTimeout(op: PendingWrite) {
         cancelResponseTimeout()
         val r = Runnable {
-            if (awaitingAck === op && op.alternatives.isNotEmpty()) {
+            val stillAwaiting = synchronized(writeLock) { awaitingAck === op }
+            if (stillAwaiting && op.alternatives.isNotEmpty()) {
                 val next = op.alternatives.first()
                 val rest = op.alternatives.drop(1)
                 listener.onLog("> tx[${op.label}]: kein Controller-ACK in ${RESPONSE_TIMEOUT_MS} ms — " +
                         "versuche alternative Kodierung ${hexOf(next)}")
-                awaitingAck = null
+                synchronized(writeLock) { awaitingAck = null }
                 val c = writeChar
                 if (c != null) {
                     synchronized(writeLock) {
@@ -1256,14 +1419,16 @@ class BleEngine(
                 if (writeQueue.isEmpty()) { writeInFlight = false; return }
                 op = writeQueue.removeFirst()
                 writeInFlight = true
+                currentWrite = op
             }
-            currentWrite = op
-            val g = gatt
+            val g = synchronized(writeLock) { gatt }
             if (g == null) {
                 listener.onWriteResult(op.label, op.data, false, "GATT null")
                 op.onResult?.invoke(false)
-                currentWrite = null
-                synchronized(writeLock) { writeInFlight = false }
+                synchronized(writeLock) {
+                    currentWrite = null
+                    writeInFlight = false
+                }
                 processNextWrite()
                 return
             }
@@ -1284,9 +1449,9 @@ class BleEngine(
                     PendingWrite(op.characteristic, op.alternatives.first(), op.label, op.onResult,
                         0, op.alternatives.drop(1), op.expectResponse)
                 else null
-                currentWrite = null
                 synchronized(writeLock) {
                     if (retryOp != null) writeQueue.addFirst(retryOp)
+                    currentWrite = null
                     writeInFlight = false
                 }
                 if (retryOp == null) {
@@ -1296,9 +1461,10 @@ class BleEngine(
                 processNextWrite()
             }
         } catch (e: Exception) {
+            // FIX 2: Bei einer unerwarteten Exception darf die Queue NICHT haengen
+            // bleiben -> alle wartenden Ops verwerfen, onResult(false), entsperren.
             listener.onLog("> tx: Exception in processNextWrite: ${e.message}")
-            currentWrite = null
-            synchronized(writeLock) { writeInFlight = false }
+            failPendingWrites("processNextWrite exception")
         }
     }
 
@@ -1397,7 +1563,10 @@ class BleEngine(
         }
         val chunk = flashChunks[flashIndex]
         val idx = flashIndex
+        // FIX 7: Pflicht-ACK pro Chunk mit Timeout-Schutz (kein haengender Flash).
+        armFlashChunkTimeout(idx)
         enqueueWrite(chunk, "flash-chunk-$idx") { ok ->
+            cancelFlashChunkTimeout()
             if (!ok) {
                 finishFlash(false, "Chunk $idx fehlgeschlagen — Flash abgebrochen.")
                 return@enqueueWrite
@@ -1410,13 +1579,33 @@ class BleEngine(
     }
 
     private fun finishFlash(success: Boolean, message: String) {
+        cancelFlashChunkTimeout()
         flashActive = false
         flashChunks = emptyList()
         listener.onFlashFinished(success, message)
     }
 
+    /** FIX 7: Scharfschaltung des per-Chunk-ACK-Timeouts. */
+    private fun armFlashChunkTimeout(idx: Int) {
+        cancelFlashChunkTimeout()
+        val r = Runnable {
+            if (flashActive && flashIndex == idx) {
+                listener.onLog("> flash: Timeout fuer Chunk $idx (kein ACK in ${FLASH_CHUNK_TIMEOUT_MS} ms) - Flash abgebrochen")
+                finishFlash(false, "Chunk $idx Timeout - Flash abgebrochen.")
+            }
+        }
+        flashChunkTimeout = r
+        Handler(Looper.getMainLooper()).postDelayed(r, FLASH_CHUNK_TIMEOUT_MS)
+    }
+
+    private fun cancelFlashChunkTimeout() {
+        flashChunkTimeout?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
+        flashChunkTimeout = null
+    }
+
     fun abortFlash() {
         if (!flashActive) return
+        cancelFlashChunkTimeout()
         flashActive = false
         synchronized(writeLock) { writeQueue.clear() }
         listener.onFlashFinished(false, "Flash manuell abgebrochen.")
@@ -1425,6 +1614,73 @@ class BleEngine(
     /* ------------------------------------------------------------------ */
     /*  HILFEN                                                             */
     /* ------------------------------------------------------------------ */
+    /**
+     * FIX 1: Prueft, ob [rx] ein ECHTES Controller-ACK fuer die Operation [op] ist.
+     * Ein ACK muss (a) ein strukturell gueltiger Frame des jeweiligen Protokolls sein,
+     * (b) die Pruefsumme bestehen und (c) DIESELBE Kommando-ID tragen wie der
+     * gesendete Befehl. Reine Telemetrie (andere CMD) zaehlt ausdruecklich NICHT.
+     */
+    private fun isControllerAckFor(op: PendingWrite, rx: ByteArray): Boolean {
+        val expectedCmd = commandIdOf(op.data) ?: return false
+        val rxCmd = commandIdOf(rx) ?: return false
+        if (expectedCmd != rxCmd) return false
+        return isStructurallyValidFrame(rx)
+    }
+
+    /**
+     * Liest die Kommando-ID eines Frames protokollabhaengig aus:
+     *   Ninebot  5A A5 | LEN | ADDR | CMD | ...  -> CMD @ Index 4
+     *   Brightway AA 55 | CMD | LEN | ...        -> CMD @ Index 2
+     *   Brightway 55 AA | CMD | LEN | ...        -> CMD @ Index 2
+     */
+    private fun commandIdOf(frame: ByteArray): Int? {
+        if (frame.size < 4) return null
+        val b0 = frame[0].toInt() and 0xFF
+        val b1 = frame[1].toInt() and 0xFF
+        return when {
+            b0 == 0x5A && b1 == 0xA5 -> frame[4].toInt() and 0xFF
+            b0 == 0xAA && b1 == 0x55 -> frame[2].toInt() and 0xFF
+            b0 == 0x55 && b1 == 0xAA -> frame[2].toInt() and 0xFF
+            else -> null
+        }
+    }
+
+    /**
+     * FIX 1: Strukturelle + Pruefsummen-Validierung eines Frames.
+     * Nur ein vollstaendiger, konsistenter Frame kann ein echtes ACK sein.
+     */
+    private fun isStructurallyValidFrame(frame: ByteArray): Boolean {
+        if (frame.size < 5) return false
+        val b0 = frame[0].toInt() and 0xFF
+        val b1 = frame[1].toInt() and 0xFF
+        val sum = frame[frame.size - 1].toInt() and 0xFF
+        return when {
+            b0 == 0x5A && b1 == 0xA5 -> {
+                if (frame.size < 6) return false
+                val len = frame[2].toInt() and 0xFF
+                if (len + 4 != frame.size) return false
+                var s = 0
+                for (i in 2 until frame.size - 1) s += frame[i].toInt() and 0xFF
+                ((0x100 - (s and 0xFF)) and 0xFF) == sum
+            }
+            b0 == 0xAA && b1 == 0x55 -> {
+                val len = frame[3].toInt() and 0xFF
+                if (len + 5 != frame.size) return false
+                var s = 0
+                for (i in 0 until frame.size - 1) s += frame[i].toInt() and 0xFF
+                (s and 0xFF) == sum
+            }
+            b0 == 0x55 && b1 == 0xAA -> {
+                val len = frame[3].toInt() and 0xFF
+                if (len + 5 != frame.size) return false
+                var x = 0
+                for (i in 0 until frame.size - 1) x = x xor (frame[i].toInt() and 0xFF)
+                (x and 0xFF) == sum
+            }
+            else -> false
+        }
+    }
+
     private fun postToMain(block: () -> Unit) =
         Handler(Looper.getMainLooper()).post(block)
 
@@ -1458,6 +1714,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var activeProtocol: BleProtocol = BleProtocol.NINEBOT
     private var autoReconnectEnabled = true
     private var reconnectAttempts = 0
+    // ---- FIX 2: Reconnect-Backoff ---------------------------------------
+    private var reconnectRunnable: Runnable? = null
+    private val RECONNECT_BACKOFF_BASE_MS = 1000L
+    private val RECONNECT_BACKOFF_MAX_MS = 8000L
+    private val RECONNECT_MAX_ATTEMPTS = 3
     private var userInitiatedDisconnect = false
     private var engineReady = false
 
@@ -1483,6 +1744,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var selectedFirmwareName: String? = null
     private var lastValidation: FirmwareValidation? = null
     private var loadedFirmwareBytes: ByteArray? = null
+    /** FIX 7: hartes Limit gegen ZIP-Bomben / uebergrosse Firmware-Dateien. */
+    private val MAX_FIRMWARE_BYTES = 512 * 1024
 
     private var flashMode: FlashMode = FlashMode.SOFT_PATCH
     private var overspeedAlarmMuted = false
@@ -1492,6 +1755,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var logFilter: LogCategory? = null
     private var logContainer: LinearLayout? = null
     private var logScroll: ScrollView? = null
+
+    // ---- FIX 1: UI-/Log-Batching (Main-Handler-Throttle) ----------------
+    private var logRefreshScheduled = false
+    private var lastLogRefresh = 0L
+    private var telemetryApplyScheduled = false
+    private var lastTelemetryApply = 0L
+    private val UI_REFRESH_INTERVAL_MS = 150L
+    private val SLIDER_DEBOUNCE_MS = 300L
 
     // ---- Neo-Hacker Pro: Header-Systemleiste ----------------------------
     private var sysRssiView: TextView? = null
@@ -1533,8 +1804,16 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var dashCellDelta: TextView? = null
     private var dashTempGuardState: TextView? = null
     private var dashFeedState: TextView? = null
-    private var lastTelemetry: Telemetry? = null
+    @Volatile private var lastTelemetry: Telemetry? = null
     private var motorGuardTripped = false
+    // ---- FIX 4: Gesicherte Notaus-Rampe (Fahrersicherheit) --------------
+    private var rampActive = false
+    private var rampTicks = 0
+    private var rampRunnable: Runnable? = null
+    private var rampReason: String? = null
+    private val RAMP_TICK_MS = 400L
+    private val RAMP_MAX_TICKS = 25
+    private val RAMP_CUT_SPEED_KMH = 3f
 
     // Demo-Simulation (NUR isDemo)
     private var telemetryRunnable: Runnable? = null
@@ -1612,6 +1891,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     override fun onDestroy() {
         loadingRunnable?.let { handler.removeCallbacks(it) }
+        cancelReconnectRunnable()
+        endSafeStopRamp()
         activeTimer?.cancel()
         stopTelemetry()
         stopSystemBar()
@@ -1687,14 +1968,34 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         card.addView(header)
         card.addView(makeText(desc, 12f, Palette.TEXT_MUTED).apply { setPadding(0, dp(3), 0, dp(10)) })
         val bar = SeekBar(this).apply { this.max = max - min; progress = initial - min }
+        // FIX 5: Queue-Schutz. Waehrend des Ziehens wird NUR die Anzeige aktualisiert.
+        // Ein Frame wird erst bei onStopTrackingTouch() ODER nach >= SLIDER_DEBOUNCE_MS
+        // gesendet -> kein Flooding der BLE-Write-Queue.
+        var lastCommit = 0L
+        var pendingReal = initial
+        val commitRunnable = Runnable {
+            lastCommit = System.currentTimeMillis()
+            onChange(pendingReal)
+        }
         bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val real = progress + min
+                pendingReal = real
                 valueView.text = valueFormatter(real)
-                onChange(real)
+                if (!fromUser) return
+                val now = System.currentTimeMillis()
+                handler.removeCallbacks(commitRunnable)
+                if (now - lastCommit >= SLIDER_DEBOUNCE_MS) {
+                    commitRunnable.run()
+                } else {
+                    handler.postDelayed(commitRunnable, SLIDER_DEBOUNCE_MS - (now - lastCommit))
+                }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                handler.removeCallbacks(commitRunnable)
+                commitRunnable.run()
+            }
         })
         card.addView(bar, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -2014,30 +2315,34 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     @SuppressLint("SetTextI18n")
     private fun updateDeviceList() {
-        if (!::deviceListContainer.isInitialized) return
-        deviceListContainer.removeAllViews()
-        foundDevices.values.sortedByDescending { it.rssi }.forEach { item ->
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(16), dp(14), dp(16), dp(14))
-                setBackgroundColor(if (item.isScooterCandidate) Color.rgb(25, 40, 32) else Palette.SURFACE_ALT)
-                setOnClickListener {
-                    if (isScanning) {
-                        try { bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback) } catch (_: Exception) {}
-                        isScanning = false
+        try {
+            if (!::deviceListContainer.isInitialized) return
+            deviceListContainer.removeAllViews()
+            foundDevices.values.sortedByDescending { it.rssi }.forEach { item ->
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(16), dp(14), dp(16), dp(14))
+                    setBackgroundColor(if (item.isScooterCandidate) Color.rgb(25, 40, 32) else Palette.SURFACE_ALT)
+                    setOnClickListener {
+                        if (isScanning) {
+                            try { bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback) } catch (_: Exception) {}
+                            isScanning = false
+                        }
+                        connectToDevice(item)
                     }
-                    connectToDevice(item)
                 }
+                card.addView(makeText(item.name, 15f, Color.WHITE, true))
+                card.addView(makeText(
+                    if (item.isDemo) "Demo-Gerät  •  Tippen zum Verbinden"
+                    else "Signal: ${item.rssi} dBm  •  ${item.address} (Tippen zum Verbinden)",
+                    12f, Palette.TEXT_SECONDARY
+                ).apply { setPadding(0, dp(5), 0, 0) })
+                deviceListContainer.addView(card, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(0, 0, 0, dp(10)) })
             }
-            card.addView(makeText(item.name, 15f, Color.WHITE, true))
-            card.addView(makeText(
-                if (item.isDemo) "Demo-Gerät  •  Tippen zum Verbinden"
-                else "Signal: ${item.rssi} dBm  •  ${item.address} (Tippen zum Verbinden)",
-                12f, Palette.TEXT_SECONDARY
-            ).apply { setPadding(0, dp(5), 0, 0) })
-            deviceListContainer.addView(card, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 0, dp(10)) })
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "updateDeviceList: ${e.message}")
         }
     }
 
@@ -2074,19 +2379,26 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         updateSystemBar()
         if (userInitiatedDisconnect) return
         if (!autoReconnectEnabled) { runOnUiThread { showScanScreen() }; return }
-        if (reconnectAttempts < 3) {
+        // FIX 2: Sauberer exponentieller Backoff (1s, 2s, 4s, gedeckelt) mit genau
+        // EINEM geplanten Reconnect-Runnable. Kein Endlos-Loop, keine Doppel-Timer.
+        cancelReconnectRunnable()
+        if (reconnectAttempts < RECONNECT_MAX_ATTEMPTS) {
             reconnectAttempts++
             linkState = "RECONNECT"
-            log("> link: Reconnect-Versuch $reconnectAttempts/3 (UI bleibt bedienbar)")
+            val delayMs = (RECONNECT_BACKOFF_BASE_MS shl (reconnectAttempts - 1))
+                .coerceAtMost(RECONNECT_BACKOFF_MAX_MS)
+            log("> link: Reconnect-Versuch $reconnectAttempts/$RECONNECT_MAX_ATTEMPTS in ${delayMs} ms (UI bleibt bedienbar)")
             updateSystemBar()
-            // Non-blocking: KEIN UI-Freeze, Bedienung bleibt durchgehend möglich.
-            handler.postDelayed({
+            val r = Runnable {
+                reconnectRunnable = null
                 if (!userInitiatedDisconnect && connectedDevice?.device != null) {
                     try { bleEngine?.reconnect() } catch (e: Exception) {
                         log("> link: Reconnect-Exception: ${e.message}")
                     }
                 }
-            }, 1200L * reconnectAttempts)
+            }
+            reconnectRunnable = r
+            handler.postDelayed(r, delayMs)
         } else {
             linkState = "DISCONNECTED"
             log("> link: Auto-Reconnect fehlgeschlagen — zurück zur Suche")
@@ -2098,58 +2410,93 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /* ------------------------------------------------------------------ */
     /*  BleEngine.Listener (läuft teils auf Binder-Threads!)               */
     /* ------------------------------------------------------------------ */
+    private fun cancelReconnectRunnable() {
+        reconnectRunnable?.let { handler.removeCallbacks(it) }
+        reconnectRunnable = null
+    }
+
     override fun onLog(line: String) = log(line)
 
     override fun onRssi(rssi: Int) {
-        lastRssi = rssi
-        runOnUiThread { updateSystemBar() }
+        try {
+            lastRssi = rssi
+            runOnUiThread { updateSystemBar() }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "onRssi: ${e.message}")
+        }
     }
 
     override fun onConnected(address: String) {
-        runOnUiThread { Toast.makeText(this, "Verbunden: $address", Toast.LENGTH_SHORT).show() }
+        try {
+            runOnUiThread { Toast.makeText(this, "Verbunden: $address", Toast.LENGTH_SHORT).show() }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "onConnected: ${e.message}")
+        }
     }
 
     override fun onReady(address: String, protocol: BleProtocol, mtu: Int) {
-        activeProtocol = protocol
-        engineReady = true
-        runOnUiThread {
-            linkState = "READY"
-            log("> gatt: READY — Protokoll ${protocol.displayName}, MTU $mtu")
-            updateSystemBar()
-            if (currentTab == Tab.INFO) renderTab(Tab.INFO)
+        try {
+            activeProtocol = protocol
+            engineReady = true
+            runOnUiThread {
+                linkState = "READY"
+                log("> gatt: READY — Protokoll ${protocol.displayName}, MTU $mtu")
+                updateSystemBar()
+                if (currentTab == Tab.INFO) renderTab(Tab.INFO)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "onReady: ${e.message}")
         }
     }
 
     override fun onDisconnected(unexpected: Boolean) {
-        runOnUiThread { handleUnexpectedDisconnect() }
+        try {
+            runOnUiThread { handleUnexpectedDisconnect() }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "onDisconnected: ${e.message}")
+        }
     }
 
     override fun onTelemetry(t: Telemetry) {
+        // FIX 1: Telemetrie NICHT pro Paket zeichnen. Nur den letzten Wert merken
+        // und ein (max. alle UI_REFRESH_INTERVAL_MS) gebuendeltes UI-Update planen.
         lastTelemetry = t
-        runOnUiThread { applyTelemetryToDashboard(t) }
+        scheduleTelemetryApply()
     }
 
     override fun onWriteResult(label: String, frame: ByteArray, success: Boolean, detail: String) {
-        val hex = hexFor(frame)
-        if (success) log("> tx[$label]: $hex  ✔ ($detail)")
-        else log("> tx[$label]: FEHLER — $detail  (Frame $hex nicht gesendet)")
+        try {
+            val hex = hexFor(frame)
+            if (success) log("> tx[$label]: $hex  ✔ ($detail)")
+            else log("> tx[$label]: FEHLER — $detail  (Frame $hex nicht gesendet)")
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "onWriteResult: ${e.message}")
+        }
     }
 
     override fun onFlashProgress(written: Int, total: Int) {
-        runOnUiThread {
-            val pct = if (total > 0) (written * 100 / total) else 0
-            flashProgressBar?.progress = pct
-            flashStatusView?.text = "Schreibe… $written / $total Bytes ($pct %)"
+        try {
+            runOnUiThread {
+                val pct = if (total > 0) (written * 100 / total) else 0
+                flashProgressBar?.progress = pct
+                flashStatusView?.text = "Schreibe… $written / $total Bytes ($pct %)"
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "onFlashProgress: ${e.message}")
         }
     }
 
     override fun onFlashFinished(success: Boolean, message: String) {
-        runOnUiThread {
-            flashStatusView?.text = (if (success) "✔ " else "✘ ") + message
-            flashStatusView?.setTextColor(if (success) Palette.ACCENT_GREEN else Palette.ACCENT_RED)
-            if (success) flashProgressBar?.progress = 100
-            log("> flash: ${if (success) "OK" else "FEHLER"} — $message")
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        try {
+            runOnUiThread {
+                flashStatusView?.text = (if (success) "✔ " else "✘ ") + message
+                flashStatusView?.setTextColor(if (success) Palette.ACCENT_GREEN else Palette.ACCENT_RED)
+                if (success) flashProgressBar?.progress = 100
+                log("> flash: ${if (success) "OK" else "FEHLER"} — $message")
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "onFlashFinished: ${e.message}")
         }
     }
 
@@ -2493,20 +2840,42 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             12f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(3), 0, dp(10)) })
         val bar = SeekBar(this).apply { max = 65 - 15; progress = maxSpeedKmh - 15 }
+        // FIX 5: Queue-Schutz. Waehrend des Ziehens nur Anzeige; Frame erst bei
+        // onStopTrackingTouch() ODER nach >= SLIDER_DEBOUNCE_MS.
+        var lastCommit = 0L
+        var pendingReal = maxSpeedKmh
+        val commitRunnable = Runnable {
+            lastCommit = System.currentTimeMillis()
+            if (pendingReal <= easy) {
+                maxSpeedKmh = pendingReal
+                sendFrame(ScooterFrames.maxSpeed(pendingReal), "max-speed")
+            }
+        }
         bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val real = progress + 15
+                pendingReal = real
                 valueView.text = "$real km/h"
                 valueView.setTextColor(if (real > easy) Palette.ACCENT_ORANGE else Palette.ACCENT_GREEN)
-                if (fromUser && real <= easy) {
-                    maxSpeedKmh = real
-                    sendFrame(ScooterFrames.maxSpeed(real), "max-speed")
+                if (!fromUser || real > easy) return
+                val now = System.currentTimeMillis()
+                handler.removeCallbacks(commitRunnable)
+                if (now - lastCommit >= SLIDER_DEBOUNCE_MS) {
+                    commitRunnable.run()
+                } else {
+                    handler.postDelayed(commitRunnable, SLIDER_DEBOUNCE_MS - (now - lastCommit))
                 }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                handler.removeCallbacks(commitRunnable)
                 val real = (seekBar?.progress ?: 0) + 15
-                if (real > easy) confirmExtendedPower(real, easy, absMax, bar, valueView)
+                if (real > easy) {
+                    confirmExtendedPower(real, easy, absMax, bar, valueView)
+                } else {
+                    pendingReal = real
+                    commitRunnable.run()
+                }
             }
         })
         card.addView(bar, LinearLayout.LayoutParams(
@@ -2731,71 +3100,75 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun applyTelemetryToDashboard(t: Telemetry) {
-        // ---- Trip-Computer fortschreiben (echte Integration) ----
-        val now = System.currentTimeMillis()
-        if (tripData.startMillis == 0L) { tripData.startMillis = now; tripData.lastMillis = now }
-        val dtSec = if (tripData.lastMillis == 0L) 0.0
-            else (((now - tripData.lastMillis).coerceIn(0L, 5000L)) / 1000.0)
-        tripData.lastMillis = now
-        t.speedKmh?.let { sp ->
-            val v = sp.toDouble()
-            tripData.distanceKm += v * dtSec / 3600.0
-            if (v > tripData.maxSpeedKmh) tripData.maxSpeedKmh = v
-            tripData.speedSum += v; tripData.speedSamples++
-            // Eco-Saver: unter Schwelle sanft drosseln (echter Frame)
-            if (rideMode == RideMode.ECO_SAVER && (t.batteryPercent ?: 100) <= ecoThresholdPercent &&
-                maxSpeedKmh > 15
-            ) {
-                maxSpeedKmh = 15
-                sendFrame(ScooterFrames.maxSpeed(15), "eco-saver")
+        try {
+            // ---- Trip-Computer fortschreiben (echte Integration) ----
+            val now = System.currentTimeMillis()
+            if (tripData.startMillis == 0L) { tripData.startMillis = now; tripData.lastMillis = now }
+            val dtSec = if (tripData.lastMillis == 0L) 0.0
+                else (((now - tripData.lastMillis).coerceIn(0L, 5000L)) / 1000.0)
+            tripData.lastMillis = now
+            t.speedKmh?.let { sp ->
+                val v = sp.toDouble()
+                tripData.distanceKm += v * dtSec / 3600.0
+                if (v > tripData.maxSpeedKmh) tripData.maxSpeedKmh = v
+                tripData.speedSum += v; tripData.speedSamples++
+                // Eco-Saver: unter Schwelle sanft drosseln (echter Frame)
+                if (rideMode == RideMode.ECO_SAVER && (t.batteryPercent ?: 100) <= ecoThresholdPercent &&
+                    maxSpeedKmh > 15
+                ) {
+                    maxSpeedKmh = 15
+                    sendFrame(ScooterFrames.maxSpeed(15), "eco-saver")
+                }
             }
+            if (t.voltageV != null && t.currentA != null)
+                tripData.energyWh += (t.voltageV * t.currentA) * dtSec / 3600.0
+
+            // ---- Dashboard-Kernwerte ----
+            dashSpeed?.text = t.speedKmh?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
+            dashSpeed?.setTextColor(speedColor(t.speedKmh ?: 0f))
+            dashVoltage?.text = t.voltageV?.let { String.format(Locale.US, "%.1f V", it) } ?: "-- V"
+            dashCurrent?.text = t.currentA?.let { String.format(Locale.US, "%.1f A", it) } ?: "-- A"
+            dashBattery?.text = t.batteryPercent?.let { "$it %" } ?: "-- %"
+            dashMotorTemp?.text = t.motorTempC?.let { String.format(Locale.US, "%.0f °C", it) } ?: "-- °C"
+            val power = if (t.voltageV != null && t.currentA != null) t.voltageV * t.currentA else null
+            dashPower?.text = power?.let { String.format(Locale.US, "%.0f W", it) } ?: "-- W"
+
+            // ---- Zellbalance ----
+            if (t.cellMinV != null) dashCellMin?.text = String.format(Locale.US, "%.3f V", t.cellMinV)
+            if (t.cellMaxV != null) dashCellMax?.text = String.format(Locale.US, "%.3f V", t.cellMaxV)
+            if (t.cellMinV != null && t.cellMaxV != null)
+                dashCellDelta?.text = String.format(Locale.US, "%.0f mV", (t.cellMaxV - t.cellMinV) * 1000)
+            renderCellGraph(t.cellVoltages)
+
+            // ---- Battery Health / SoH ----
+            val design = t.designCapacityMah
+            val full = t.fullChargeCapacityMah
+            val soh = if (design != null && full != null && design > 0)
+                full.toDouble() / design.toDouble() * 100.0 else null
+            dashSoh?.text = soh?.let { String.format(Locale.US, "%.1f %%", it) } ?: "--"
+            dashSoh?.setTextColor(when {
+                soh == null -> Palette.TEXT_MUTED
+                soh >= 90.0 -> Palette.ACCENT_GREEN
+                soh >= 75.0 -> Palette.ACCENT_ORANGE
+                else -> Palette.ACCENT_RED
+            })
+            dashCycles?.text = t.cycleCount?.let { "$it" } ?: "--"
+
+            // ---- Trip-Computer ----
+            dashTrip?.text = String.format(Locale.US, "%.2f KM", tripData.distanceKm)
+            dashVmax?.text = String.format(Locale.US, "%.1f km/h", tripData.maxSpeedKmh)
+            dashVavg?.text = String.format(Locale.US, "%.1f km/h", tripData.avgSpeedKmh)
+            dashWh?.text = String.format(Locale.US, "%.1f Wh", tripData.energyWh)
+            t.batteryPercent?.let { p ->
+                dashRange?.text = String.format(Locale.US, "%.1f KM", tripData.distanceKm + p * 0.28)
+            }
+
+            dashFeedState?.text = "LIVE FEED • ${t.source.displayName}"
+            dashFeedState?.setTextColor(Palette.ACCENT_GREEN)
+            t.motorTempC?.let { evaluateMotorGuard(it.toDouble()) }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "applyTelemetryToDashboard: ${e.message}")
         }
-        if (t.voltageV != null && t.currentA != null)
-            tripData.energyWh += (t.voltageV * t.currentA) * dtSec / 3600.0
-
-        // ---- Dashboard-Kernwerte ----
-        dashSpeed?.text = t.speedKmh?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
-        dashSpeed?.setTextColor(speedColor(t.speedKmh ?: 0f))
-        dashVoltage?.text = t.voltageV?.let { String.format(Locale.US, "%.1f V", it) } ?: "-- V"
-        dashCurrent?.text = t.currentA?.let { String.format(Locale.US, "%.1f A", it) } ?: "-- A"
-        dashBattery?.text = t.batteryPercent?.let { "$it %" } ?: "-- %"
-        dashMotorTemp?.text = t.motorTempC?.let { String.format(Locale.US, "%.0f °C", it) } ?: "-- °C"
-        val power = if (t.voltageV != null && t.currentA != null) t.voltageV * t.currentA else null
-        dashPower?.text = power?.let { String.format(Locale.US, "%.0f W", it) } ?: "-- W"
-
-        // ---- Zellbalance ----
-        if (t.cellMinV != null) dashCellMin?.text = String.format(Locale.US, "%.3f V", t.cellMinV)
-        if (t.cellMaxV != null) dashCellMax?.text = String.format(Locale.US, "%.3f V", t.cellMaxV)
-        if (t.cellMinV != null && t.cellMaxV != null)
-            dashCellDelta?.text = String.format(Locale.US, "%.0f mV", (t.cellMaxV - t.cellMinV) * 1000)
-        renderCellGraph(t.cellVoltages)
-
-        // ---- Battery Health / SoH ----
-        val design = t.designCapacityMah
-        val full = t.fullChargeCapacityMah
-        val soh = if (design != null && full != null && design > 0)
-            full.toDouble() / design.toDouble() * 100.0 else null
-        dashSoh?.text = soh?.let { String.format(Locale.US, "%.1f %%", it) } ?: "--"
-        dashSoh?.setTextColor(when {
-            soh == null -> Palette.TEXT_MUTED
-            soh >= 90.0 -> Palette.ACCENT_GREEN
-            soh >= 75.0 -> Palette.ACCENT_ORANGE
-            else -> Palette.ACCENT_RED
-        })
-        dashCycles?.text = t.cycleCount?.let { "$it" } ?: "--"
-
-        // ---- Trip-Computer ----
-        dashTrip?.text = String.format(Locale.US, "%.2f KM", tripData.distanceKm)
-        dashVmax?.text = String.format(Locale.US, "%.1f km/h", tripData.maxSpeedKmh)
-        dashVavg?.text = String.format(Locale.US, "%.1f km/h", tripData.avgSpeedKmh)
-        dashWh?.text = String.format(Locale.US, "%.1f Wh", tripData.energyWh)
-        t.batteryPercent?.let { p ->
-            dashRange?.text = String.format(Locale.US, "%.1f KM", tripData.distanceKm + p * 0.28)
-        }
-
-        dashFeedState?.text = "LIVE FEED • ${t.source.displayName}"
-        dashFeedState?.setTextColor(Palette.ACCENT_GREEN)
-        t.motorTempC?.let { evaluateMotorGuard(it.toDouble()) }
     }
 
     /** Geschwindigkeits-Farbverlauf: Grün → Gelb → Orange → Rot. */
@@ -2808,28 +3181,32 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     /** Zeichnet die Zellspannungen als Balkengrafik (mV). */
     private fun renderCellGraph(cells: List<Float>?) {
-        val row = cellGraphRow ?: return
-        row.removeAllViews()
-        if (cells == null || cells.isEmpty()) {
-            row.addView(makeText("Zellwerte: keine Daten (BMS sendet kein Zell-Array)", 10f, Palette.TEXT_MUTED))
-            return
-        }
-        val min = cells.minOrNull() ?: return
-        val max = cells.maxOrNull() ?: return
-        val span = (max - min).coerceAtLeast(0.001f)
-        cells.forEach { v ->
-            val h = dp(20) + (((v - min) / span) * dp(60)).toInt()
-            val bar = View(this).apply {
-                layoutParams = LinearLayout.LayoutParams(0, h, 1f).apply { setMargins(dp(1), 0, dp(1), 0) }
-                background = GradientDrawable().apply {
-                    setColor(
-                        if (v <= min + span * 0.15f) Palette.ACCENT_RED
-                        else if (v >= max - span * 0.15f) Palette.ACCENT_GREEN
-                        else Palette.ACCENT_CYAN
-                    )
-                }
+        try {
+            val row = cellGraphRow ?: return
+            row.removeAllViews()
+            if (cells == null || cells.isEmpty()) {
+                row.addView(makeText("Zellwerte: keine Daten (BMS sendet kein Zell-Array)", 10f, Palette.TEXT_MUTED))
+                return
             }
-            row.addView(bar)
+            val min = cells.minOrNull() ?: return
+            val max = cells.maxOrNull() ?: return
+            val span = (max - min).coerceAtLeast(0.001f)
+            cells.forEach { v ->
+                val h = dp(20) + (((v - min) / span) * dp(60)).toInt()
+                val bar = View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, h, 1f).apply { setMargins(dp(1), 0, dp(1), 0) }
+                    background = GradientDrawable().apply {
+                        setColor(
+                            if (v <= min + span * 0.15f) Palette.ACCENT_RED
+                            else if (v >= max - span * 0.15f) Palette.ACCENT_GREEN
+                            else Palette.ACCENT_CYAN
+                        )
+                    }
+                }
+                row.addView(bar)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "renderCellGraph: ${e.message}")
         }
     }
 
@@ -2935,14 +3312,68 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         if (!motorTempGuardEnabled) return
         if (tempC >= motorTempGuardC && !motorGuardTripped) {
             motorGuardTripped = true
-            sendFrame(ScooterFrames.emergencyCut(), "emergency-cut")
+            // FIX 4: KEIN harter Notaus. Faultolerante Power-Rampe: sanft drosseln,
+            // echter Cut erst bei verifizierter Stillstandnaehe (speedKmh < 3 km/h).
+            beginSafeStopRamp("motor-temp-guard", 8)
             dashTempGuardState?.text = "🛑 Motorschutz AUSGELÖST (${String.format(Locale.US, "%.0f", tempC)} °C)"
             dashTempGuardState?.setTextColor(Palette.ACCENT_RED)
         } else if (tempC < motorTempGuardC - 5 && motorGuardTripped) {
             motorGuardTripped = false
+            endSafeStopRamp()
             dashTempGuardState?.text = "🛡 Motorschutz aktiv (Schwelle $motorTempGuardC °C)"
             dashTempGuardState?.setTextColor(Palette.ACCENT_GREEN)
         }
+    }
+
+    /**
+     * FIX 4: Gesicherte Notaus-Rampe. Statt eines harten emergencyCut() wird die
+     * Leistung in festen Ticks schrittweise auf das legale Limit reduziert. Ein
+     * echter "cut" (Notaus) wird erst gesendet, wenn die Telemetrie einen
+     * verifizierten Stillstand (speedKmh < RAMP_CUT_SPEED_KMH) meldet. Kann die
+     * Geschwindigkeit nicht verifiziert werden, wird weiter sanft gedrosselt und
+     * NIE blind hart abgeschaltet (Fahrersicherheit).
+     */
+    private fun beginSafeStopRamp(reason: String, legalKmh: Int) {
+        if (rampActive && rampReason == reason) return
+        endSafeStopRamp()
+        rampActive = true
+        rampReason = reason
+        rampTicks = 0
+        val target = legalKmh.coerceAtLeast(0)
+        log("> safety: Power-Rampe gestartet ($reason) -> Ziel ${target} km/h, kein harter Cut")
+        val r = object : Runnable {
+            override fun run() {
+                if (!rampActive) return
+                rampTicks++
+                val speed = lastTelemetry?.speedKmh
+                val verifiedStopped = speed != null && speed < RAMP_CUT_SPEED_KMH
+                if (verifiedStopped) {
+                    // Verifizierter Stillstand -> jetzt ist ein echter Cut sicher.
+                    sendFrame(ScooterFrames.emergencyCut(), "$reason-cut")
+                    log("> safety: Stillstand verifiziert (${String.format(Locale.US, "%.1f", speed)} km/h) -> Notaus gesendet")
+                    endSafeStopRamp()
+                    return
+                }
+                // Sonst: sanft weiter drosseln (nie hart abschalten).
+                sendFrame(ScooterFrames.maxSpeed(target), "$reason-ramp")
+                if (rampTicks >= RAMP_MAX_TICKS) {
+                    log("> safety: Rampe beendet nach $RAMP_MAX_TICKS Ticks -> Drosselung aktiv, kein Cut (Geschwindigkeit nicht verifiziert)")
+                    endSafeStopRamp()
+                    return
+                }
+                handler.postDelayed(this, RAMP_TICK_MS)
+            }
+        }
+        rampRunnable = r
+        handler.postDelayed(r, RAMP_TICK_MS)
+    }
+
+    private fun endSafeStopRamp() {
+        rampRunnable?.let { handler.removeCallbacks(it) }
+        rampRunnable = null
+        rampActive = false
+        rampReason = null
+        rampTicks = 0
     }
 
     private fun stopTelemetry() {
@@ -2984,7 +3415,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val srcScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         srcScroll.addView(srcRow)
         srcCard.addView(srcScroll)
-        srcCard.addView(makeText("${selectedSource.description}\n${selectedSource.baseUrl}",
+        srcCard.addView(makeText("${selectedSource.description}\n${selectedSource.reference}",
             11f, Palette.ACCENT_CYAN).apply { setPadding(0, dp(10), 0, 0) })
         tabContent.addView(srcCard, cardParams())
 
@@ -3187,13 +3618,37 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      *  • SHA-256-Fingerprint
      * Liefert zusätzlich die extrahierten Firmware-Bytes für den Flash.
      */
+    /**
+     * FIX 7: ZIP-Bomb-Schutz. Liest hoechstens [cap] Bytes aus [input]. Wird das
+     * Limit ueberschritten, wird SOFORT abgebrochen (Rueckgabe null) -> niemals
+     * ein unbegrenzter Speicherverbrauch durch praeparierte Archive.
+     */
+    private fun readCappedStream(input: java.io.InputStream, cap: Int): ByteArray? {
+        val buf = ByteArray(8192)
+        val out = java.io.ByteArrayOutputStream()
+        var total = 0
+        try {
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > cap) return null
+                out.write(buf, 0, n)
+            }
+        } catch (e: Exception) {
+            return null
+        }
+        return out.toByteArray()
+    }
+
     private fun validateFirmware(uri: Uri): FirmwareValidation {
-        val bytes: ByteArray = try {
-            contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return FirmwareValidation(false, "Datei nicht lesbar.", "", false, false, null)
+        val bytes: ByteArray? = try {
+            contentResolver.openInputStream(uri)?.use { readCappedStream(it, MAX_FIRMWARE_BYTES) }
         } catch (e: Exception) {
             return FirmwareValidation(false, "Lesefehler: ${e.message}", "", false, false, null)
         }
+        if (bytes == null) return FirmwareValidation(false,
+            "Datei nicht lesbar oder zu gross (Limit ${MAX_FIRMWARE_BYTES / 1024} KB).", "", false, false, null)
         if (bytes.isEmpty()) return FirmwareValidation(false, "Datei ist leer.", "", false, false, null)
 
         val sha = sha256(bytes)
@@ -3228,7 +3683,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                             lname.contains("drv") || lname.contains("esc") || lname.contains("bms")
                             )
                     ) {
-                        firmwareEntry = zis.readBytes()
+                        val read = readCappedStream(zis, MAX_FIRMWARE_BYTES)
+                        if (read == null) {
+                            return FirmwareValidation(false,
+                                "Firmware-Eintrag zu gross (Limit ${MAX_FIRMWARE_BYTES / 1024} KB).",
+                                sha, true, false, null)
+                        }
+                        firmwareEntry = read
                         firmwareName = lname
                     }
                     entry = zis.nextEntry
@@ -3260,8 +3721,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
         return FirmwareValidation(
             true,
-            "Integrität OK — Firmware '${firmwareName}' (${firmwareEntry.size} Bytes) extrahiert.",
-            sha, true, true, firmwareEntry
+            "Integrität OK — Firmware '${firmwareName}' (${firmwareEntry!!.size} Bytes) extrahiert.",
+            sha, true, true, firmwareEntry!!
         )
     }
 
@@ -3452,6 +3913,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private fun disconnectAndReturn() {
         userInitiatedDisconnect = true
+        cancelReconnectRunnable()
+        endSafeStopRamp()
         bleEngine?.disconnect()
         bleEngine = null
         connectedDevice = null
@@ -3511,7 +3974,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         // Echte Drossel-Frames
         sendFrame(ScooterFrames.policeMode(currentRegion.legalSpeedKmh), "police-mode")
         sendFrame(ScooterFrames.maxSpeed(currentRegion.legalSpeedKmh), "police-speed")
-        sendFrame(ScooterFrames.emergencyCut(), "police-cut")
+        // FIX 4: KEIN harter Notaus. Stattdessen faultolerante Power-Rampe:
+        // erst auf das legale Limit drosseln, echter Cut erst bei verifizierter
+        // Stillstandnaehe (speedKmh < 3 km/h).
+        beginSafeStopRamp("police-mode", currentRegion.legalSpeedKmh)
 
         // Ursprungs-Bytes wiederherstellen, falls Snapshot vorhanden
         registerSnapshot?.let { snap ->
@@ -3626,28 +4092,32 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun updateSystemBar() {
-        val engine = bleEngine
-        sysRssiView?.text = if (lastRssi == Int.MIN_VALUE) "RSSI --" else "RSSI $lastRssi dBm"
-        sysRssiView?.setTextColor(when {
-            lastRssi == Int.MIN_VALUE -> Palette.TEXT_MUTED
-            lastRssi >= -67 -> Palette.ACCENT_GREEN
-            lastRssi >= -80 -> Palette.ACCENT_ORANGE
-            else -> Palette.ACCENT_RED
-        })
-        sysMtuView?.text = "MTU ${engine?.currentMtu() ?: 23}"
-        val depth = engine?.queueDepth() ?: 0
-        val inFlight = engine?.isWriteInFlight() == true
-        sysQueueView?.text = "QUEUE $depth/${if (inFlight) 1 else 0}"
-        sysQueueView?.setTextColor(if (depth > 4) Palette.ACCENT_ORANGE else Palette.ACCENT_CYAN)
-        sysLinkView?.text = "LINK $linkState"
-        sysLinkView?.setTextColor(when (linkState) {
-            "READY" -> Palette.ACCENT_GREEN
-            "RECONNECT" -> Palette.ACCENT_ORANGE
-            "CONNECTING" -> Palette.ACCENT_CYAN
-            "DISCONNECTED" -> Palette.ACCENT_RED
-            "DEMO" -> Palette.ACCENT_BLUE
-            else -> Palette.TEXT_MUTED
-        })
+        try {
+            val engine = bleEngine
+            sysRssiView?.text = if (lastRssi == Int.MIN_VALUE) "RSSI --" else "RSSI $lastRssi dBm"
+            sysRssiView?.setTextColor(when {
+                lastRssi == Int.MIN_VALUE -> Palette.TEXT_MUTED
+                lastRssi >= -67 -> Palette.ACCENT_GREEN
+                lastRssi >= -80 -> Palette.ACCENT_ORANGE
+                else -> Palette.ACCENT_RED
+            })
+            sysMtuView?.text = "MTU ${engine?.currentMtu() ?: 23}"
+            val depth = engine?.queueDepth() ?: 0
+            val inFlight = engine?.isWriteInFlight() == true
+            sysQueueView?.text = "QUEUE $depth/${if (inFlight) 1 else 0}"
+            sysQueueView?.setTextColor(if (depth > 4) Palette.ACCENT_ORANGE else Palette.ACCENT_CYAN)
+            sysLinkView?.text = "LINK $linkState"
+            sysLinkView?.setTextColor(when (linkState) {
+                "READY" -> Palette.ACCENT_GREEN
+                "RECONNECT" -> Palette.ACCENT_ORANGE
+                "CONNECTING" -> Palette.ACCENT_CYAN
+                "DISCONNECTED" -> Palette.ACCENT_RED
+                "DEMO" -> Palette.ACCENT_BLUE
+                else -> Palette.TEXT_MUTED
+            })
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "updateSystemBar: ${e.message}")
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -3676,37 +4146,107 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun appendLogEntry(line: String) {
-        val entry = LogEntry(
-            SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()),
-            classifyLog(line),
-            line
-        )
-        logEntries.addLast(entry)
-        while (logEntries.size > 500) logEntries.removeFirst()
-        refreshLogView()
+        // FIX 1: Nur den Datensatz anhaengen (O(1)); das (teure) Neu-Zeichnen des
+        // Terminals wird gebuendelt (max. alle UI_REFRESH_INTERVAL_MS) geplant.
+        try {
+            val entry = LogEntry(
+                SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()),
+                classifyLog(line),
+                line
+            )
+            logEntries.addLast(entry)
+            while (logEntries.size > 500) logEntries.removeFirst()
+            scheduleLogRefresh()
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "appendLogEntry: ${e.message}")
+        }
+    }
+
+    /**
+     * FIX 1: Plant ein gebuendeltes Log-Refresh. Mehrere eingehende Zeilen innerhalb
+     * des Intervalls loesen NUR EIN Neu-Zeichnen aus -> kein UI-Freeze bei Notify-Fluten.
+     */
+    private fun scheduleLogRefresh() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { scheduleLogRefresh() }
+            return
+        }
+        if (logRefreshScheduled) return
+        val now = System.currentTimeMillis()
+        val elapsed = now - lastLogRefresh
+        if (elapsed >= UI_REFRESH_INTERVAL_MS) {
+            lastLogRefresh = now
+            refreshLogView()
+            return
+        }
+        logRefreshScheduled = true
+        handler.postDelayed({
+            logRefreshScheduled = false
+            lastLogRefresh = System.currentTimeMillis()
+            refreshLogView()
+        }, UI_REFRESH_INTERVAL_MS - elapsed)
+    }
+
+    /**
+     * FIX 1: Plant ein gebuendeltes Telemetrie-Update auf dem Main-Thread. Der jeweils
+     * zuletzt empfangene Wert wird gezeichnet -> maximale Fluessigkeit, minimale Last.
+     */
+    private fun scheduleTelemetryApply() {
+        // onTelemetry() kommt vom BLE-Binder-Thread -> UI-Arbeit IMMER auf Main.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { scheduleTelemetryApply() }
+            return
+        }
+        if (telemetryApplyScheduled) return
+        val now = System.currentTimeMillis()
+        val elapsed = now - lastTelemetryApply
+        if (elapsed >= UI_REFRESH_INTERVAL_MS) {
+            lastTelemetryApply = now
+            applyLatestTelemetry()
+            return
+        }
+        telemetryApplyScheduled = true
+        handler.postDelayed({
+            telemetryApplyScheduled = false
+            lastTelemetryApply = System.currentTimeMillis()
+            applyLatestTelemetry()
+        }, UI_REFRESH_INTERVAL_MS - elapsed)
+    }
+
+    private fun applyLatestTelemetry() {
+        val t = lastTelemetry ?: return
+        try {
+            applyTelemetryToDashboard(t)
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "applyLatestTelemetry: ${e.message}")
+        }
     }
 
     private fun refreshLogView() {
-        val container = logContainer ?: return
-        container.removeAllViews()
-        val filter = logFilter
-        val shown = logEntries.filter { filter == null || it.category == filter }
-        if (shown.isEmpty()) {
-            container.addView(makeText("Keine Einträge.", 11f, Palette.TEXT_MUTED))
-        }
-        for (e in shown) {
-            val color = when (e.category) {
-                LogCategory.TX -> Palette.ACCENT_BLUE
-                LogCategory.RX -> Palette.ACCENT_CYAN
-                LogCategory.FLASH -> Palette.ACCENT_ORANGE
-                LogCategory.ERROR -> Palette.ACCENT_RED
-                LogCategory.INFO -> Palette.TEXT_SECONDARY
+        try {
+            val container = logContainer ?: return
+            container.removeAllViews()
+            val filter = logFilter
+            val shown = logEntries.filter { filter == null || it.category == filter }
+            if (shown.isEmpty()) {
+                container.addView(makeText("Keine Einträge.", 11f, Palette.TEXT_MUTED))
             }
-            container.addView(makeText("${e.time} [${e.category.label}] ${e.text}", 10f, color).apply {
-                setTypeface(Typeface.MONOSPACE); setPadding(0, dp(2), 0, dp(2))
-            })
+            for (e in shown) {
+                val color = when (e.category) {
+                    LogCategory.TX -> Palette.ACCENT_BLUE
+                    LogCategory.RX -> Palette.ACCENT_CYAN
+                    LogCategory.FLASH -> Palette.ACCENT_ORANGE
+                    LogCategory.ERROR -> Palette.ACCENT_RED
+                    LogCategory.INFO -> Palette.TEXT_SECONDARY
+                }
+                container.addView(makeText("${e.time} [${e.category.label}] ${e.text}", 10f, color).apply {
+                    setTypeface(Typeface.MONOSPACE); setPadding(0, dp(2), 0, dp(2))
+                })
+            }
+            logScroll?.post { logScroll?.fullScroll(View.FOCUS_DOWN) }
+        } catch (e: Exception) {
+            android.util.Log.e("SyrakScooterLab", "refreshLogView: ${e.message}")
         }
-        logScroll?.post { logScroll?.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun copyLogToClipboard() {
