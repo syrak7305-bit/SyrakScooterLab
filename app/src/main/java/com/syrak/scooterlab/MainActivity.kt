@@ -16,6 +16,9 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -32,6 +35,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -42,7 +46,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.io.File
+import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.UUID
@@ -93,6 +101,9 @@ object Palette {
     val ACCENT_GREEN = Color.rgb(0, 210, 130)
     val ACCENT_BLUE = Color.rgb(45, 130, 255)
     val ACCENT_ORANGE = Color.rgb(255, 165, 0)
+    val ACCENT_YELLOW = Color.rgb(255, 214, 10)
+    val ACCENT_CYAN = Color.rgb(0, 200, 220)
+    val GRID_LINE = Color.rgb(45, 55, 70)
     val TEXT_PRIMARY = Color.WHITE
     val TEXT_SECONDARY = Color.rgb(145, 155, 170)
     val TEXT_MUTED = Color.rgb(125, 135, 150)
@@ -174,6 +185,13 @@ data class Telemetry(
     val motorTempC: Float? = null,
     val cellMinV: Float? = null,
     val cellMaxV: Float? = null,
+    /** Alle Zellgruppen-Spannungen (V) aus dem BMS-Block, sofern gesendet. */
+    val cellVoltages: List<Float>? = null,
+    /** BMS-Design-Kapazität (mAh) + aktuelle Vollkapazität (mAh) -> SoH. */
+    val designCapacityMah: Int? = null,
+    val fullChargeCapacityMah: Int? = null,
+    val cycleCount: Int? = null,
+    val bmsTempC: Float? = null,
     val rawHex: String = "",
     val source: BleProtocol = BleProtocol.NINEBOT
 )
@@ -187,6 +205,71 @@ data class RegisterSnapshot(
     val locked: Boolean? = null,
     val rawReadback: List<ByteArray> = emptyList()
 )
+
+/* ---------------------------------------------------------------------------
+ *  LOG-TERMINAL (Neo-Hacker Pro)
+ * ------------------------------------------------------------------------- */
+enum class LogCategory(val label: String) {
+    INFO("INFO"), TX("TX"), RX("RX"), FLASH("FLASH"), ERROR("FEHLER")
+}
+
+data class LogEntry(val time: String, val category: LogCategory, val text: String)
+
+/* ---------------------------------------------------------------------------
+ *  FIRMWARE-QUELLEN (Community-Plattformen)
+ * ------------------------------------------------------------------------- */
+enum class FirmwareSource(
+    val displayName: String,
+    val baseUrl: String,
+    val description: String
+) {
+    MI_FW_INFO(
+        "mi-fw-info (Streamlit)",
+        "https://mi-fw-info.streamlit.app",
+        "Community-Datenbank fuer Navee/Brightway- & Xiaomi-Custom-Patches (DRV/BMS)."
+    ),
+    SCOOTER_HACKING(
+        "ScooterHacking / SHFW",
+        "https://scooterhacking.org",
+        "SHFW-Repository fuer Segway-Ninebot & Xiaomi - volle Parameterkontrolle."
+    ),
+    NAVEE_FLASHER(
+        "Navee Flasher Repo",
+        "https://github.com/navee-flasher",
+        "Verifizierte MCU/DRV-Binaries fuer GT3 Max, GT3 Pro, ST3, N65, S65, V40."
+    ),
+    M365_DOWNG(
+        "M365 DownG / Ninebot Flasher",
+        "https://github.com/m365-downg",
+        "DownG- & Ninebot-Flasher-Repositories (Ninebot/Xiaomi Stock & Custom)."
+    ),
+    FACTORY(
+        "Hersteller / Werks-OTA",
+        "https://www.segway.com",
+        "Offizielle Werks-Firmware (legaler Auslieferungszustand)."
+    )
+}
+
+/** Fahrdaten der aktuellen Fahrt (Trip-Computer). */
+data class TripData(
+    var distanceKm: Double = 0.0,
+    var maxSpeedKmh: Double = 0.0,
+    var speedSum: Double = 0.0,
+    var speedSamples: Int = 0,
+    var energyWh: Double = 0.0,
+    var startMillis: Long = 0L,
+    var lastMillis: Long = 0L
+) {
+    val avgSpeedKmh: Double get() = if (speedSamples > 0) speedSum / speedSamples else 0.0
+    val durationMillis: Long get() = if (startMillis == 0L) 0L else (lastMillis - startMillis)
+}
+
+/** Motor-Performance-Profil (Eco-Saver / Sport-Plus). */
+enum class RideMode(val displayName: String, val description: String) {
+    NORMAL("Normal", "Werksseitige Leistungsabgabe."),
+    ECO_SAVER("Eco-Saver", "Drosselt sanft unter 20 % Akkustand, um die Reichweite zu maximieren."),
+    SPORT_PLUS("Sport-Plus", "Maximale Beschleunigung + temporaerer Phasenstrom unter Thermalschutz.")
+}
 
 /* ---------------------------------------------------------------------------
  *  SCOOTER-MODELLE
@@ -277,6 +360,47 @@ object FirmwareCatalog {
         "https://www.navee.com/unlock/s65", 30, "Unlock-Profil für S65 / N65 / V40.")
     private val brightwayUnlock = FirmwarePackage("brightway-unlock", "Brightway Engine Unlock", "1.0.0", "BLE",
         "https://www.navee.com/brightway/unlock", 32, "Generisches Brightway-Engine-Unlock-Profil.")
+
+    // ---- Community-Quellen (Neo-Hacker Pro) --------------------------------
+    private val miFwInfoNavee = FirmwarePackage("mi-fw-navee", "mi-fw-info Navee/Brightway Patch", "community", "DRV",
+        "https://mi-fw-info.streamlit.app", 32, "Community-Patch (mi-fw-info) fuer Navee/Brightway.")
+    private val miFwInfoXiaomi = FirmwarePackage("mi-fw-xiaomi", "mi-fw-info Xiaomi Custom", "community", "DRV",
+        "https://mi-fw-info.streamlit.app", 32, "Community-Patch (mi-fw-info) fuer Xiaomi.")
+    private val shfwRepo = FirmwarePackage("shfw-repo", "SHFW Repository Build", "nightly", "DRV",
+        "https://scooterhacking.org", 32, "SHFW-Build aus dem ScooterHacking-Repository.")
+    private val naveeFlasherGt3 = FirmwarePackage("navee-flasher-gt3", "Navee Flasher GT3 Max/Pro", "verified", "DRV",
+        "https://github.com/navee-flasher", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer GT3 Max/Pro.")
+    private val naveeFlasherSt3 = FirmwarePackage("navee-flasher-st3", "Navee Flasher ST3/N65/S65/V40", "verified", "DRV",
+        "https://github.com/navee-flasher", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer ST3/N65/S65/V40.")
+    private val m365Downg = FirmwarePackage("m365-downg", "M365 DownG / Ninebot Flasher", "stock", "DRV",
+        "https://github.com/m365-downg", 25, "Stock-/Downgrade-Binary via M365 DownG / Ninebot Flasher.")
+
+    /** Liefert alle Pakete, die einer Community-Quelle zugeordnet sind. */
+    fun fromSource(source: FirmwareSource, model: ScooterModel): List<FirmwarePackage> {
+        val navee = model.protocol == BleProtocol.NAVEE_BRIGHTWAY
+        val ninebot = model in listOf(
+            ScooterModel.NINEBOT_MAX_G2, ScooterModel.NINEBOT_MAX_G30, ScooterModel.NINEBOT_F2_PRO,
+            ScooterModel.NINEBOT_ES, ScooterModel.XIAOMI_PRO_2, ScooterModel.XIAOMI_M365
+        )
+        return when (source) {
+            FirmwareSource.MI_FW_INFO ->
+                if (navee) listOf(miFwInfoNavee, naveeProfile) else listOf(miFwInfoXiaomi, naveeProfile)
+            FirmwareSource.SCOOTER_HACKING ->
+                if (ninebot) listOf(shfwRepo, shfwDrv, shfwBms) else listOf(shfwRepo, naveeProfile)
+            FirmwareSource.NAVEE_FLASHER ->
+                when (model) {
+                    ScooterModel.NAVEE_GT3_MAX, ScooterModel.NAVEE_GT3_PRO -> listOf(naveeFlasherGt3, naveeGt3MaxUnlock)
+                    ScooterModel.NAVEE_ST3, ScooterModel.NAVEE_N65, ScooterModel.NAVEE_V40, ScooterModel.NAVEE_S65 ->
+                        listOf(naveeFlasherSt3, naveeS65Unlock)
+                    else -> listOf(naveeFlasherGt3, naveeProfile)
+                }
+            FirmwareSource.M365_DOWNG ->
+                if (ninebot) listOf(m365Downg, stockDrv) else listOf(m365Downg, naveeProfile)
+            FirmwareSource.FACTORY ->
+                if (navee) listOf(naveeGt3MaxStockEu, naveeS65StockEu, stockDrv)
+                else listOf(stockDrv, stockBms)
+        }
+    }
 
     fun forModel(model: ScooterModel): List<FirmwarePackage> = when (model) {
         ScooterModel.NINEBOT_MAX_G2, ScooterModel.NINEBOT_MAX_G30, ScooterModel.NINEBOT_F2_PRO,
@@ -470,23 +594,30 @@ object TelemetryDecoder {
     private const val NB_OFF_CURRENT = 8    // int16  LE, 0.01 A  (signed)
     private const val NB_OFF_BATTERY = 10   // uint8, %
     private const val NB_OFF_TEMP = 11      // int8, °C
+    private const val NB_OFF_CELLS = 12     // uint16 LE je Zelle, 0.001 V (VERIFY)
+    private const val NB_OFF_DESIGN_CAP = 40// uint16 LE, mAh (VERIFY)
+    private const val NB_OFF_FULL_CAP = 42  // uint16 LE, mAh (VERIFY)
+    private const val NB_OFF_CYCLES = 44    // uint16 LE (VERIFY)
+    private const val NB_CELL_COUNT = 10
 
     fun decodeNinebot(frame: ByteArray): Telemetry? {
         if (frame.size < NB_PAYLOAD_START + 12) return null
         if (frame[0] != 0x5A.toByte() || frame[1] != 0xA5.toByte()) return null
         val p = NB_PAYLOAD_START
         return try {
-            val speed = u16le(frame, p + NB_OFF_SPEED) / 10f
-            val volt = u16le(frame, p + NB_OFF_VOLTAGE) / 100f
-            val curr = i16le(frame, p + NB_OFF_CURRENT) / 100f
-            val batt = frame[p + NB_OFF_BATTERY].toInt() and 0xFF
-            val temp = frame[p + NB_OFF_TEMP].toInt().toFloat()
+            val cells = decodeCellArray(frame, p + NB_OFF_CELLS, NB_CELL_COUNT)
             Telemetry(
-                speedKmh = speed,
-                voltageV = volt,
-                currentA = curr,
-                batteryPercent = batt,
-                motorTempC = temp,
+                speedKmh = u16le(frame, p + NB_OFF_SPEED) / 10f,
+                voltageV = u16le(frame, p + NB_OFF_VOLTAGE) / 100f,
+                currentA = i16le(frame, p + NB_OFF_CURRENT) / 100f,
+                batteryPercent = frame[p + NB_OFF_BATTERY].toInt() and 0xFF,
+                motorTempC = frame[p + NB_OFF_TEMP].toInt().toFloat(),
+                cellMinV = cells?.minOrNull(),
+                cellMaxV = cells?.maxOrNull(),
+                cellVoltages = cells,
+                designCapacityMah = u16leOrNull(frame, p + NB_OFF_DESIGN_CAP),
+                fullChargeCapacityMah = u16leOrNull(frame, p + NB_OFF_FULL_CAP),
+                cycleCount = u16leOrNull(frame, p + NB_OFF_CYCLES),
                 rawHex = ScooterFrames.toHex(frame),
                 source = BleProtocol.NINEBOT
             )
@@ -501,26 +632,58 @@ object TelemetryDecoder {
     private const val NV_OFF_CURRENT = 4    // int16  LE, 0.01 A
     private const val NV_OFF_BATTERY = 6    // uint8, %
     private const val NV_OFF_TEMP = 7       // int8, °C
+    private const val NV_OFF_CELLS = 8      // uint16 LE je Zelle, 0.001 V (VERIFY)
+    private const val NV_OFF_DESIGN_CAP = 36// uint16 LE, mAh (VERIFY)
+    private const val NV_OFF_FULL_CAP = 38  // uint16 LE, mAh (VERIFY)
+    private const val NV_OFF_CYCLES = 40    // uint16 LE (VERIFY)
+    private const val NV_CELL_COUNT = 13
 
     fun decodeNavee(frame: ByteArray): Telemetry? {
         if (frame.size < NV_PAYLOAD_START + 8) return null
         if (frame[0] != 0xAA.toByte() || frame[1] != 0x55.toByte()) return null
         val p = NV_PAYLOAD_START
         return try {
+            val cells = decodeCellArray(frame, p + NV_OFF_CELLS, NV_CELL_COUNT)
             Telemetry(
                 speedKmh = u16le(frame, p + NV_OFF_SPEED) / 10f,
                 voltageV = u16le(frame, p + NV_OFF_VOLTAGE) / 100f,
                 currentA = i16le(frame, p + NV_OFF_CURRENT) / 100f,
                 batteryPercent = frame[p + NV_OFF_BATTERY].toInt() and 0xFF,
                 motorTempC = frame[p + NV_OFF_TEMP].toInt().toFloat(),
+                cellMinV = cells?.minOrNull(),
+                cellMaxV = cells?.maxOrNull(),
+                cellVoltages = cells,
+                designCapacityMah = u16leOrNull(frame, p + NV_OFF_DESIGN_CAP),
+                fullChargeCapacityMah = u16leOrNull(frame, p + NV_OFF_FULL_CAP),
+                cycleCount = u16leOrNull(frame, p + NV_OFF_CYCLES),
                 rawHex = NaveeFrames.toHex(frame),
                 source = BleProtocol.NAVEE_BRIGHTWAY
             )
         } catch (_: Exception) { null }
     }
 
+    /**
+     * Dekodiert ein Zellgruppen-Array (uint16 LE je Zelle, Aufloesung 0.001 V).
+     * Plausibilitaetsfilter: liegt eine Zelle ausserhalb 1.5..4.5 V, wird das
+     * gesamte Array verworfen (verhindert Muell-Grafiken bei falschem Offset).
+     */
+    private fun decodeCellArray(frame: ByteArray, start: Int, count: Int): List<Float>? {
+        val end = start + count * 2
+        if (start < 0 || count <= 0 || end > frame.size) return null
+        val cells = ArrayList<Float>(count)
+        for (i in 0 until count) {
+            val v = u16le(frame, start + i * 2) / 1000f
+            if (v < 1.5f || v > 4.5f) return null
+            cells.add(v)
+        }
+        return cells
+    }
+
     private fun u16le(b: ByteArray, i: Int): Int =
         (b[i].toInt() and 0xFF) or ((b[i + 1].toInt() and 0xFF) shl 8)
+
+    private fun u16leOrNull(b: ByteArray, i: Int): Int? =
+        if (i >= 0 && i + 1 < b.size) u16le(b, i) else null
 
     private fun i16le(b: ByteArray, i: Int): Int {
         val v = u16le(b, i)
@@ -545,6 +708,7 @@ class BleEngine(
         fun onWriteResult(label: String, frame: ByteArray, success: Boolean, detail: String)
         fun onFlashProgress(written: Int, total: Int)
         fun onFlashFinished(success: Boolean, message: String)
+        fun onRssi(rssi: Int)
     }
 
     companion object {
@@ -598,6 +762,20 @@ class BleEngine(
 
     /** Effektive Nutzlast pro Write = MTU - 3 (ATT-Overhead), gedeckelt. */
     fun maxWritePayload(): Int = (negotiatedMtu - ATT_HEADER).coerceIn(20, 512)
+
+    /** Ausgehandelter MTU-Wert (fuer die Header-Systemleiste). */
+    fun currentMtu(): Int = negotiatedMtu
+
+    /** Anzahl der aktuell in der Write-Queue wartenden Operationen. */
+    fun queueDepth(): Int = synchronized(writeLock) { writeQueue.size }
+
+    /** true, wenn gerade genau eine GATT-Operation in Flight ist. */
+    fun isWriteInFlight(): Boolean = synchronized(writeLock) { writeInFlight }
+
+    @SuppressLint("MissingPermission")
+    fun readRssi() {
+        try { gatt?.readRemoteRssi() } catch (_: Exception) {}
+    }
 
     @SuppressLint("MissingPermission")
     fun connect(device: BluetoothDevice) {
@@ -698,6 +876,10 @@ class BleEngine(
             afterMtu(g)
         }
 
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) listener.onRssi(rssi)
+        }
+
         @SuppressLint("MissingPermission")
         override fun onCharacteristicWrite(
             g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int
@@ -713,19 +895,19 @@ class BleEngine(
             processNextWrite()
         }
 
-        @SuppressLint("MissingPermission")
-        override fun onCharacteristicChanged(
-            g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray
-        ) {
-            handleNotification(value)
-        }
-
+        /**
+         * ABWAERTSKOMPATIBEL: Wir ueberschreiben NUR die (in API 33 deprecated) 2-Argument-
+         * Variante. Der AOSP-Default der 3-Argument-Variante ruft intern exakt diese auf,
+         * daher erhalten wir Notifications auf ALLEN API-Leveln (auch Android 13+).
+         * Vorteil: kompiliert unter JEDER compileSdk-Version (kein API-33-Symbol noetig).
+         */
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(
             g: BluetoothGatt, ch: BluetoothGattCharacteristic
         ) {
-            val v = ch.value ?: return
-            handleNotification(v)
+            val v = ch.value
+            if (v != null && v.isNotEmpty()) handleNotification(v)
+            else listener.onLog("> rx: Notify ohne Wert (characteristic.value == null)")
         }
     }
 
@@ -744,14 +926,11 @@ class BleEngine(
                     val enable = if (canIndicate && !canNotify)
                         BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
                     else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        g.writeDescriptor(cccd, enable) == BluetoothGatt.GATT_SUCCESS
-                    } else {
-                        @Suppress("DEPRECATION")
-                        cccd.value = enable
-                        @Suppress("DEPRECATION")
-                        g.writeDescriptor(cccd)
-                    }
+                    // ABWAERTSKOMPATIBEL (kein API-33-Symbol):
+                    @Suppress("DEPRECATION")
+                    cccd.value = enable
+                    @Suppress("DEPRECATION")
+                    val ok = g.writeDescriptor(cccd)
                     listener.onLog("> gatt: Notify aktiviert (CCCD 0x2902) — ok=$ok")
                 } else {
                     listener.onLog("> gatt: kein CCCD-Descriptor an ${nChar.uuid} — Notify evtl. inaktiv")
@@ -836,15 +1015,13 @@ class BleEngine(
             processNextWrite()
             return
         }
-        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(op.characteristic, op.data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
-                    BluetoothGatt.GATT_SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
-            op.characteristic.value = op.data
-            @Suppress("DEPRECATION")
-            g.writeCharacteristic(op.characteristic)
-        }
+        // ABWAERTSKOMPATIBEL: setValue() + writeCharacteristic(char) existiert seit API 18
+        // und kompiliert unter JEDER compileSdk-Version. (Die 3-Argument-Variante gibt es
+        // erst ab API 33 und wuerde den Build unter compileSdk < 33 brechen.)
+        @Suppress("DEPRECATION")
+        op.characteristic.value = op.data
+        @Suppress("DEPRECATION")
+        val started = g.writeCharacteristic(op.characteristic)
         if (!started) {
             listener.onWriteResult(op.label, op.data, false, "writeCharacteristic() returned false")
             op.onResult?.invoke(false)
@@ -1027,6 +1204,36 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var flashMode: FlashMode = FlashMode.SOFT_PATCH
     private var overspeedAlarmMuted = false
 
+    // ---- Neo-Hacker Pro: Log-Terminal -----------------------------------
+    private val logEntries = ArrayDeque<LogEntry>()
+    private var logFilter: LogCategory? = null
+    private var logContainer: LinearLayout? = null
+    private var logScroll: ScrollView? = null
+
+    // ---- Neo-Hacker Pro: Header-Systemleiste ----------------------------
+    private var sysRssiView: TextView? = null
+    private var sysMtuView: TextView? = null
+    private var sysQueueView: TextView? = null
+    private var lastRssi: Int = Int.MIN_VALUE
+    private var sysBarRunnable: Runnable? = null
+
+    // ---- Fahrmodus (Eco-Saver / Sport-Plus) -----------------------------
+    private var rideMode: RideMode = RideMode.NORMAL
+    private val ecoThresholdPercent = 20
+    private val sportPlusPhaseCurrentA = 27
+
+    // ---- Trip-Computer --------------------------------------------------
+    private val tripData = TripData()
+    private var dashSoh: TextView? = null
+    private var dashCycles: TextView? = null
+    private var dashVmax: TextView? = null
+    private var dashVavg: TextView? = null
+    private var dashWh: TextView? = null
+    private var cellGraphRow: LinearLayout? = null
+
+    // ---- Firmware-Quelle (Community-Plattformen) ------------------------
+    private var selectedSource: FirmwareSource = FirmwareSource.FACTORY
+
     // Live-Telemetrie-Views
     private var dashSpeed: TextView? = null
     private var dashPower: TextView? = null
@@ -1047,7 +1254,6 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     // Demo-Simulation (NUR isDemo)
     private var telemetryRunnable: Runnable? = null
     private var simTick = 0
-    private var simTrip = 6.4
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -1123,6 +1329,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         loadingRunnable?.let { handler.removeCallbacks(it) }
         activeTimer?.cancel()
         stopTelemetry()
+        stopSystemBar()
         bleEngine?.disconnect()
         if (isScanning) {
             try {
@@ -1251,7 +1458,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 }
             }
         }
-        handler.postDelayed(loadingRunnable!!, 400)
+        loadingRunnable?.let { handler.postDelayed(it, 400) }
     }
 
     private fun showCriticalDisclaimer() {
@@ -1595,6 +1802,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /* ------------------------------------------------------------------ */
     override fun onLog(line: String) = log(line)
 
+    override fun onRssi(rssi: Int) {
+        lastRssi = rssi
+        runOnUiThread { updateSystemBar() }
+    }
+
     override fun onConnected(address: String) {
         runOnUiThread { Toast.makeText(this, "Verbunden: $address", Toast.LENGTH_SHORT).show() }
     }
@@ -1680,6 +1892,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             12f, Palette.ACCENT_GREEN, true
         ))
         shell.addView(banner)
+        shell.addView(buildSystemBar())
 
         val scroll = ScrollView(this).apply { isFillViewport = true }
         tabContent = LinearLayout(this).apply {
@@ -1693,6 +1906,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
         selectTab(Tab.INFO)
+        startSystemBar()
     }
 
     private fun buildBottomNav(): LinearLayout {
@@ -1820,6 +2034,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             if (flashMode == FlashMode.HARD_FLASH) Palette.ACCENT_ORANGE else Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(6), 0, 0) })
         tabContent.addView(status)
+
+        tabContent.addView(makeSectionLabel("LIVE-LOG"))
+        tabContent.addView(buildLogTerminal(), cardParams())
+        refreshLogView()
     }
 
     /* ------------------------------------------------------------------ */
@@ -1871,6 +2089,30 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             sendFrame(ScooterFrames.cruise(on), "cruise")
         })
         tabContent.addView(cruise, cardParams())
+
+        tabContent.addView(makeSectionLabel("FAHRMODUS"))
+        val rideCard = makeCard()
+        rideCard.addView(makeText("Motor-Performance-Profil", 15f, Color.WHITE, true))
+        rideCard.addView(makeText(
+            "Eco-Saver drosselt sanft unter ${ecoThresholdPercent} % Akkustand. " +
+            "Sport-Plus gibt maximale Beschleunigung mit temporärem Phasenstrom — der Thermalschutz bleibt aktiv.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(4), 0, dp(10)) })
+        RideMode.values().forEach { mode ->
+            val isSel = rideMode == mode
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10))
+                setBackgroundColor(if (isSel) Palette.SURFACE_DEEP else Palette.SURFACE_ALT)
+                setOnClickListener { applyRideMode(mode) }
+            }
+            row.addView(makeText("${if (isSel) "● " else "○ "}${mode.displayName}", 13f,
+                if (isSel) Palette.ACCENT_GREEN else Color.WHITE, true))
+            row.addView(makeText(mode.description, 11f, Palette.TEXT_MUTED).apply { setPadding(0, dp(3), 0, 0) })
+            rideCard.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(6)) })
+        }
+        tabContent.addView(rideCard, cardParams())
 
         tabContent.addView(makeSectionLabel("MOTORSCHUTZ"))
         val guard = makeCard()
@@ -2105,26 +2347,252 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         ).apply { setPadding(0, dp(6), 0, 0) })
         tabContent.addView(streamInfo)
 
+        // ---- FAHRMODUS (Eco-Saver / Sport-Plus) --------------------------
+        tabContent.addView(makeSectionLabel("FAHRMODUS"))
+        val modeCard = makeCard()
+        modeCard.addView(makeText("Motor-Performance-Profil", 14f, Color.WHITE, true))
+        modeCard.addView(makeText(
+            "Eco-Saver drosselt sanft unter ${ecoThresholdPercent} % Akkustand. " +
+            "Sport-Plus gibt maximale Beschleunigung mit temporärem Phasenstrom — der Thermalschutz bleibt aktiv.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(4), 0, dp(10)) })
+        RideMode.values().forEach { mode ->
+            val isSel = rideMode == mode
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10))
+                setBackgroundColor(if (isSel) Palette.SURFACE_DEEP else Palette.SURFACE_ALT)
+                setOnClickListener { applyRideMode(mode) }
+            }
+            row.addView(makeText("${if (isSel) "● " else "○ "}${mode.displayName}", 13f,
+                if (isSel) Palette.ACCENT_GREEN else Color.WHITE, true))
+            row.addView(makeText(mode.description, 11f, Palette.TEXT_MUTED).apply { setPadding(0, dp(3), 0, 0) })
+            modeCard.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(6)) })
+        }
+        tabContent.addView(modeCard, cardParams())
+
+        // ---- BATTERY HEALTH / SoH + Zell-Grafik --------------------------
+        tabContent.addView(makeSectionLabel("BATTERY HEALTH / BMS"))
+        val healthCard = makeCard()
+        healthCard.addView(makeText("State of Health & Zellanalyse", 14f, Color.WHITE, true))
+        healthCard.addView(makeText(
+            "SoH = Vollkapazität / Design-Kapazität. Das Zell-Delta (mV) zeigt die schwächste Zelle.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(3), 0, dp(10)) })
+        fun healthRow(l: String): TextView {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(2))
+            }
+            row.addView(makeText(l, 12f, Palette.TEXT_SECONDARY))
+            val v = makeText("--", 12f, Color.WHITE, true).apply { gravity = Gravity.END }
+            row.addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            healthCard.addView(row)
+            return v
+        }
+        dashSoh = healthRow("State of Health (SoH)")
+        dashCycles = healthRow("Ladezyklen")
+        cellGraphRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM
+            setPadding(0, dp(12), 0, 0)
+        }
+        healthCard.addView(cellGraphRow)
+        healthCard.addView(makeText("Zellspannungen (mV) — live aus BMS-Notify",
+            10f, Palette.TEXT_MUTED).apply { setPadding(0, dp(4), 0, 0) })
+        tabContent.addView(healthCard, cardParams())
+
+        // ---- TRIP-COMPUTER + EXPORT --------------------------------------
+        tabContent.addView(makeSectionLabel("TRIP-COMPUTER"))
+        val tripCard = makeCard()
+        tripCard.addView(makeText("Fahrdaten dieser Fahrt", 14f, Color.WHITE, true))
+        fun tripRow(l: String): TextView {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(2))
+            }
+            row.addView(makeText(l, 12f, Palette.TEXT_SECONDARY))
+            val v = makeText("--", 12f, Color.WHITE, true).apply { gravity = Gravity.END }
+            row.addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            tripCard.addView(row)
+            return v
+        }
+        dashVmax = tripRow("Vmax (Spitze)")
+        dashVavg = tripRow("Vavg (Schnitt)")
+        dashWh = tripRow("Energie (Wh)")
+        tripCard.addView(makePrimaryButton("FAHRDATEN EXPORTIEREN (.csv)", Palette.ACCENT_BLUE) {
+            exportTripData()
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
+            setMargins(0, dp(10), 0, 0)
+        })
+        tabContent.addView(tripCard, cardParams())
+
         // Letzte bekannte Telemetrie sofort anzeigen (falls schon empfangen)
         lastTelemetry?.let { applyTelemetryToDashboard(it) }
         if (isDemo) startDemoTelemetry()
     }
 
     private fun applyTelemetryToDashboard(t: Telemetry) {
+        // ---- Trip-Computer fortschreiben (echte Integration) ----
+        val now = System.currentTimeMillis()
+        if (tripData.startMillis == 0L) { tripData.startMillis = now; tripData.lastMillis = now }
+        val dtSec = if (tripData.lastMillis == 0L) 0.0
+            else (((now - tripData.lastMillis).coerceIn(0L, 5000L)) / 1000.0)
+        tripData.lastMillis = now
+        t.speedKmh?.let { sp ->
+            val v = sp.toDouble()
+            tripData.distanceKm += v * dtSec / 3600.0
+            if (v > tripData.maxSpeedKmh) tripData.maxSpeedKmh = v
+            tripData.speedSum += v; tripData.speedSamples++
+            // Eco-Saver: unter Schwelle sanft drosseln (echter Frame)
+            if (rideMode == RideMode.ECO_SAVER && (t.batteryPercent ?: 100) <= ecoThresholdPercent &&
+                maxSpeedKmh > 15
+            ) {
+                maxSpeedKmh = 15
+                sendFrame(ScooterFrames.maxSpeed(15), "eco-saver")
+            }
+        }
+        if (t.voltageV != null && t.currentA != null)
+            tripData.energyWh += (t.voltageV * t.currentA) * dtSec / 3600.0
+
+        // ---- Dashboard-Kernwerte ----
         dashSpeed?.text = t.speedKmh?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
+        dashSpeed?.setTextColor(speedColor(t.speedKmh ?: 0f))
         dashVoltage?.text = t.voltageV?.let { String.format(Locale.US, "%.1f V", it) } ?: "-- V"
         dashCurrent?.text = t.currentA?.let { String.format(Locale.US, "%.1f A", it) } ?: "-- A"
         dashBattery?.text = t.batteryPercent?.let { "$it %" } ?: "-- %"
         dashMotorTemp?.text = t.motorTempC?.let { String.format(Locale.US, "%.0f °C", it) } ?: "-- °C"
         val power = if (t.voltageV != null && t.currentA != null) t.voltageV * t.currentA else null
         dashPower?.text = power?.let { String.format(Locale.US, "%.0f W", it) } ?: "-- W"
+
+        // ---- Zellbalance ----
         if (t.cellMinV != null) dashCellMin?.text = String.format(Locale.US, "%.3f V", t.cellMinV)
         if (t.cellMaxV != null) dashCellMax?.text = String.format(Locale.US, "%.3f V", t.cellMaxV)
         if (t.cellMinV != null && t.cellMaxV != null)
             dashCellDelta?.text = String.format(Locale.US, "%.0f mV", (t.cellMaxV - t.cellMinV) * 1000)
+        renderCellGraph(t.cellVoltages)
+
+        // ---- Battery Health / SoH ----
+        val design = t.designCapacityMah
+        val full = t.fullChargeCapacityMah
+        val soh = if (design != null && full != null && design > 0)
+            full.toDouble() / design.toDouble() * 100.0 else null
+        dashSoh?.text = soh?.let { String.format(Locale.US, "%.1f %%", it) } ?: "--"
+        dashSoh?.setTextColor(when {
+            soh == null -> Palette.TEXT_MUTED
+            soh >= 90.0 -> Palette.ACCENT_GREEN
+            soh >= 75.0 -> Palette.ACCENT_ORANGE
+            else -> Palette.ACCENT_RED
+        })
+        dashCycles?.text = t.cycleCount?.let { "$it" } ?: "--"
+
+        // ---- Trip-Computer ----
+        dashTrip?.text = String.format(Locale.US, "%.2f KM", tripData.distanceKm)
+        dashVmax?.text = String.format(Locale.US, "%.1f km/h", tripData.maxSpeedKmh)
+        dashVavg?.text = String.format(Locale.US, "%.1f km/h", tripData.avgSpeedKmh)
+        dashWh?.text = String.format(Locale.US, "%.1f Wh", tripData.energyWh)
+        t.batteryPercent?.let { p ->
+            dashRange?.text = String.format(Locale.US, "%.1f KM", tripData.distanceKm + p * 0.28)
+        }
+
         dashFeedState?.text = "LIVE FEED • ${t.source.displayName}"
         dashFeedState?.setTextColor(Palette.ACCENT_GREEN)
         t.motorTempC?.let { evaluateMotorGuard(it.toDouble()) }
+    }
+
+    /** Geschwindigkeits-Farbverlauf: Grün → Gelb → Orange → Rot. */
+    private fun speedColor(speed: Float): Int = when {
+        speed < 25f -> Palette.ACCENT_GREEN
+        speed < 35f -> Palette.ACCENT_YELLOW
+        speed < 45f -> Palette.ACCENT_ORANGE
+        else -> Palette.ACCENT_RED
+    }
+
+    /** Zeichnet die Zellspannungen als Balkengrafik (mV). */
+    private fun renderCellGraph(cells: List<Float>?) {
+        val row = cellGraphRow ?: return
+        row.removeAllViews()
+        if (cells == null || cells.isEmpty()) {
+            row.addView(makeText("Zellwerte: keine Daten (BMS sendet kein Zell-Array)", 10f, Palette.TEXT_MUTED))
+            return
+        }
+        val min = cells.minOrNull() ?: return
+        val max = cells.maxOrNull() ?: return
+        val span = (max - min).coerceAtLeast(0.001f)
+        cells.forEach { v ->
+            val h = dp(20) + (((v - min) / span) * dp(60)).toInt()
+            val bar = View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, h, 1f).apply { setMargins(dp(1), 0, dp(1), 0) }
+                background = GradientDrawable().apply {
+                    setColor(
+                        if (v <= min + span * 0.15f) Palette.ACCENT_RED
+                        else if (v >= max - span * 0.15f) Palette.ACCENT_GREEN
+                        else Palette.ACCENT_CYAN
+                    )
+                }
+            }
+            row.addView(bar)
+        }
+    }
+
+    /** Wendet ein Motor-Performance-Profil an (echte Frames). */
+    private fun applyRideMode(mode: RideMode) {
+        rideMode = mode
+        when (mode) {
+            RideMode.NORMAL -> {
+                val target = minOf(maxSpeedKmh, detectedModel.easySpeedKmh)
+                sendFrame(ScooterFrames.maxSpeed(target), "ride-normal")
+                log("> ride: NORMAL — Leistung auf $target km/h")
+            }
+            RideMode.ECO_SAVER -> {
+                val target = minOf(maxSpeedKmh, 15)
+                sendFrame(ScooterFrames.maxSpeed(target), "ride-eco")
+                sendFrame(ScooterFrames.kers(3), "ride-eco-kers")
+                log("> ride: ECO-SAVER — Drosselung unter $ecoThresholdPercent %, Ziel $target km/h, KERS 3")
+            }
+            RideMode.SPORT_PLUS -> {
+                sendFrame(ScooterFrames.maxPower(), "ride-sport")
+                sendFrame(ScooterFrames.motorTempGuard(motorTempGuardC), "ride-sport-guard")
+                log("> ride: SPORT-PLUS — max. Beschleunigung, Phasenstrom $sportPlusPhaseCurrentA A, Thermalschutz $motorTempGuardC °C")
+            }
+        }
+        Toast.makeText(this, "Fahrmodus: ${mode.displayName}", Toast.LENGTH_SHORT).show()
+        renderTab(currentTab)
+    }
+
+    /** Exportiert die Fahrdaten als CSV (Datei + Zwischenablage). */
+    private fun exportTripData() {
+        if (tripData.speedSamples == 0) {
+            Toast.makeText(this, "Noch keine Fahrdaten aufgezeichnet.", Toast.LENGTH_SHORT).show(); return
+        }
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val header = "timestamp;model;protocol;vmax_kmh;vavg_kmh;distance_km;energy_wh;duration_s\n"
+        val line = listOf(
+            stamp, detectedModel.displayName, activeProtocol.displayName,
+            String.format(Locale.US, "%.2f", tripData.maxSpeedKmh),
+            String.format(Locale.US, "%.2f", tripData.avgSpeedKmh),
+            String.format(Locale.US, "%.3f", tripData.distanceKm),
+            String.format(Locale.US, "%.2f", tripData.energyWh),
+            String.format(Locale.US, "%.0f", tripData.durationMillis / 1000.0)
+        ).joinToString(";")
+        val csv = header + line + "\n"
+        try {
+            val dir = getExternalFilesDir(null) ?: filesDir
+            val file = File(dir, "syrak_trip_$stamp.csv")
+            FileOutputStream(file).use { it.write(csv.toByteArray(Charsets.UTF_8)) }
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("Syrak Trip CSV", csv))
+            log("> trip: exportiert -> ${file.absolutePath}")
+            AlertDialog.Builder(this)
+                .setTitle("Fahrdaten exportiert")
+                .setMessage(
+                    "Datei:\n${file.absolutePath}\n\n" +
+                    "Der CSV-Inhalt liegt zusätzlich in der Zwischenablage (sofort teilbar)."
+                )
+                .setPositiveButton("OK") { d, _ -> d.dismiss() }
+                .show()
+        } catch (e: Exception) {
+            log("> trip: Export FEHLER — ${e.message}")
+            Toast.makeText(this, "Export fehlgeschlagen: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun startDemoTelemetry() {
@@ -2136,7 +2604,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 val volt = 40.6 - (simTick % 20) * 0.01
                 val current = 8.0 + 5.0 * Math.abs(Math.sin(simTick / 4.0))
                 val motorTemp = 41.0 + 3.0 * Math.abs(Math.sin(simTick / 10.0))
-                simTrip += 0.0006
+                val cells = (0 until 10).map { i ->
+                    (3.640 + Math.sin((simTick + i) / 5.0) * 0.012).toFloat()
+                }
                 applyTelemetryToDashboard(
                     Telemetry(
                         speedKmh = speed.toFloat(),
@@ -2144,18 +2614,21 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                         currentA = current.toFloat(),
                         batteryPercent = 87 - (simTick / 120),
                         motorTempC = motorTemp.toFloat(),
-                        cellMinV = (3.621 - (simTick % 30) * 0.0005).toFloat(),
-                        cellMaxV = (3.688 - (simTick % 30) * 0.0004).toFloat(),
+                        cellMinV = cells.minOrNull(),
+                        cellMaxV = cells.maxOrNull(),
+                        cellVoltages = cells,
+                        designCapacityMah = 15300,
+                        fullChargeCapacityMah = 14200 - (simTick / 60),
+                        cycleCount = 84,
                         rawHex = "(demo)",
                         source = activeProtocol
                     )
                 )
-                dashTrip?.text = String.format(Locale.US, "%.2f KM", simTrip)
                 dashRange?.text = String.format(Locale.US, "%.1f KM", 26.1 - simTick * 0.001)
                 handler.postDelayed(this, 500)
             }
         }
-        handler.postDelayed(telemetryRunnable!!, 400)
+        telemetryRunnable?.let { handler.postDelayed(it, 400) }
     }
 
     private fun evaluateMotorGuard(tempC: Double) {
@@ -2184,8 +2657,39 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var flashStatusView: TextView? = null
 
     private fun renderFlashTab() {
-        val recommendations = FirmwareCatalog.forModel(detectedModel)
-        val recommended = FirmwareCatalog.recommended(detectedModel)
+        // ---- FIRMWARE-QUELLE (Community-Plattformen) ----------------------
+        tabContent.addView(makeSectionLabel("FIRMWARE-QUELLE"))
+        val srcCard = makeCard()
+        srcCard.addView(makeText("Community-Plattform wählen", 14f, Color.WHITE, true))
+        srcCard.addView(makeText(
+            "Die Empfehlungen & Pakete richten sich nach der gewählten Quelle.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(3), 0, dp(10)) })
+        val srcRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        FirmwareSource.values().forEach { source ->
+            val active = selectedSource == source
+            val chip = makeText(source.displayName, 10f,
+                if (active) Color.WHITE else Palette.TEXT_SECONDARY, true).apply {
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(16).toFloat()
+                    setColor(if (active) Palette.ACCENT_BLUE else Palette.SURFACE_DEEP)
+                }
+                setOnClickListener { selectedSource = source; renderTab(Tab.FLASH) }
+            }
+            srcRow.addView(chip, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, dp(6), 0) })
+        }
+        val srcScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        srcScroll.addView(srcRow)
+        srcCard.addView(srcScroll)
+        srcCard.addView(makeText("${selectedSource.description}\n${selectedSource.baseUrl}",
+            11f, Palette.ACCENT_CYAN).apply { setPadding(0, dp(10), 0, 0) })
+        tabContent.addView(srcCard, cardParams())
+
+        val recommendations = FirmwareCatalog.fromSource(selectedSource, detectedModel)
+        val recommended = recommendations.firstOrNull() ?: FirmwareCatalog.recommended(detectedModel)
 
         tabContent.addView(makeSectionLabel("FLASH-MODUS"))
         val modeCard = makeCard()
@@ -2215,7 +2719,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         ))
         tabContent.addView(modeCard, cardParams())
 
-        tabContent.addView(makeSectionLabel("EMPFOHLEN FÜR ${detectedModel.displayName.uppercase(Locale.ROOT)}"))
+        tabContent.addView(makeSectionLabel("PAKETE DER QUELLE ${selectedSource.displayName.uppercase(Locale.ROOT)}"))
         val recCard = makeCard()
         if (recommended != null) {
             recCard.addView(makeText("⭐ ${recommended.name} ${recommended.version}", 15f, Palette.ACCENT_GREEN, true))
@@ -2231,6 +2735,29 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)))
         } else recCard.addView(makeText("Keine Empfehlung verfügbar.", 13f, Palette.TEXT_MUTED))
         tabContent.addView(recCard, cardParams())
+
+        if (recommendations.size > 1) {
+            val listCard = makeCard()
+            listCard.addView(makeText("Weitere Pakete dieser Quelle", 13f, Color.WHITE, true).apply {
+                setPadding(0, 0, 0, dp(8))
+            })
+            recommendations.drop(1).forEach { pkg ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(6), 0, dp(6))
+                }
+                row.addView(makeText("${pkg.name} ${pkg.version}", 12f, Palette.TEXT_SECONDARY),
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                row.addView(makePrimaryButton("WÄHLEN", Palette.SURFACE) {
+                    selectedFirmware = pkg; selectedFirmwareUri = null
+                    selectedFirmwareName = "${pkg.name} ${pkg.version}"
+                    loadedFirmwareBytes = null; lastValidation = null
+                    renderTab(Tab.FLASH)
+                }, LinearLayout.LayoutParams(dp(90), dp(38)))
+                listCard.addView(row)
+            }
+            tabContent.addView(listCard, cardParams())
+        }
 
         tabContent.addView(makeSectionLabel("EIGENES PAKET (.bin / .zip)"))
         val pkg = makeCard()
@@ -2250,16 +2777,17 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             selectedFirmwareName?.let { "Ausgewählt: $it" } ?: "Kein Paket ausgewählt",
             13f, if (selectedFirmwareName != null) Palette.ACCENT_GREEN else Palette.TEXT_MUTED, true
         ))
+        val validation = lastValidation
         flashStatusView = makeText(
-            lastValidation?.let { "${if (it.valid) "✔" else "✘"} ${it.message}" } ?: "Noch keine Validierung durchgeführt.",
+            validation?.let { "${if (it.valid) "✔" else "✘"} ${it.message}" } ?: "Noch keine Validierung durchgeführt.",
             11f, when {
-                lastValidation == null -> Palette.TEXT_MUTED
-                lastValidation!!.valid -> Palette.ACCENT_GREEN
+                validation == null -> Palette.TEXT_MUTED
+                validation.valid -> Palette.ACCENT_GREEN
                 else -> Palette.ACCENT_RED
             }
         ).apply { setPadding(0, dp(6), 0, 0) }
         statusCard.addView(flashStatusView)
-        val sha = lastValidation?.sha256
+        val sha = validation?.sha256
         if (sha != null && sha != "remote") {
             statusCard.addView(makeText("SHA-256: $sha", 10f, Palette.TEXT_MUTED).apply {
                 setPadding(0, dp(4), 0, 0); setTypeface(Typeface.MONOSPACE)
@@ -2748,9 +3276,169 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     /* ------------------------------------------------------------------ */
-    /*  LOG                                                                */
+    /*  NEO-HACKER PRO: HEADER-SYSTEMLEISTE                                */
     /* ------------------------------------------------------------------ */
-    private fun log(line: String) = android.util.Log.d("SyrakScooterLab", line)
+    private fun buildSystemBar(): LinearLayout {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(6), dp(16), dp(6)); setBackgroundColor(Palette.SURFACE_DEEP)
+        }
+        fun cell(icon: String, initial: String): TextView {
+            val v = makeText("$icon $initial", 10f, Palette.TEXT_SECONDARY, true).apply {
+                setTypeface(Typeface.MONOSPACE); setPadding(0, 0, dp(14), 0)
+            }
+            bar.addView(v)
+            return v
+        }
+        sysRssiView = cell("📶", "RSSI --")
+        sysMtuView = cell("🔗", "MTU --")
+        sysQueueView = cell("⏳", "QUEUE 0/0")
+        bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        return bar
+    }
+
+    private fun startSystemBar() {
+        stopSystemBar()
+        val r = object : Runnable {
+            override fun run() {
+                updateSystemBar()
+                bleEngine?.readRssi()
+                handler.postDelayed(this, 1500)
+            }
+        }
+        sysBarRunnable = r
+        handler.postDelayed(r, 300)
+    }
+
+    private fun stopSystemBar() {
+        sysBarRunnable?.let { handler.removeCallbacks(it) }
+        sysBarRunnable = null
+    }
+
+    private fun updateSystemBar() {
+        val engine = bleEngine
+        sysRssiView?.text = if (lastRssi == Int.MIN_VALUE) "RSSI --" else "RSSI $lastRssi dBm"
+        sysRssiView?.setTextColor(when {
+            lastRssi == Int.MIN_VALUE -> Palette.TEXT_MUTED
+            lastRssi >= -67 -> Palette.ACCENT_GREEN
+            lastRssi >= -80 -> Palette.ACCENT_ORANGE
+            else -> Palette.ACCENT_RED
+        })
+        sysMtuView?.text = "MTU ${engine?.currentMtu() ?: 23}"
+        val depth = engine?.queueDepth() ?: 0
+        val inFlight = engine?.isWriteInFlight() == true
+        sysQueueView?.text = "QUEUE $depth/${if (inFlight) 1 else 0}"
+        sysQueueView?.setTextColor(if (depth > 4) Palette.ACCENT_ORANGE else Palette.ACCENT_CYAN)
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  NEO-HACKER PRO: LOG-TERMINAL                                       */
+    /* ------------------------------------------------------------------ */
+    private fun classifyLog(line: String): LogCategory {
+        val l = line.lowercase(Locale.ROOT)
+        return when {
+            l.contains("fehler") || l.contains("✘") || l.contains("error") || l.contains("fail") -> LogCategory.ERROR
+            l.contains("flash") -> LogCategory.FLASH
+            l.contains("> tx") -> LogCategory.TX
+            l.contains("> rx") || l.contains("notify") -> LogCategory.RX
+            else -> LogCategory.INFO
+        }
+    }
+
+    private fun log(line: String) {
+        android.util.Log.d("SyrakScooterLab", line)
+        val entry = LogEntry(
+            SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()),
+            classifyLog(line),
+            line
+        )
+        // Thread-Sicherheit: BLE-Callbacks (onLog/onWriteResult/...) laufen auf dem
+        // Binder-Thread, die UI darf aber nur vom Main-Thread angefasst werden.
+        if (Looper.myLooper() == Looper.getMainLooper()) appendLogEntry(entry)
+        else handler.post { appendLogEntry(entry) }
+    }
+
+    private fun appendLogEntry(entry: LogEntry) {
+        logEntries.addLast(entry)
+        while (logEntries.size > 500) logEntries.removeFirst()
+        refreshLogView()
+    }
+
+    private fun refreshLogView() {
+        val container = logContainer ?: return
+        container.removeAllViews()
+        val filter = logFilter
+        val shown = logEntries.filter { filter == null || it.category == filter }
+        if (shown.isEmpty()) {
+            container.addView(makeText("Keine Einträge.", 11f, Palette.TEXT_MUTED))
+        }
+        for (e in shown) {
+            val color = when (e.category) {
+                LogCategory.TX -> Palette.ACCENT_BLUE
+                LogCategory.RX -> Palette.ACCENT_CYAN
+                LogCategory.FLASH -> Palette.ACCENT_ORANGE
+                LogCategory.ERROR -> Palette.ACCENT_RED
+                LogCategory.INFO -> Palette.TEXT_SECONDARY
+            }
+            container.addView(makeText("${e.time} [${e.category.label}] ${e.text}", 10f, color).apply {
+                setTypeface(Typeface.MONOSPACE); setPadding(0, dp(2), 0, dp(2))
+            })
+        }
+        logScroll?.post { logScroll?.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun copyLogToClipboard() {
+        val filter = logFilter
+        val text = logEntries.filter { filter == null || it.category == filter }
+            .joinToString("\n") { "${it.time} [${it.category.label}] ${it.text}" }
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("SyrakScooterLab Log", text))
+        Toast.makeText(this, "Log kopiert (${logEntries.size} Einträge)", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun buildLogTerminal(): LinearLayout {
+        val card = makeCard()
+        card.addView(makeText("🖥 Log-Terminal", 14f, Color.WHITE, true))
+        val filterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(8))
+        }
+        fun filterChip(label: String, cat: LogCategory?) {
+            val active = logFilter == cat
+            val chip = makeText(label, 10f, if (active) Color.WHITE else Palette.TEXT_MUTED, true).apply {
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(14).toFloat()
+                    setColor(if (active) Palette.ACCENT_BLUE else Palette.SURFACE_DEEP)
+                }
+                setOnClickListener { logFilter = cat; refreshLogView() }
+            }
+            filterRow.addView(chip, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, dp(6), 0) })
+        }
+        filterChip("ALLE", null)
+        filterChip("NUR TX", LogCategory.TX)
+        filterChip("NUR RX", LogCategory.RX)
+        filterChip("NUR FLASH", LogCategory.FLASH)
+        filterChip("NUR FEHLER", LogCategory.ERROR)
+        val filterScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        filterScroll.addView(filterRow)
+        card.addView(filterScroll)
+        logScroll = ScrollView(this).apply {
+            setBackgroundColor(Color.rgb(8, 10, 14))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+        }
+        logContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        logScroll?.addView(logContainer)
+        card.addView(logScroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(180)
+        ))
+        card.addView(makePrimaryButton("LOG KOPIEREN", Palette.SURFACE) { copyLogToClipboard() },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                setMargins(0, dp(8), 0, 0)
+            })
+        return card
+    }
 }
 
 /** Ergebnis der Firmware-Integritätsprüfung inkl. extrahierter Flash-Bytes. */
