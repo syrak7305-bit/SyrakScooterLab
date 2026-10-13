@@ -4,21 +4,13 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
-import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
-import android.content.Context
-import android.content.SharedPreferences
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -50,1646 +42,23 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.ArrayDeque
+import java.util.Date
 import java.util.Locale
-import java.util.UUID
 import java.util.zip.ZipInputStream
 
 /* ============================================================================
- *  SYRAK SCOOTERLAB  —  MainActivity.kt  (v6 "Real BLE Engine")
+ *  SYRAK SCOOTERLAB  —  MainActivity.kt  (v7 "Modular Protocol Engine")
  *  ----------------------------------------------------------------------------
- *  Diese Version enthält KEINE Simulation mehr im Hardware-Pfad.
+ *  Diese Activity ist jetzt ein SCHLANKER UI-CONTROLLER:
+ *    • KEINE herstellerspezifischen Byte-Operationen mehr im UI.
+ *    • Jeder Tuning-Befehl wird vom aktiven [ScooterProtocolAdapter] gebaut
+ *      (siehe sendFrame()/sendCommand()).
+ *    • Persistenz laeuft ueber [ScooterRepository] (PBKDF2-PIN, Profile, Trip).
+ *    • BLE-Mechanik + ACK-Handling liegen in [BleEngine].
  *
- *  ENTFERNT:
- *   • Handler-Timer-Fake-Flash (ProgressBar-Runnable) -> ersetzt durch echte
- *     chunkweise GATT-Sequenz-Write-Schleife mit ACK-Warten.
- *   • "> tx: ... (simuliert)"-Logs -> ersetzt durch echte GATT-Status-Auswertung.
- *   • Math.random()/Math.sin() auf dem Tacho im Echt-Modus -> ersetzt durch
- *     echten BLE-Notify-Decoder. Simulation NUR noch bei isDemo == true.
- *   • Fake-"mtu configured"-Log -> echtes requestMtu() + onMtuChanged.
- *
- *  NEU:
- *   • BleEngine: echte GATT-Verbindung, Service/Char-Lookup (Navee FFE0/FFE1/FFE2
- *     und Ninebot/Xiaomi E003/FFF1/FFF2) mit generischem Fallback, CCCD-Notify-
- *     Setup (0x2902), MTU-Negotiation, serielle Write-Queue (eine GATT-Operation
- *     gleichzeitig), onCharacteristicWrite-ACK, onCharacteristicChanged-Decoder.
- *   • Echtes Chunk-Flashing mit Fortschritt anhand geschriebener Bytes.
- *   • Register-Snapshot + Police Mode (echte Drossel-Frames + Restore).
- *   • TelemetrieDecoder für beide Protokollfamilien.
- *
- *  WICHTIG / EHRLICH:
- *   Die GATT-Mechanik (Verbindung, Notify, MTU, Queue, Chunking, ACK-Handling)
- *   ist vollständig real implementiert und lauffähig.
- *   Die EXAKTEN Byte-Offsets der Telemetrie-Payloads sowie die exakten
- *   Flash-Unlock-/Reboot-Frames sind herstellerspezifisch und NICHT öffentlich
- *   spezifiziert. Sie stehen als klar benannte, zentral änderbare Konstanten
- *   (TelemetryDecoder / FlashProtocol) oben in der Datei. Ohne einen echten
- *   Mitschnitt (HCI-Snoop / nRF Connect) sind sie nicht verifizierbar — sie
- *   sind bewusst NICHT erfunden, sondern als verifizierbar markiert.
- * ==========================================================================*/
-
-/* ---------------------------------------------------------------------------
- *  DESIGN TOKENS
- * ------------------------------------------------------------------------- */
-object Palette {
-    val BG = Color.rgb(14, 17, 22)
-    val SURFACE = Color.rgb(27, 33, 41)
-    val SURFACE_ALT = Color.rgb(20, 24, 31)
-    val SURFACE_DEEP = Color.rgb(16, 20, 26)
-    val ACCENT_RED = Color.rgb(220, 60, 60)
-    val ACCENT_GREEN = Color.rgb(0, 210, 130)
-    val ACCENT_BLUE = Color.rgb(45, 130, 255)
-    val ACCENT_ORANGE = Color.rgb(255, 165, 0)
-    val ACCENT_YELLOW = Color.rgb(255, 214, 10)
-    val ACCENT_CYAN = Color.rgb(0, 200, 220)
-    val GRID_LINE = Color.rgb(45, 55, 70)
-    val TEXT_PRIMARY = Color.WHITE
-    val TEXT_SECONDARY = Color.rgb(145, 155, 170)
-    val TEXT_MUTED = Color.rgb(125, 135, 150)
-    val DIVIDER = Color.rgb(38, 46, 58)
-}
-
-/* ---------------------------------------------------------------------------
- *  DATENMODELLE
- * ------------------------------------------------------------------------- */
-data class ScooterDevice(
-    val device: BluetoothDevice?,
-    val name: String,
-    val address: String,
-    val rssi: Int,
-    val isScooterCandidate: Boolean,
-    val isDemo: Boolean = false
-)
-
-enum class Region(val code: String, val displayName: String, val legalSpeedKmh: Int) {
-    DE("DE", "Deutschland", 20),
-    AT("AT", "Österreich", 25),
-    CH("CH", "Schweiz", 20),
-    US("US", "United States", 32),
-    WORLD("XX", "International", 25);
-
-    companion object {
-        fun fromCountry(code: String): Region = when (code.uppercase(Locale.ROOT)) {
-            "DE" -> DE
-            "AT" -> AT
-            "CH" -> CH
-            "US" -> US
-            else -> WORLD
-        }
-    }
-}
-
-enum class BleProtocol(val displayName: String) {
-    NINEBOT("Ninebot / Xiaomi (5A A5)"),
-    NAVEE_BRIGHTWAY("Navee / Brightway (FFE1)")
-}
-
-enum class FlashMode(val displayName: String, val description: String) {
-    SOFT_PATCH(
-        "Soft-Patch / RAM-Overlay",
-        "Volatiles Tuning ohne Veränderung des dauerhaften Speichers. Per Panik-Button in <1 s vollständig löschbar."
-    ),
-    HARD_FLASH(
-        "Echtes MCU/ESC-Firmware-Flashen (.bin)",
-        "Schreibt .bin-Sektoren dauerhaft in den Controller-Speicher. Nur nach ausdrücklicher Bestätigung."
-    )
-}
-
-data class ScooterProfile(
-    val name: String,
-    val maxSpeed: Int,
-    val zeroStart: Int,
-    val kers: Int,
-    val cruiseControl: Boolean
-)
-
-enum class Tab { INFO, TOOLS, DASHBOARD, FLASH, CONFIG }
-
-data class FirmwarePackage(
-    val id: String,
-    val name: String,
-    val version: String,
-    val target: String,
-    val sourceUrl: String,
-    val recommendedMaxKmh: Int,
-    val notes: String
-)
-
-/** Dekodierte Live-Telemetrie. Alle Felder null = noch kein echtes Frame empfangen. */
-data class Telemetry(
-    val speedKmh: Float? = null,
-    val voltageV: Float? = null,
-    val currentA: Float? = null,
-    val batteryPercent: Int? = null,
-    val motorTempC: Float? = null,
-    val cellMinV: Float? = null,
-    val cellMaxV: Float? = null,
-    /** Alle Zellgruppen-Spannungen (V) aus dem BMS-Block, sofern gesendet. */
-    val cellVoltages: List<Float>? = null,
-    /** BMS-Design-Kapazität (mAh) + aktuelle Vollkapazität (mAh) -> SoH. */
-    val designCapacityMah: Int? = null,
-    val fullChargeCapacityMah: Int? = null,
-    val cycleCount: Int? = null,
-    val bmsTempC: Float? = null,
-    val rawHex: String = "",
-    val source: BleProtocol = BleProtocol.NINEBOT
-)
-
-/** Snapshot der aktuell am Controller gesetzten Limits (für Police-Mode-Restore). */
-data class RegisterSnapshot(
-    val speedCeiling: Int? = null,
-    val zeroStart: Int? = null,
-    val kers: Int? = null,
-    val cruise: Boolean? = null,
-    val locked: Boolean? = null,
-    val rawReadback: List<ByteArray> = emptyList()
-)
-
-/* ---------------------------------------------------------------------------
- *  LOG-TERMINAL (Neo-Hacker Pro)
- * ------------------------------------------------------------------------- */
-enum class LogCategory(val label: String) {
-    INFO("INFO"), TX("TX"), RX("RX"), FLASH("FLASH"), ERROR("FEHLER")
-}
-
-data class LogEntry(val time: String, val category: LogCategory, val text: String)
-
-/* ---------------------------------------------------------------------------
- *  FIRMWARE-QUELLEN (Community-Plattformen)
- * ------------------------------------------------------------------------- */
-enum class FirmwareSource(
-    val displayName: String,
-    // KEINE FAKES: bewusst KEINE erfundenen Download-URLs. Stattdessen ehrliche
-    // Referenz-Texte, damit die UI identisch bleibt, aber nichts vorgetaeuscht wird.
-    val reference: String,
-    val description: String
-) {
-    MI_FW_INFO(
-        "mi-fw-info (Streamlit)",
-        "Community-Datenbank • Referenz: mi-fw-info (Streamlit-App). Kein offizieller Download-Endpunkt hinterlegt.",
-        "Community-Datenbank fuer Navee/Brightway- & Xiaomi-Custom-Patches (DRV/BMS)."
-    ),
-    SCOOTER_HACKING(
-        "ScooterHacking / SHFW",
-        "Community-Projekt • Referenz: ScooterHacking (SHFW). Kein offizieller Download-Endpunkt hinterlegt.",
-        "SHFW-Repository fuer Segway-Ninebot & Xiaomi - volle Parameterkontrolle."
-    ),
-    NAVEE_FLASHER(
-        "Navee Flasher Repo",
-        "Community-Projekt • Referenz: Navee-Flasher-Repository. Kein offizieller Download-Endpunkt hinterlegt.",
-        "Verifizierte MCU/DRV-Binaries fuer GT3 Max, GT3 Pro, ST3, N65, S65, V40."
-    ),
-    M365_DOWNG(
-        "M365 DownG / Ninebot Flasher",
-        "Community-Projekt • Referenz: M365 DownG / Ninebot Flasher. Kein offizieller Download-Endpunkt hinterlegt.",
-        "DownG- & Ninebot-Flasher-Repositories (Ninebot/Xiaomi Stock & Custom)."
-    ),
-    FACTORY(
-        "Hersteller / Werks-OTA",
-        "Hersteller-Kanal • Referenz: offizielles Werks-OTA (Segway-Ninebot). Kein direkter Download-Endpunkt hinterlegt.",
-        "Offizielle Werks-Firmware (legaler Auslieferungszustand)."
-    )
-}
-
-/** Fahrdaten der aktuellen Fahrt (Trip-Computer). */
-data class TripData(
-    var distanceKm: Double = 0.0,
-    var maxSpeedKmh: Double = 0.0,
-    var speedSum: Double = 0.0,
-    var speedSamples: Int = 0,
-    var energyWh: Double = 0.0,
-    var startMillis: Long = 0L,
-    var lastMillis: Long = 0L
-) {
-    val avgSpeedKmh: Double get() = if (speedSamples > 0) speedSum / speedSamples else 0.0
-    val durationMillis: Long get() = if (startMillis == 0L) 0L else (lastMillis - startMillis)
-}
-
-/** Motor-Performance-Profil (Eco-Saver / Sport-Plus). */
-enum class RideMode(val displayName: String, val description: String) {
-    NORMAL("Normal", "Werksseitige Leistungsabgabe."),
-    ECO_SAVER("Eco-Saver", "Drosselt sanft unter 20 % Akkustand, um die Reichweite zu maximieren."),
-    SPORT_PLUS("Sport-Plus", "Maximale Beschleunigung + temporaerer Phasenstrom unter Thermalschutz.")
-}
-
-/* ---------------------------------------------------------------------------
- *  SCOOTER-MODELLE
- * ------------------------------------------------------------------------- */
-enum class ScooterModel(
-    val displayName: String,
-    val matchKeywords: List<String>,
-    val easySpeedKmh: Int,
-    val absMaxKmh: Int,
-    val nominalVoltage: Float,
-    val maxCells: Int,
-    val panicHotkey: String,
-    val stealthUnlockHotkey: String,
-    val protocol: BleProtocol = BleProtocol.NINEBOT
-) {
-    NINEBOT_MAX_G2("Segway-Ninebot Max G2", listOf("max g2", "g2 pro", "g2"), 32, 40, 36.0f, 10,
-        "Bremshebel ziehen + Power-Taste 3 s halten", "Power-Taste 3× kurz drücken"),
-    NINEBOT_MAX_G30("Segway-Ninebot Max G30", listOf("max g30", "g30d", "g30lp", "g30"), 30, 40, 36.0f, 10,
-        "Bremshebel ziehen + Power-Taste 3 s halten", "Power-Taste 3× kurz drücken"),
-    NINEBOT_F2_PRO("Segway-Ninebot F2 Pro", listOf("f2 pro", "f2", "f40", "f30", "f20"), 30, 38, 36.0f, 10,
-        "Bremshebel 2× + Power-Taste", "Power-Taste 3× kurz drücken"),
-    NINEBOT_ES("Segway-Ninebot ES-Serie", listOf("es1", "es2", "es3", "es4", "ninebot es"), 25, 32, 36.0f, 10,
-        "Bremshebel + Power-Taste 2 s", "Power-Taste 3× kurz drücken"),
-    XIAOMI_PRO_2("Xiaomi Pro 2", listOf("pro 2", "pro2", "mi pro 2"), 30, 35, 36.0f, 10,
-        "Bremshebel ziehen + Power-Taste 3 s halten", "Power-Taste 3× kurz drücken"),
-    XIAOMI_M365("Xiaomi M365 / 1S", listOf("m365", "1s", "essential", "mi scooter"), 28, 32, 36.0f, 10,
-        "Bremshebel ziehen + Power-Taste 3 s halten", "Power-Taste 3× kurz drücken"),
-    NAVEE_GT3_MAX("Navee GT3 Max", listOf("gt3 max", "navee gt3 max", "gt3", "navee"), 32, 45, 48.0f, 13,
-        "5× Bremshebel ziehen + 5× Gashebel drücken", "Blinker links + rechts gleichzeitig 3 s", BleProtocol.NAVEE_BRIGHTWAY),
-    NAVEE_GT3_PRO("Navee GT3 Pro", listOf("gt3 pro", "navee gt3 pro"), 32, 42, 48.0f, 13,
-        "5× Bremshebel ziehen + 5× Gashebel drücken", "Blinker links + rechts gleichzeitig 3 s", BleProtocol.NAVEE_BRIGHTWAY),
-    NAVEE_ST3("Navee ST3", listOf("navee st3", "st3 pro", "st3"), 30, 40, 48.0f, 13,
-        "5× Bremshebel ziehen + 5× Gashebel drücken", "Blinker links + rechts gleichzeitig 3 s", BleProtocol.NAVEE_BRIGHTWAY),
-    NAVEE_N65("Navee N65", listOf("navee n65", "n65 pro", "n65"), 30, 40, 48.0f, 13,
-        "5× Bremshebel ziehen + 5× Gashebel drücken", "Blinker links + rechts gleichzeitig 3 s", BleProtocol.NAVEE_BRIGHTWAY),
-    NAVEE_V40("Navee V40", listOf("navee v40", "v40 pro", "v40"), 30, 40, 48.0f, 13,
-        "5× Bremshebel ziehen + 5× Gashebel drücken", "Blinker links + rechts gleichzeitig 3 s", BleProtocol.NAVEE_BRIGHTWAY),
-    NAVEE_S65("Navee S65 / N65 / V40", listOf("s65", "n65", "v40", "navee s"), 30, 40, 48.0f, 13,
-        "5× Bremshebel ziehen + 5× Gashebel drücken", "Blinker links + rechts gleichzeitig 3 s", BleProtocol.NAVEE_BRIGHTWAY),
-    SOFLOW_SO4("SoFlow SO4 / SO6", listOf("soflow", "so4", "so6", "so8", "so3"), 25, 32, 36.0f, 10,
-        "Bremshebel + Power-Taste 3 s", "Power-Taste 3× kurz drücken"),
-    UNKNOWN("Unbekanntes Modell", emptyList(), 25, 35, 36.0f, 10,
-        "Bremshebel + Power-Taste 3 s", "Power-Taste 3× kurz drücken");
-
-    val isKnown: Boolean get() = this != UNKNOWN
-
-    companion object {
-        fun detect(name: String, address: String): ScooterModel {
-            val n = name.lowercase(Locale.ROOT)
-            var best: ScooterModel? = null
-            var bestScore = 0
-            for (m in values()) {
-                if (m == UNKNOWN) continue
-                var score = 0
-                for (kw in m.matchKeywords) if (n.contains(kw)) score += kw.length
-                if (score > bestScore) { bestScore = score; best = m }
-            }
-            return best ?: UNKNOWN
-        }
-    }
-}
-
-/* ---------------------------------------------------------------------------
- *  FIRMWARE-KATALOG
- * ------------------------------------------------------------------------- */
-object FirmwareCatalog {
-    private val shfwDrv = FirmwarePackage("shfw-drv", "SHFW DRV", "0.3.0", "DRV",
-        "Referenz: ScooterHacking-Repository (kein offizieller Endpunkt)", 32, "ScooterHacking Firmware für Ninebot/Xiaomi — volle Parameterkontrolle.")
-    private val shfwBms = FirmwarePackage("shfw-bms", "SHFW BMS", "1.5.5", "BMS",
-        "Referenz: ScooterHacking-Repository (kein offizieller Endpunkt)", 0, "BMS-Firmware für Ninebot/Xiaomi — Zellbalance & Schutzparameter.")
-    private val stockDrv = FirmwarePackage("stock-drv", "Werks-DRV (Stock)", "factory", "DRV",
-        "Referenz: Segway-Ninebot Werks-OTA (kein offizieller Endpunkt)", 20, "Original-Werksfirmware — legaler Auslieferungszustand.")
-    private val stockBms = FirmwarePackage("stock-bms", "Werks-BMS (Stock)", "factory", "BMS",
-        "Referenz: Segway-Ninebot Werks-OTA (kein offizieller Endpunkt)", 0, "Original-BMS-Firmware.")
-    private val naveeProfile = FirmwarePackage("navee-ble-profile", "Navee BLE Performance Profile", "1.0.0", "BLE",
-        "Referenz: Navee Werks-Firmware (kein offizieller Endpunkt)", 32, "BLE-Profil-Patch für Navee.")
-    private val soflowProfile = FirmwarePackage("soflow-ble-profile", "SoFlow BLE Performance Profile", "1.0.0", "BLE",
-        "Referenz: SoFlow Werks-Firmware (kein offizieller Endpunkt)", 25, "BLE-Profil-Patch für SoFlow.")
-    private val naveeGt3MaxStockEu = FirmwarePackage("navee-gt3max-stock-eu", "Navee GT3 Max Stock (EU)", "v2.0.3.1", "DRV",
-        "Referenz: Navee GT3 Max EU-Werks-Firmware (kein offizieller Endpunkt)", 20, "Original EU-Werksfirmware. Stellt das legale 20-km/h-eKFV-Limit wieder her.")
-    private val naveeGt3MaxUsPerf = FirmwarePackage("navee-gt3max-us-perf", "Navee GT3 Max US Performance", "v2.0.3.1-US", "DRV",
-        "Referenz: Navee GT3 Max US-Performance (kein offizieller Endpunkt)", 40, "US-Performance-Payload für die Brightway-Engine.")
-    private val naveeGt3MaxUnlock = FirmwarePackage("navee-gt3max-unlock", "Navee GT3 Max Unlock Profile", "1.0.0", "BLE",
-        "Referenz: Navee GT3 Max Unlock-Profil (kein offizieller Endpunkt)", 32, "Unlock-Profil — hebt die interne Drosselung auf die Easy-Speed-Grenze (32 km/h).")
-    private val naveeS65StockEu = FirmwarePackage("navee-s65-stock-eu", "Navee S65 / N65 / V40 Stock (EU)", "v1.8.2", "DRV",
-        "Referenz: Navee S65/N65/V40 EU-Werks-Firmware (kein offizieller Endpunkt)", 20, "Original EU-Werksfirmware für S65 / N65 / V40.")
-    private val naveeS65Unlock = FirmwarePackage("navee-s65-unlock", "Navee S65 Unlock Profile", "1.0.0", "BLE",
-        "Referenz: Navee S65 Unlock-Profil (kein offizieller Endpunkt)", 30, "Unlock-Profil für S65 / N65 / V40.")
-    private val brightwayUnlock = FirmwarePackage("brightway-unlock", "Brightway Engine Unlock", "1.0.0", "BLE",
-        "Referenz: Brightway Engine Unlock-Profil (kein offizieller Endpunkt)", 32, "Generisches Brightway-Engine-Unlock-Profil.")
-
-    // ---- Community-Quellen (Neo-Hacker Pro) --------------------------------
-    private val miFwInfoNavee = FirmwarePackage("mi-fw-navee", "mi-fw-info Navee/Brightway Patch", "community", "DRV",
-        "Referenz: mi-fw-info (Streamlit) (kein offizieller Endpunkt)", 32, "Community-Patch (mi-fw-info) fuer Navee/Brightway.")
-    private val miFwInfoXiaomi = FirmwarePackage("mi-fw-xiaomi", "mi-fw-info Xiaomi Custom", "community", "DRV",
-        "Referenz: mi-fw-info (Streamlit) (kein offizieller Endpunkt)", 32, "Community-Patch (mi-fw-info) fuer Xiaomi.")
-    private val shfwRepo = FirmwarePackage("shfw-repo", "SHFW Repository Build", "nightly", "DRV",
-        "Referenz: ScooterHacking / SHFW (kein offizieller Endpunkt)", 32, "SHFW-Build aus dem ScooterHacking-Repository.")
-    private val naveeFlasherGt3 = FirmwarePackage("navee-flasher-gt3", "Navee Flasher GT3 Max/Pro", "verified", "DRV",
-        "Referenz: Navee-Flasher-Repository (kein offizieller Endpunkt)", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer GT3 Max/Pro.")
-    private val naveeFlasherSt3 = FirmwarePackage("navee-flasher-st3", "Navee Flasher ST3/N65/S65/V40", "verified", "DRV",
-        "Referenz: Navee-Flasher-Repository (kein offizieller Endpunkt)", 40, "Verifizierte DRV-Binary (Navee Flasher) fuer ST3/N65/S65/V40.")
-    private val m365Downg = FirmwarePackage("m365-downg", "M365 DownG / Ninebot Flasher", "stock", "DRV",
-        "Referenz: M365 DownG / Ninebot Flasher (kein offizieller Endpunkt)", 25, "Stock-/Downgrade-Binary via M365 DownG / Ninebot Flasher.")
-
-    /** Liefert alle Pakete, die einer Community-Quelle zugeordnet sind. */
-    fun fromSource(source: FirmwareSource, model: ScooterModel): List<FirmwarePackage> {
-        val navee = model.protocol == BleProtocol.NAVEE_BRIGHTWAY
-        val ninebot = model in listOf(
-            ScooterModel.NINEBOT_MAX_G2, ScooterModel.NINEBOT_MAX_G30, ScooterModel.NINEBOT_F2_PRO,
-            ScooterModel.NINEBOT_ES, ScooterModel.XIAOMI_PRO_2, ScooterModel.XIAOMI_M365
-        )
-        return when (source) {
-            FirmwareSource.MI_FW_INFO ->
-                if (navee) listOf(miFwInfoNavee, naveeProfile) else listOf(miFwInfoXiaomi, naveeProfile)
-            FirmwareSource.SCOOTER_HACKING ->
-                if (ninebot) listOf(shfwRepo, shfwDrv, shfwBms) else listOf(shfwRepo, naveeProfile)
-            FirmwareSource.NAVEE_FLASHER ->
-                when (model) {
-                    ScooterModel.NAVEE_GT3_MAX, ScooterModel.NAVEE_GT3_PRO -> listOf(naveeFlasherGt3, naveeGt3MaxUnlock)
-                    ScooterModel.NAVEE_ST3, ScooterModel.NAVEE_N65, ScooterModel.NAVEE_V40, ScooterModel.NAVEE_S65 ->
-                        listOf(naveeFlasherSt3, naveeS65Unlock)
-                    else -> listOf(naveeFlasherGt3, naveeProfile)
-                }
-            FirmwareSource.M365_DOWNG ->
-                if (ninebot) listOf(m365Downg, stockDrv) else listOf(m365Downg, naveeProfile)
-            FirmwareSource.FACTORY ->
-                if (navee) listOf(naveeGt3MaxStockEu, naveeS65StockEu, stockDrv)
-                else listOf(stockDrv, stockBms)
-        }
-    }
-
-    fun forModel(model: ScooterModel): List<FirmwarePackage> = when (model) {
-        ScooterModel.NINEBOT_MAX_G2, ScooterModel.NINEBOT_MAX_G30, ScooterModel.NINEBOT_F2_PRO,
-        ScooterModel.NINEBOT_ES, ScooterModel.XIAOMI_PRO_2, ScooterModel.XIAOMI_M365 ->
-            listOf(shfwDrv, shfwBms, stockDrv, stockBms)
-        ScooterModel.NAVEE_GT3_MAX, ScooterModel.NAVEE_GT3_PRO ->
-            listOf(naveeGt3MaxUnlock, naveeGt3MaxUsPerf, naveeGt3MaxStockEu, naveeProfile)
-        ScooterModel.NAVEE_ST3, ScooterModel.NAVEE_N65, ScooterModel.NAVEE_V40, ScooterModel.NAVEE_S65 ->
-            listOf(naveeS65Unlock, naveeS65StockEu, brightwayUnlock, naveeProfile)
-        ScooterModel.SOFLOW_SO4 -> listOf(soflowProfile, stockDrv)
-        ScooterModel.UNKNOWN -> listOf(stockDrv, stockBms)
-    }
-
-    fun recommended(model: ScooterModel): FirmwarePackage? = forModel(model).firstOrNull()
-}
-
-/* ---------------------------------------------------------------------------
- *  NINEBOT / XIAOMI FRAME-BUILDER  (5A A5 | LEN | ADDR | CMD | PAYLOAD | SUM)
- * ------------------------------------------------------------------------- */
-object ScooterFrames {
-    private const val HEADER_1 = 0x5A
-    private const val HEADER_2 = 0xA5
-
-    /**
-     * Ninebot-Prüfsumme.
-     * ACHTUNG: Die exakte Formel ist firmwareabhängig. Diese Variante entspricht
-     * der in der Community am häufigsten verwendeten (Summe ab LEN, Zweierkomplement).
-     * Bei echten Schreibversuchen MUSS sie gegen einen Mitschnitt verifiziert werden.
-     */
-    private fun checksum(frame: ByteArray): Byte {
-        var sum = 0
-        for (i in 2 until frame.size - 1) sum += frame[i].toInt() and 0xFF
-        return ((0x100 - (sum and 0xFF)) and 0xFF).toByte()
-    }
-
-    fun buildFrame(address: Int, cmd: Int, payload: ByteArray): ByteArray {
-        val frame = ByteArray(6 + payload.size)
-        frame[0] = HEADER_1.toByte()
-        frame[1] = HEADER_2.toByte()
-        frame[2] = (payload.size + 2).toByte()
-        frame[3] = address.toByte()
-        frame[4] = cmd.toByte()
-        System.arraycopy(payload, 0, frame, 5, payload.size)
-        frame[frame.size - 1] = checksum(frame)
-        return frame
-    }
-
-    fun zeroStart(speedKmh: Int): ByteArray = buildFrame(0x20, 0x72, byteArrayOf(speedKmh.toByte()))
-    fun maxSpeed(speedKmh: Int): ByteArray = buildFrame(0x20, 0x71, byteArrayOf(speedKmh.toByte()))
-    fun maxPower(): ByteArray = buildFrame(0x20, 0x73, byteArrayOf(0x01))
-    fun lock(locked: Boolean): ByteArray = buildFrame(0x20, 0x7A, byteArrayOf(if (locked) 1 else 0))
-    fun germanManeuver(): ByteArray = buildFrame(0x20, 0x78, byteArrayOf(0x01))
-    fun policeMode(legalKmh: Int): ByteArray = buildFrame(0x20, 0x79, byteArrayOf(legalKmh.toByte()))
-    fun kers(level: Int): ByteArray = buildFrame(0x20, 0x7B, byteArrayOf(level.toByte()))
-    fun cruise(enabled: Boolean): ByteArray = buildFrame(0x20, 0x7C, byteArrayOf(if (enabled) 1 else 0))
-    fun motorTempGuard(celsius: Int): ByteArray = buildFrame(0x20, 0x7D, byteArrayOf(celsius.toByte()))
-    fun emergencyCut(): ByteArray = buildFrame(0x20, 0x7E, byteArrayOf(0x00))
-    fun overspeedAlarmMute(mute: Boolean): ByteArray = buildFrame(0x20, 0x7F, byteArrayOf(if (mute) 1 else 0))
-
-    /** Echter Lese-Request für Telemetrie (ESC-Info). CMD 0x01 = read ESC/BMS-Block. */
-    fun readTelemetry(): ByteArray = buildFrame(0x20, 0x01, byteArrayOf(0x00))
-
-    fun toHex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".format(it) }
-}
-
-/* ---------------------------------------------------------------------------
- *  NAVEE / BRIGHTWAY FRAME-BUILDER  (AA 55 | CMD | LEN | PAYLOAD | SUM)
- * ------------------------------------------------------------------------- */
-object NaveeFrames {
-    const val SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
-    const val CHAR_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"
-    const val CHAR_WRITE_UUID = "0000ffe2-0000-1000-8000-00805f9b34fb"
-
-    private const val H1 = 0xAA
-    private const val H2 = 0x55
-
-    const val CMD_HANDSHAKE = 0x01
-    const val CMD_SPEED = 0x10
-    const val CMD_ZERO_START = 0x11
-    const val CMD_REGION = 0x12
-    const val CMD_MAX_POWER = 0x13
-    const val CMD_OVERSPEED_ALARM_MUTE = 0x14
-    const val CMD_GERMAN = 0x18
-    const val CMD_LOCK = 0x1A
-    const val CMD_KERS = 0x1B
-    const val CMD_CRUISE = 0x1C
-    const val CMD_TEMP_GUARD = 0x1D
-    const val CMD_EMERGENCY = 0x1E
-    const val CMD_POLICE = 0x1F
-    const val CMD_READ_STATUS = 0x20
-
-    fun buildFrame(cmd: Int, payload: ByteArray): ByteArray {
-        val head = ByteArray(4 + payload.size)
-        head[0] = H1.toByte()
-        head[1] = H2.toByte()
-        head[2] = cmd.toByte()
-        head[3] = payload.size.toByte()
-        System.arraycopy(payload, 0, head, 4, payload.size)
-        var sum = 0
-        for (b in head) sum += b.toInt() and 0xFF
-        val out = head.copyOf(head.size + 1)
-        out[out.size - 1] = (sum and 0xFF).toByte()
-        return out
-    }
-
-    fun handshake(): ByteArray = buildFrame(CMD_HANDSHAKE, byteArrayOf(0x01))
-    fun speedCeiling(kmh: Int): ByteArray = buildFrame(CMD_SPEED, byteArrayOf(kmh.toByte()))
-    fun zeroStart(kmh: Int): ByteArray = buildFrame(CMD_ZERO_START, byteArrayOf(kmh.toByte()))
-    fun regionToggle(regionCode: Int): ByteArray = buildFrame(CMD_REGION, byteArrayOf(regionCode.toByte()))
-    fun maxPower(): ByteArray = buildFrame(CMD_MAX_POWER, byteArrayOf(0x01))
-    fun overspeedAlarmMute(mute: Boolean): ByteArray =
-        buildFrame(CMD_OVERSPEED_ALARM_MUTE, byteArrayOf(if (mute) 1 else 0))
-    fun germanManeuver(): ByteArray = buildFrame(CMD_GERMAN, byteArrayOf(0x01))
-    fun lock(locked: Boolean): ByteArray = buildFrame(CMD_LOCK, byteArrayOf(if (locked) 1 else 0))
-    fun kers(level: Int): ByteArray = buildFrame(CMD_KERS, byteArrayOf(level.toByte()))
-    fun cruise(enabled: Boolean): ByteArray = buildFrame(CMD_CRUISE, byteArrayOf(if (enabled) 1 else 0))
-    fun motorTempGuard(celsius: Int): ByteArray = buildFrame(CMD_TEMP_GUARD, byteArrayOf(celsius.toByte()))
-    fun emergencyCut(): ByteArray = buildFrame(CMD_EMERGENCY, byteArrayOf(0x00))
-    fun policeMode(legalKmh: Int): ByteArray = buildFrame(CMD_POLICE, byteArrayOf(legalKmh.toByte()))
-
-    /** Echter Status-/Telemetrie-Request. */
-    fun readStatus(): ByteArray = buildFrame(CMD_READ_STATUS, byteArrayOf(0x00))
-
-    /**
-     * Übersetzt einen Ninebot-Frame in das Brightway-Äquivalent.
-     * @param alt true -> alternative Kodierung (vertauschter Header 55 AA + XOR-Prüfsumme).
-     *            Wird als Fallback-Kandidat genutzt, falls der Controller auf die
-     *            Standard-Kodierung nicht mit dem gewohnten ACK antwortet.
-     */
-    fun fromNinebot(frame: ByteArray, alt: Boolean = false): ByteArray? {
-        if (frame.size < 6) return null
-        if (frame[0] != 0x5A.toByte() || frame[1] != 0xA5.toByte()) return null
-        val cmd = frame[4].toInt() and 0xFF
-        val payload = frame.copyOfRange(5, frame.size - 1)
-        val value = if (payload.isNotEmpty()) payload[0].toInt() and 0xFF else 0
-        val b: (Int, ByteArray) -> ByteArray =
-            if (alt) { c, p -> buildFrameAlt(c, p) } else { c, p -> buildFrame(c, p) }
-        return when (cmd) {
-            0x71 -> b(CMD_SPEED, byteArrayOf(value.toByte()))
-            0x72 -> b(CMD_ZERO_START, byteArrayOf(value.toByte()))
-            0x73 -> b(CMD_MAX_POWER, byteArrayOf(0x01))
-            0x78 -> b(CMD_GERMAN, byteArrayOf(0x01))
-            0x79 -> b(CMD_POLICE, byteArrayOf(value.toByte()))
-            0x7A -> b(CMD_LOCK, byteArrayOf(if (value != 0) 1 else 0))
-            0x7B -> b(CMD_KERS, byteArrayOf(value.toByte()))
-            0x7C -> b(CMD_CRUISE, byteArrayOf(if (value != 0) 1 else 0))
-            0x7D -> b(CMD_TEMP_GUARD, byteArrayOf(value.toByte()))
-            0x7E -> b(CMD_EMERGENCY, byteArrayOf(0x00))
-            0x7F -> b(CMD_OVERSPEED_ALARM_MUTE, byteArrayOf(if (value != 0) 1 else 0))
-            0x01 -> b(CMD_READ_STATUS, byteArrayOf(0x00))
-            else -> null
-        }
-    }
-
-    /**
-     * Alternative Brightway-Kodierung: vertauschter Header (55 AA) + XOR-Prüfsumme.
-     * Dient ausschließlich als Fallback-Kandidat (manche GT3-Max-FW-Revisionen
-     * quittieren nur eine der beiden Header-Varianten).
-     */
-    fun buildFrameAlt(cmd: Int, payload: ByteArray): ByteArray {
-        val head = ByteArray(4 + payload.size)
-        head[0] = H2.toByte()
-        head[1] = H1.toByte()
-        head[2] = cmd.toByte()
-        head[3] = payload.size.toByte()
-        System.arraycopy(payload, 0, head, 4, payload.size)
-        var x = 0
-        for (bb in head) x = x xor (bb.toInt() and 0xFF)
-        val out = head.copyOf(head.size + 1)
-        out[out.size - 1] = (x and 0xFF).toByte()
-        return out
-    }
-
-    fun toHex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".format(it) }
-}
-
-/* ---------------------------------------------------------------------------
- *  RAM-OVERLAY
- * ------------------------------------------------------------------------- */
-class RamOverlay {
-    private val patches = linkedMapOf<String, ByteArray>()
-    var active = false
-        private set
-
-    fun apply(name: String, frame: ByteArray) { patches[name] = frame; active = true }
-
-    fun flush(): List<String> {
-        val keys = patches.keys.toList()
-        patches.clear()
-        active = false
-        return keys
-    }
-
-    val size: Int get() = patches.size
-    val names: List<String> get() = patches.keys.toList()
-}
-
-/* ---------------------------------------------------------------------------
- *  TELEMETRIE-DECODER
- *  ---------------------------------------------------------------------------
- *  !! VERIFIKATIONSPFLICHT !!
- *  Die folgenden Offsets sind die einzigen Werte in dieser Datei, die NICHT
- *  aus öffentlicher Spezifikation stammen (es gibt keine). Sie sind bewusst
- *  als benannte Konstanten ausgelagert, damit sie nach einem echten Mitschnitt
- *  (HCI-Snoop oder nRF Connect Logger) in EINER Zeile korrigiert werden können.
- *  Der Decoder selbst (Header-Check, Längen-Check, Vorzeichen, Skalierung) ist
- *  voll funktional und real.
- * ------------------------------------------------------------------------- */
-object TelemetryDecoder {
-
-    // ---- Ninebot/Xiaomi ESC-Info-Payload ----------------------------------
-    // Antwort: 5A A5 LEN ADDR CMD <payload> SUM  -> payload beginnt bei Index 5
-    private const val NB_PAYLOAD_START = 5
-    // Offsets RELATIV zum Payload-Start (VERIFY gegen Mitschnitt):
-    private const val NB_OFF_SPEED = 4      // uint16 LE, 0.1 km/h
-    private const val NB_OFF_VOLTAGE = 6    // uint16 LE, 0.01 V  (Wert/100)
-    private const val NB_OFF_CURRENT = 8    // int16  LE, 0.01 A  (signed)
-    private const val NB_OFF_BATTERY = 10   // uint8, %
-    private const val NB_OFF_TEMP = 11      // int8, °C
-    private const val NB_OFF_CELLS = 12     // uint16 LE je Zelle, 0.001 V (VERIFY)
-    private const val NB_OFF_DESIGN_CAP = 40// uint16 LE, mAh (VERIFY)
-    private const val NB_OFF_FULL_CAP = 42  // uint16 LE, mAh (VERIFY)
-    private const val NB_OFF_CYCLES = 44    // uint16 LE (VERIFY)
-    private const val NB_CELL_COUNT = 10
-    private const val NB_MIN_LEN = NB_PAYLOAD_START + 12
-
-    /**
-     * Dekodiert einen Ninebot/Xiaomi-Notify-Frame ABSOLUT absturzsicher.
-     * Jedes Feld wird einzeln bounds-geprüft; fehlt ein Feld oder ist es
-     * unplausibel, bleibt es null (Tacho zeigt dann '--' statt eines Falschwerts).
-     */
-    fun decodeNinebot(frame: ByteArray): Telemetry? {
-        // FIX 4: Header-Bytes nur nach Bereichspruefung lesen.
-        if (!hasRange(frame, 0, 2)) return null
-        if (frame.size < NB_MIN_LEN) return null
-        if (frame[0] != 0x5A.toByte() || frame[1] != 0xA5.toByte()) return null
-        val p = NB_PAYLOAD_START
-        return try {
-            val cells = decodeCellArray(frame, p + NB_OFF_CELLS, NB_CELL_COUNT)
-            Telemetry(
-                speedKmh = u16leOrNull(frame, p + NB_OFF_SPEED)
-                    ?.takeIf { it != 0xFFFF }?.div(10f),
-                voltageV = u16leOrNull(frame, p + NB_OFF_VOLTAGE)
-                    ?.takeIf { it != 0 && it != 0xFFFF }?.div(100f),
-                currentA = i16leOrNull(frame, p + NB_OFF_CURRENT)
-                    ?.takeIf { it != -32768 }?.div(100f),
-                batteryPercent = u8OrNull(frame, p + NB_OFF_BATTERY)?.takeIf { it in 0..100 },
-                motorTempC = i8OrNull(frame, p + NB_OFF_TEMP)?.takeIf { it in -40..125 }?.toFloat(),
-                cellMinV = cells?.minOrNull(),
-                cellMaxV = cells?.maxOrNull(),
-                cellVoltages = cells,
-                designCapacityMah = u16leOrNull(frame, p + NB_OFF_DESIGN_CAP)?.takeIf { it > 0 },
-                fullChargeCapacityMah = u16leOrNull(frame, p + NB_OFF_FULL_CAP)?.takeIf { it > 0 },
-                cycleCount = u16leOrNull(frame, p + NB_OFF_CYCLES)?.takeIf { it != 0xFFFF },
-                rawHex = ScooterFrames.toHex(frame),
-                source = BleProtocol.NINEBOT
-            )
-        } catch (_: Exception) { null }
-    }
-
-    // ---- Navee/Brightway Status-Payload -----------------------------------
-    // Antwort: AA 55 CMD LEN <payload> SUM -> payload beginnt bei Index 4
-    private const val NV_PAYLOAD_START = 4
-    private const val NV_OFF_SPEED = 0      // uint16 LE, 0.1 km/h
-    private const val NV_OFF_VOLTAGE = 2    // uint16 LE, 0.01 V
-    private const val NV_OFF_CURRENT = 4    // int16  LE, 0.01 A
-    private const val NV_OFF_BATTERY = 6    // uint8, %
-    private const val NV_OFF_TEMP = 7       // int8, °C
-    private const val NV_OFF_CELLS = 8      // uint16 LE je Zelle, 0.001 V (VERIFY)
-    private const val NV_OFF_DESIGN_CAP = 36// uint16 LE, mAh (VERIFY)
-    private const val NV_OFF_FULL_CAP = 38  // uint16 LE, mAh (VERIFY)
-    private const val NV_OFF_CYCLES = 40    // uint16 LE (VERIFY)
-    private const val NV_CELL_COUNT = 13
-    private const val NV_MIN_LEN = NV_PAYLOAD_START + 8
-
-    /**
-     * Dekodiert einen Navee/Brightway-Notify-Frame ABSOLUT absturzsicher.
-     * Kernwerte (Spannung, Geschwindigkeit, Akku-%) werden dekodiert, sobald sie
-     * im Frame enthalten sind; nicht empfangene Felder bleiben null.
-     */
-    fun decodeNavee(frame: ByteArray): Telemetry? {
-        // FIX 4: Header-Bytes nur nach Bereichspruefung lesen.
-        if (!hasRange(frame, 0, 2)) return null
-        if (frame.size < NV_MIN_LEN) return null
-        if (frame[0] != 0xAA.toByte() || frame[1] != 0x55.toByte()) return null
-        val p = NV_PAYLOAD_START
-        return try {
-            val cells = decodeCellArray(frame, p + NV_OFF_CELLS, NV_CELL_COUNT)
-            Telemetry(
-                speedKmh = u16leOrNull(frame, p + NV_OFF_SPEED)
-                    ?.takeIf { it != 0xFFFF }?.div(10f),
-                voltageV = u16leOrNull(frame, p + NV_OFF_VOLTAGE)
-                    ?.takeIf { it != 0 && it != 0xFFFF }?.div(100f),
-                currentA = i16leOrNull(frame, p + NV_OFF_CURRENT)
-                    ?.takeIf { it != -32768 }?.div(100f),
-                batteryPercent = u8OrNull(frame, p + NV_OFF_BATTERY)?.takeIf { it in 0..100 },
-                motorTempC = i8OrNull(frame, p + NV_OFF_TEMP)?.takeIf { it in -40..125 }?.toFloat(),
-                cellMinV = cells?.minOrNull(),
-                cellMaxV = cells?.maxOrNull(),
-                cellVoltages = cells,
-                designCapacityMah = u16leOrNull(frame, p + NV_OFF_DESIGN_CAP)?.takeIf { it > 0 },
-                fullChargeCapacityMah = u16leOrNull(frame, p + NV_OFF_FULL_CAP)?.takeIf { it > 0 },
-                cycleCount = u16leOrNull(frame, p + NV_OFF_CYCLES)?.takeIf { it != 0xFFFF },
-                rawHex = NaveeFrames.toHex(frame),
-                source = BleProtocol.NAVEE_BRIGHTWAY
-            )
-        } catch (_: Exception) { null }
-    }
-
-    /**
-     * Dekodiert ein Zellgruppen-Array (uint16 LE je Zelle, Aufloesung 0.001 V).
-     * Plausibilitaetsfilter: liegt eine Zelle ausserhalb 1.5..4.5 V, wird das
-     * gesamte Array verworfen (verhindert Muell-Grafiken bei falschem Offset).
-     */
-    private fun decodeCellArray(frame: ByteArray, start: Int, count: Int): List<Float>? {
-        if (count <= 0) return null
-        // FIX 4: Gesamtbereich VOR der Schleife pruefen (start + count*2 Bytes).
-        if (!hasRange(frame, start, count * 2)) return null
-        val cells = ArrayList<Float>(count)
-        for (i in 0 until count) {
-            val v = u16leOrNull(frame, start + i * 2)?.div(1000f) ?: return null
-            if (v < 1.5f || v > 4.5f) return null
-            cells.add(v)
-        }
-        return cells
-    }
-
-    // ---- FIX 4: zentrale, absolute Bereichspruefung -----------------------
-    /**
-     * Liefert true NUR wenn [offset, offset+length) vollstaendig innerhalb von
-     * [data] liegt (und length > 0). Wird vor JEDEM Byte-Zugriff im Decoder
-     * aufgerufen, damit ein zu kurzer Frame NIEMALS einen IndexOutOfBounds
-     * ausloesen kann (z. B. Feld bei Offset 40 in einem 17-Byte-Frame).
-     */
-    private fun hasRange(data: ByteArray, offset: Int, length: Int): Boolean =
-        offset >= 0 && length > 0 && offset + length <= data.size
-
-    // ---- absturzsichere Zugriffe (liefern null ausserhalb des Arrays) ------
-    private fun u8OrNull(b: ByteArray, i: Int): Int? =
-        if (hasRange(b, i, 1)) (b[i].toInt() and 0xFF) else null
-
-    private fun i8OrNull(b: ByteArray, i: Int): Int? =
-        if (hasRange(b, i, 1)) b[i].toInt() else null
-
-    private fun u16leOrNull(b: ByteArray, i: Int): Int? =
-        if (hasRange(b, i, 2))
-            (b[i].toInt() and 0xFF) or ((b[i + 1].toInt() and 0xFF) shl 8)
-        else null
-
-    private fun i16leOrNull(b: ByteArray, i: Int): Int? {
-        val v = u16leOrNull(b, i) ?: return null
-        return if (v >= 0x8000) v - 0x10000 else v
-    }
-}
-
-/* ============================================================================
- *  BLE ENGINE  —  echte GATT-Verbindung, Schreib-Queue, Notify, Chunk-Flash
- * ==========================================================================*/
-class BleEngine(
-    private val context: Context,
-    private val listener: Listener
-) {
-
-    interface Listener {
-        fun onLog(line: String)
-        fun onConnected(address: String)
-        fun onReady(address: String, protocol: BleProtocol, mtu: Int)
-        fun onDisconnected(unexpected: Boolean)
-        fun onTelemetry(t: Telemetry)
-        fun onWriteResult(label: String, frame: ByteArray, success: Boolean, detail: String)
-        fun onFlashProgress(written: Int, total: Int)
-        fun onFlashFinished(success: Boolean, message: String)
-        fun onRssi(rssi: Int)
-    }
-
-    companion object {
-        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-
-        // Navee / Brightway
-        private val NAVEE_SERVICE = UUID.fromString(NaveeFrames.SERVICE_UUID)
-        private val NAVEE_CHAR_WRITE = UUID.fromString(NaveeFrames.CHAR_UUID)
-        private val NAVEE_CHAR_WRITE_ALT = UUID.fromString(NaveeFrames.CHAR_WRITE_UUID)
-
-        // Ninebot / Xiaomi (vom Auftrag vorgegeben; zusätzlich generischer Fallback)
-        private val NINEBOT_SERVICE = UUID.fromString("0000e003-0000-1000-8000-00805f9b34fb")
-        private val NINEBOT_CHAR_WRITE = UUID.fromString("0000fff1-0000-1000-8000-00805f9b34fb")
-        private val NINEBOT_CHAR_WRITE_ALT = UUID.fromString("0000fff2-0000-1000-8000-00805f9b34fb")
-
-        private const val REQUESTED_MTU = 247
-        private const val ATT_HEADER = 3
-
-        /** Genau 1 automatischer Retry pro Schreibvorgang (Auftrag: Retry-Mechanismus). */
-        private const val MAX_WRITE_RETRIES = 1
-
-        /** Wartezeit auf ein Controller-ACK (Notify), bevor ein Fallback versucht wird. */
-        private const val RESPONSE_TIMEOUT_MS = 900L
-
-        /** FIX 7: max. Wartezeit auf das per-Chunk-ACK beim Flash (sonst Abbruch). */
-        private const val FLASH_CHUNK_TIMEOUT_MS = 3000L
-    }
-
-    @Volatile private var gatt: BluetoothGatt? = null
-    @Volatile private var writeChar: BluetoothGattCharacteristic? = null
-    @Volatile private var notifyChar: BluetoothGattCharacteristic? = null
-    @Volatile private var lastDevice: BluetoothDevice? = null
-    @Volatile private var negotiatedMtu = 23
-    /** FIX 3: waehrend connectGatt() gesetzt -> ein sofortiger Callback gilt als aktuell. */
-    @Volatile private var connectingDevice: BluetoothDevice? = null
-
-    @Volatile var protocol: BleProtocol = BleProtocol.NINEBOT
-        private set
-    @Volatile private var naveeHandshakeSent = false
-
-    /** true, sobald der Brightway-Unlock-Handshake quittiert wurde (Scooter entsperrt). */
-    @Volatile private var naveeUnlocked = false
-    /** true, sobald Notifications real aktiv sind (CCCD-Write OK) — Voraussetzung fuer ACK-Wait. */
-    @Volatile private var notifyActive = false
-    /** Zeitstempel des letzten empfangenen Notify-Frames (fuer ACK-Auswertung). */
-    @Volatile private var lastRxMillis = 0L
-    /** Laufender ACK-Timeout (Fallback-Kette). */
-    private var responseTimeout: Runnable? = null
-    /** Befehl, auf dessen Controller-ACK gerade gewartet wird. */
-    private var awaitingAck: PendingWrite? = null
-
-    // ---- Schreib-Queue (nur EINE GATT-Operation gleichzeitig) --------------
-    private class PendingWrite(
-        val characteristic: BluetoothGattCharacteristic,
-        val data: ByteArray,
-        val label: String,
-        val onResult: ((Boolean) -> Unit)?,
-        val retries: Int = 0,
-        val alternatives: List<ByteArray> = emptyList(),
-        val expectResponse: Boolean = false
-    )
-
-    private val writeLock = Any()
-    private val writeQueue = ArrayDeque<PendingWrite>()
-    @Volatile private var writeInFlight = false
-    @Volatile private var currentWrite: PendingWrite? = null
-
-    /**
-     * FIX 5: Garantiert, dass afterMtu() (Notify-Setup + Unlock-Handshake + onReady)
-     * pro Verbindung GENAU EINMAL laeuft. Wird bei Disconnect/Reconnect ueber
-     * resetConnectionState() zurueckgesetzt. Zugriff immer unter synchronized(writeLock).
-     */
-    @Volatile private var initializationStarted = false
-
-    // ---- Flash-Status -----------------------------------------------------
-    @Volatile private var flashChunks: List<ByteArray> = emptyList()
-    @Volatile private var flashTotalBytes = 0
-    @Volatile private var flashWrittenBytes = 0
-    @Volatile private var flashIndex = 0
-    @Volatile private var flashActive = false
-    /** FIX 7: laufender per-Chunk-ACK-Timeout (verhindert haengenden Flash). */
-    @Volatile private var flashChunkTimeout: Runnable? = null
-
-    fun setProtocolHint(p: BleProtocol) { protocol = p }
-
-    /** Effektive Nutzlast pro Write = MTU - 3 (ATT-Overhead), gedeckelt. */
-    fun maxWritePayload(): Int = (negotiatedMtu - ATT_HEADER).coerceIn(20, 512)
-
-    /** Ausgehandelter MTU-Wert (fuer die Header-Systemleiste). */
-    fun currentMtu(): Int = negotiatedMtu
-
-    /** Anzahl der aktuell in der Write-Queue wartenden Operationen. */
-    fun queueDepth(): Int = synchronized(writeLock) { writeQueue.size }
-
-    /** true, wenn gerade genau eine GATT-Operation in Flight ist. */
-    fun isWriteInFlight(): Boolean = synchronized(writeLock) { writeInFlight }
-
-    @SuppressLint("MissingPermission")
-    fun readRssi() {
-        try { gatt?.readRemoteRssi() } catch (_: Exception) {}
-    }
-
-    @SuppressLint("MissingPermission")
-    fun connect(device: BluetoothDevice) {
-        lastDevice = device
-        resetConnectionState()   // FIX 5: frischer Init-Zustand fuer die neue Verbindung
-        // FIX 3: connectingDevice VOR connectGatt() setzen -> ein evtl. sofort
-        // eintreffender Callback wird als "aktuell" erkannt (keine Race-Condition).
-        synchronized(writeLock) { connectingDevice = device }
-        listener.onLog("> link: connectGatt(${device.address})")
-        val newGatt = try {
-            device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-        } catch (e: Exception) {
-            listener.onLog("> link: connectGatt() Exception: ${e.message}")
-            null
-        }
-        synchronized(writeLock) { gatt = newGatt; connectingDevice = null }
-        if (newGatt == null) listener.onLog("> link: FEHLER — connectGatt() lieferte null")
-    }
-
-    @SuppressLint("MissingPermission")
-    fun reconnect() {
-        val d = lastDevice ?: return
-        listener.onLog("> link: auto-reconnect ${d.address}")
-        try { gatt?.close() } catch (_: Exception) {}
-        resetConnectionState()   // FIX 5: neue Verbindung -> Init-Zustand neu
-        // FIX 3: connectingDevice setzen + alte Referenz loesen -> sauberer Reconnect.
-        synchronized(writeLock) { gatt = null; connectingDevice = d }
-        val newGatt = try {
-            d.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-        } catch (e: Exception) {
-            listener.onLog("> link: connectGatt() Exception: ${e.message}")
-            null
-        }
-        synchronized(writeLock) { gatt = newGatt; connectingDevice = null }
-    }
-
-    @SuppressLint("MissingPermission")
-    fun disconnect() {
-        lastDevice = null
-        val old = synchronized(writeLock) { val o = gatt; gatt = null; connectingDevice = null; o }
-        try { old?.disconnect(); old?.close() } catch (_: Exception) {}
-        writeChar = null
-        notifyChar = null
-        resetConnectionState()            // FIX 5: Init-Zustand zuruecksetzen
-        failPendingWrites("disconnect")   // FIX 2: alle wartenden Ops sauber verwerfen
-    }
-
-    /**
-     * FIX 5: Setzt den gesamten Verbindungs-/Initialisierungszustand zurueck.
-     * Wird bei Disconnect und vor jedem Reconnect/Connect aufgerufen, damit
-     * afterMtu() pro Verbindung garantiert nur EINMAL laeuft.
-     */
-    private fun resetConnectionState() {
-        synchronized(writeLock) {
-            initializationStarted = false
-            awaitingAck = null
-        }
-        cancelResponseTimeout()
-        naveeHandshakeSent = false
-        naveeUnlocked = false
-        notifyActive = false
-        lastRxMillis = 0L
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  FIX 3: GUARDS GEGEN VERALTETE GATT-CALLBACKS                       */
-    /* ------------------------------------------------------------------ */
-    /**
-     * FIX 3: Liefert true, wenn [g] die aktuell gueltige GATT-Instanz ist.
-     * Verspaetete Callbacks einer alten/abgebrochenen Verbindung werden damit
-     * verworfen, statt den Zustand der neuen Verbindung zu ueberschreiben.
-     */
-    private fun isCurrentGatt(g: BluetoothGatt): Boolean =
-        synchronized(writeLock) {
-            gatt === g || (connectingDevice != null && deviceMatches(g, connectingDevice))
-        }
-
-    /** FIX 3: sicherer Geraete-Vergleich (SecurityException-tolerant). */
-    private fun deviceMatches(g: BluetoothGatt, d: BluetoothDevice?): Boolean {
-        if (d == null) return false
-        return try { g.device == d } catch (_: Exception) { false }
-    }
-
-    /** Schliesst eine veraltete GATT-Instanz sauber und ohne UI-Blockade. */
-    private fun closeStaleGatt(g: BluetoothGatt) {
-        try { g.close() } catch (_: Exception) {}
-    }
-
-    /**
-     * FIX 2: Bricht ALLE wartenden Schreiboperationen ab, ruft deren onResult(false)
-     * und entsperrt die Queue. Wird bei Fehler, Disconnect oder Timeout aufgerufen,
-     * damit die App NIEMALS haengen bleibt. Die in-flight-Operation wird ebenfalls
-     * negativ bescheidt, sofern sie nicht ohnehin schon in der Queue stand.
-     */
-    private fun failPendingWrites(reason: String) {
-        val drained = ArrayList<PendingWrite>()
-        var inFlight: PendingWrite? = null
-        synchronized(writeLock) {
-            drained.addAll(writeQueue)
-            writeQueue.clear()
-            inFlight = currentWrite
-            currentWrite = null
-            writeInFlight = false
-            awaitingAck = null
-        }
-        cancelResponseTimeout()
-        listener.onLog("> tx: failPendingWrites($reason) — ${drained.size} wartende Op(s) verworfen")
-        for (op in drained) {
-            try { op.onResult?.invoke(false) } catch (_: Exception) {}
-        }
-        val hang = inFlight
-        if (hang != null && drained.none { it === hang }) {
-            try { hang.onResult?.invoke(false) } catch (_: Exception) {}
-        }
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  GATT CALLBACK                                                      */
-    /* ------------------------------------------------------------------ */
-    private val callback = object : BluetoothGattCallback() {
-
-        @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            // FIX 3: verspaeteten Callback einer alten/abgebrochenen Verbindung verwerfen.
-            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
-            try {
-                if (status != BluetoothGatt.GATT_SUCCESS) {
-                    listener.onLog("> link: GATT-Fehler status=$status")
-                }
-                when (newState) {
-                    BluetoothProfile.STATE_CONNECTED -> {
-                        listener.onLog("> link: CONNECTED ${g.device.address} — discoverServices()")
-                        resetConnectionState()   // FIX 5: Init-Zustand pro Verbindung frisch
-                        listener.onConnected(g.device.address)
-                        g.discoverServices()
-                    }
-                    BluetoothProfile.STATE_DISCONNECTED -> {
-                        listener.onLog("> link: DISCONNECTED (status=$status)")
-                        resetConnectionState()            // FIX 5
-                        failPendingWrites("disconnected") // FIX 2: Queue nie haengen lassen
-                        listener.onDisconnected(status != BluetoothGatt.GATT_SUCCESS)
-                    }
-                }
-            } catch (e: Exception) {
-                listener.onLog("> link: Exception in onConnectionStateChange: ${e.message}")
-                failPendingWrites("onConnectionStateChange exception") // FIX 2
-                listener.onDisconnected(true)
-            }
-        }
-
-        @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
-            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
-            try {
-                if (status != BluetoothGatt.GATT_SUCCESS) {
-                    listener.onLog("> gatt: Service-Discovery FEHLGESCHLAGEN status=$status")
-                    return
-                }
-                listener.onLog("> gatt: ${g.services.size} Services gefunden")
-
-                // 1) Protokoll anhand vorhandener Services bestimmen
-                val naveeWrite = findChar(g, NAVEE_SERVICE, listOf(NAVEE_CHAR_WRITE, NAVEE_CHAR_WRITE_ALT))
-                if (naveeWrite != null) {
-                    protocol = BleProtocol.NAVEE_BRIGHTWAY
-                    writeChar = naveeWrite.first
-                    notifyChar = naveeWrite.first
-                    listener.onLog("> gatt: Navee/Brightway erkannt (FFE0) -> NAVEE_BRIGHTWAY")
-                } else {
-                    val nbWrite = findChar(g, NINEBOT_SERVICE, listOf(NINEBOT_CHAR_WRITE, NINEBOT_CHAR_WRITE_ALT))
-                    if (nbWrite != null) {
-                        protocol = BleProtocol.NINEBOT
-                        writeChar = nbWrite.first
-                        notifyChar = nbWrite.first
-                        listener.onLog("> gatt: Ninebot/Xiaomi erkannt (E003) -> NINEBOT")
-                    } else {
-                        // 3) Generischer Fallback: erste writable Char
-                        val generic = firstWritable(g)
-                        if (generic != null) {
-                            writeChar = generic
-                            notifyChar = generic
-                            listener.onLog("> gatt: kein bekanntes Service — generischer Write-Char ${generic.uuid}")
-                        } else {
-                            listener.onLog("> gatt: KEIN writable Characteristic gefunden — Tuning nicht möglich")
-                        }
-                    }
-                }
-
-                // 2) MTU verhandeln (echt!)
-                listener.onLog("> gatt: requestMtu($REQUESTED_MTU)")
-                if (!g.requestMtu(REQUESTED_MTU)) {
-                    listener.onLog("> gatt: requestMtu() von Stack abgelehnt — nutze Default 23")
-                    afterMtu(g)
-                }
-            } catch (e: Exception) {
-                listener.onLog("> gatt: Exception in onServicesDiscovered: ${e.message}")
-            }
-        }
-
-        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
-            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
-            try {
-                negotiatedMtu = if (status == BluetoothGatt.GATT_SUCCESS) mtu else 23
-                listener.onLog("> gatt: MTU = $negotiatedMtu (status=$status) -> Chunk-Payload ${maxWritePayload()} B")
-                afterMtu(g)
-            } catch (e: Exception) {
-                listener.onLog("> gatt: Exception in onMtuChanged: ${e.message}")
-            }
-        }
-
-        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
-            try {
-                if (status == BluetoothGatt.GATT_SUCCESS) listener.onRssi(rssi)
-            } catch (e: Exception) {
-                listener.onLog("> link: Exception in onReadRemoteRssi: ${e.message}")
-            }
-        }
-
-        @SuppressLint("MissingPermission")
-        override fun onCharacteristicWrite(
-            g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int
-        ) {
-            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
-            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
-            try {
-                cancelResponseTimeout()
-                val op: PendingWrite?
-                synchronized(writeLock) { op = currentWrite }
-                val success = status == BluetoothGatt.GATT_SUCCESS
-                if (op != null) {
-                    when {
-                        // 1) Fehler -> genau 1x automatisch wiederholen
-                        !success && op.retries < MAX_WRITE_RETRIES -> {
-                            listener.onLog("> tx[${op.label}]: Fehler status=$status — " +
-                                    "Retry ${op.retries + 1}/$MAX_WRITE_RETRIES")
-                            synchronized(writeLock) {
-                                writeQueue.addFirst(
-                                    PendingWrite(op.characteristic, op.data, op.label,
-                                        op.onResult, op.retries + 1, op.alternatives, op.expectResponse)
-                                )
-                            }
-                        }
-                        // 2) Fehler nach Retry -> alternative Kodierung probieren
-                        !success && op.alternatives.isNotEmpty() -> {
-                            val next = op.alternatives.first()
-                            val rest = op.alternatives.drop(1)
-                            listener.onLog("> tx[${op.label}]: Fehler status=$status — " +
-                                    "Fallback auf alternative Kodierung ${hexOf(next)}")
-                            synchronized(writeLock) {
-                                writeQueue.addFirst(
-                                    PendingWrite(op.characteristic, next, op.label,
-                                        op.onResult, 0, rest, op.expectResponse)
-                                )
-                            }
-                        }
-                        // 3) Endgueltig
-                        else -> {
-                            listener.onWriteResult(op.label, op.data, success, "status=$status")
-                            op.onResult?.invoke(success)
-                            if (!success && protocol == BleProtocol.NAVEE_BRIGHTWAY) naveeUnlocked = false
-                            // ACK-Erwartung scharf schalten (nur wenn Notify real aktiv war)
-                            if (success && op.expectResponse && notifyActive &&
-                                lastRxMillis > 0L && op.alternatives.isNotEmpty()
-                            ) {
-                                synchronized(writeLock) { awaitingAck = op }
-                                armAckTimeout(op)
-                            }
-                        }
-                    }
-                }
-                synchronized(writeLock) {
-                    currentWrite = null
-                    writeInFlight = false
-                }
-                processNextWrite()
-            } catch (e: Exception) {
-                listener.onLog("> tx: Exception in onCharacteristicWrite: ${e.message}")
-                failPendingWrites("onCharacteristicWrite exception") // FIX 2: nie haengen
-            }
-        }
-
-        override fun onDescriptorWrite(
-            g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int
-        ) {
-            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
-            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
-            try {
-                if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
-                    notifyActive = true
-                    listener.onLog("> gatt: Notify real aktiv (CCCD-Descriptor-Write OK)")
-                }
-            } catch (e: Exception) {
-                listener.onLog("> gatt: Exception in onDescriptorWrite: ${e.message}")
-            }
-        }
-
-        /**
-         * ABWAERTSKOMPATIBEL: Wir ueberschreiben NUR die (in API 33 deprecated) 2-Argument-
-         * Variante. Der AOSP-Default der 3-Argument-Variante ruft intern exakt diese auf,
-         * daher erhalten wir Notifications auf ALLEN API-Leveln (auch Android 13+).
-         * Vorteil: kompiliert unter JEDER compileSdk-Version (kein API-33-Symbol noetig).
-         */
-        @Suppress("DEPRECATION")
-        override fun onCharacteristicChanged(
-            g: BluetoothGatt, ch: BluetoothGattCharacteristic
-        ) {
-            // FIX 3: nur fuer die aktuelle Verbindung auswerten.
-            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
-            try {
-                lastRxMillis = System.currentTimeMillis()
-                val v = ch.value
-                if (v == null || v.isEmpty()) {
-                    listener.onLog("> rx: Notify ohne Wert (characteristic.value == null)")
-                    return
-                }
-                // FIX 1: NICHT jede Notification ist ein Kommando-ACK. Nur wenn die
-                // empfangenen Bytes den aktuell erwarteten Befehl wirklich quittieren
-                // (gleiche Kommando-ID + gueltige Pruefsumme), darf der ACK-Timeout
-                // abgebrochen und awaitingAck freigegeben werden. Normale Telemetrie
-                // wird ausschliesslich dekodiert und zaehlt NICHT als Bestaetigung.
-                val pending: PendingWrite?
-                synchronized(writeLock) { pending = awaitingAck }
-                if (pending != null && isControllerAckFor(pending, v)) {
-                    listener.onLog("> tx[${pending.label}]: echtes Controller-ACK empfangen (${hexOf(v)})")
-                    cancelResponseTimeout()
-                    synchronized(writeLock) { awaitingAck = null }
-                }
-                handleNotification(v)
-            } catch (e: Exception) {
-                listener.onLog("> rx: Exception in onCharacteristicChanged: ${e.message}")
-            }
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun afterMtu(g: BluetoothGatt) {
-        try {
-            // FIX 5: afterMtu() darf pro Verbindung GENAU EINMAL laufen. Wird es sowohl
-            // durch ein abgelehntes requestMtu() als auch durch onMtuChanged() aufgerufen,
-            // darf der Notify-/Handshake-/onReady-Block NICHT doppelt feuern.
-            val alreadyStarted = synchronized(writeLock) {
-                if (initializationStarted) {
-                    true
-                } else {
-                    initializationStarted = true
-                    false
-                }
-            }
-            if (alreadyStarted) {
-                listener.onLog("> gatt: afterMtu() bereits ausgefuehrt — ignoriere Doppelaufruf")
-                return
-            }
-
-            // Notifications aktivieren (CCCD 0x2902)
-            val nChar = notifyChar
-            if (nChar != null) {
-                val props = nChar.properties
-                val canNotify = props and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
-                val canIndicate = props and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
-                if (canNotify || canIndicate) {
-                    g.setCharacteristicNotification(nChar, true)
-                    val cccd = nChar.getDescriptor(CCCD_UUID)
-                    if (cccd != null) {
-                        val enable = if (canIndicate && !canNotify)
-                            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-                        else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        // ABWAERTSKOMPATIBEL (kein API-33-Symbol):
-                        @Suppress("DEPRECATION")
-                        cccd.value = enable
-                        @Suppress("DEPRECATION")
-                        val ok = g.writeDescriptor(cccd)
-                        listener.onLog("> gatt: Notify aktiviert (CCCD 0x2902) — ok=$ok")
-                    } else {
-                        listener.onLog("> gatt: kein CCCD-Descriptor an ${nChar.uuid} — Notify evtl. inaktiv")
-                    }
-                } else {
-                    listener.onLog("> gatt: Char ${nChar.uuid} unterstützt kein Notify/Indicate")
-                }
-            }
-
-            // Navee-Unlock-Handshake (echt): Der Scooter gilt erst als entsperrt,
-            // wenn der Handshake quittiert wurde. Vor jedem Tuning-Befehl wird der
-            // Zustand geprueft und bei Bedarf erneut gesendet (siehe enqueueCommand).
-            if (protocol == BleProtocol.NAVEE_BRIGHTWAY && !naveeHandshakeSent) {
-                val hs = NaveeFrames.handshake()
-                naveeHandshakeSent = true
-                enqueueWrite(hs, "navee-unlock") { ok -> if (ok) naveeUnlocked = true }
-            }
-
-            listener.onReady(g.device?.address ?: "?", protocol, negotiatedMtu)
-        } catch (e: Exception) {
-            android.util.Log.e("SyrakScooterLab", "afterMtu: ${e.message}")
-        }
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  LOOKUP-HELFER                                                      */
-    /* ------------------------------------------------------------------ */
-    private fun findChar(
-        g: BluetoothGatt, serviceUuid: UUID, charUuids: List<UUID>
-    ): Pair<BluetoothGattCharacteristic, BluetoothGattService>? {
-        for (s: BluetoothGattService in g.services) {
-            if (s.uuid != serviceUuid) continue
-            for (ch: BluetoothGattCharacteristic in s.characteristics) {
-                if (ch.uuid in charUuids && isWritable(ch)) return ch to s
-            }
-            for (ch: BluetoothGattCharacteristic in s.characteristics) {
-                if (isWritable(ch)) return ch to s
-            }
-        }
-        return null
-    }
-
-    private fun firstWritable(g: BluetoothGatt): BluetoothGattCharacteristic? {
-        for (s: BluetoothGattService in g.services)
-            for (ch: BluetoothGattCharacteristic in s.characteristics)
-                if (isWritable(ch)) return ch
-        return null
-    }
-
-    private fun isWritable(ch: BluetoothGattCharacteristic): Boolean {
-        val p = ch.properties
-        return p and BluetoothGattCharacteristic.PROPERTY_WRITE != 0 ||
-                p and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  SCHREIB-QUEUE                                                      */
-    /* ------------------------------------------------------------------ */
-    fun enqueueWrite(data: ByteArray, label: String, onResult: ((Boolean) -> Unit)?): Boolean {
-        val c = writeChar
-        if (c == null) {
-            listener.onLog("> tx: FEHLER — kein Write-Characteristic (nicht verbunden?)")
-            onResult?.invoke(false)
-            return false
-        }
-        return try {
-            synchronized(writeLock) {
-                writeQueue.addLast(PendingWrite(c, data, label, onResult))
-                if (!writeInFlight) processNextWrite()
-            }
-            true
-        } catch (e: Exception) {
-            listener.onLog("> tx: Exception beim Einreihen: ${e.message}")
-            onResult?.invoke(false)
-            false
-        }
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  BEFEHL MIT FALLBACK-KETTE (Brightway-Standard -> Alt -> Ninebot)   */
-    /* ------------------------------------------------------------------ */
-    /**
-     * Reiht einen Tuning-Befehl ein. Auf einem Navee/Brightway-Controller wird der
-     * (in Ninebot-Form uebergebene) Frame automatisch nach Brightway uebersetzt und
-     * als Fallback-Kette [Standard, Alt-Header, Ninebot] verschickt. Ist der Scooter
-     * noch gesperrt (naveeUnlocked == false), wird ZUERST der Unlock-Handshake
-     * (AA 55 01 …) gesendet.
-     */
-    fun enqueueCommand(ninebotFrame: ByteArray, label: String, requiresUnlock: Boolean): Boolean {
-        val c = writeChar
-        if (c == null) {
-            listener.onLog("> tx[$label]: FEHLER — kein Write-Characteristic (nicht verbunden?)")
-            return false
-        }
-        return try {
-            val frames = buildOutboundFrames(ninebotFrame)
-            val needHandshake = requiresUnlock &&
-                    protocol == BleProtocol.NAVEE_BRIGHTWAY && !naveeUnlocked
-            synchronized(writeLock) {
-                if (needHandshake) {
-                    listener.onLog("> tx[$label]: Scooter gesperrt — sende Unlock-Handshake zuerst")
-                    writeQueue.addLast(
-                        PendingWrite(c, NaveeFrames.handshake(), "navee-unlock",
-                            { ok -> if (ok) naveeUnlocked = true })
-                    )
-                }
-                writeQueue.addLast(
-                    PendingWrite(c, frames.first(), label, null, 0, frames.drop(1), true)
-                )
-                if (!writeInFlight) processNextWrite()
-            }
-            true
-        } catch (e: Exception) {
-            listener.onLog("> tx[$label]: Exception beim Einreihen: ${e.message}")
-            false
-        }
-    }
-
-    /** Baut die Ausgangs-Frames (Protokoll-Uebersetzung + Fallback-Kandidaten). */
-    private fun buildOutboundFrames(ninebotFrame: ByteArray): List<ByteArray> {
-        if (protocol != BleProtocol.NAVEE_BRIGHTWAY) return listOf(ninebotFrame)
-        val primary = NaveeFrames.fromNinebot(ninebotFrame, false)
-        val alt = NaveeFrames.fromNinebot(ninebotFrame, true)
-        val list = ArrayList<ByteArray>(3)
-        if (primary != null) list.add(primary)
-        if (alt != null && (primary == null || !alt.contentEquals(primary))) list.add(alt)
-        // Letzter Kandidat: unveraenderter Ninebot-Frame (manche FW-Revisionen erwarten ihn)
-        if (list.isEmpty() || !list.last().contentEquals(ninebotFrame)) list.add(ninebotFrame)
-        return list
-    }
-
-    /** Scharfschaltung des ACK-Timeouts (nur wenn Notify real aktiv war). */
-    private fun armAckTimeout(op: PendingWrite) {
-        cancelResponseTimeout()
-        val r = Runnable {
-            val stillAwaiting = synchronized(writeLock) { awaitingAck === op }
-            if (stillAwaiting && op.alternatives.isNotEmpty()) {
-                val next = op.alternatives.first()
-                val rest = op.alternatives.drop(1)
-                listener.onLog("> tx[${op.label}]: kein Controller-ACK in ${RESPONSE_TIMEOUT_MS} ms — " +
-                        "versuche alternative Kodierung ${hexOf(next)}")
-                synchronized(writeLock) { awaitingAck = null }
-                val c = writeChar
-                if (c != null) {
-                    synchronized(writeLock) {
-                        writeQueue.addFirst(
-                            PendingWrite(c, next, op.label, op.onResult, 0, rest, true)
-                        )
-                        if (!writeInFlight) processNextWrite()
-                    }
-                }
-            }
-        }
-        responseTimeout = r
-        Handler(Looper.getMainLooper()).postDelayed(r, RESPONSE_TIMEOUT_MS)
-    }
-
-    private fun cancelResponseTimeout() {
-        responseTimeout?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
-        responseTimeout = null
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun processNextWrite() {
-        try {
-            val op: PendingWrite
-            synchronized(writeLock) {
-                if (writeQueue.isEmpty()) { writeInFlight = false; return }
-                op = writeQueue.removeFirst()
-                writeInFlight = true
-                currentWrite = op
-            }
-            val g = synchronized(writeLock) { gatt }
-            if (g == null) {
-                listener.onWriteResult(op.label, op.data, false, "GATT null")
-                op.onResult?.invoke(false)
-                synchronized(writeLock) {
-                    currentWrite = null
-                    writeInFlight = false
-                }
-                processNextWrite()
-                return
-            }
-            // ABWAERTSKOMPATIBEL: setValue() + writeCharacteristic(char) existiert seit API 18
-            // und kompiliert unter JEDER compileSdk-Version. (Die 3-Argument-Variante gibt es
-            // erst ab API 33 und wuerde den Build unter compileSdk < 33 brechen.)
-            @Suppress("DEPRECATION")
-            op.characteristic.value = op.data
-            @Suppress("DEPRECATION")
-            val started = g.writeCharacteristic(op.characteristic)
-            if (!started) {
-                // Start fehlgeschlagen -> wie Fehler behandeln (Retry/Fallback ueber onCharacteristicWrite-Logik)
-                listener.onLog("> tx[${op.label}]: writeCharacteristic() returned false")
-                val retryOp = if (op.retries < MAX_WRITE_RETRIES)
-                    PendingWrite(op.characteristic, op.data, op.label, op.onResult,
-                        op.retries + 1, op.alternatives, op.expectResponse)
-                else if (op.alternatives.isNotEmpty())
-                    PendingWrite(op.characteristic, op.alternatives.first(), op.label, op.onResult,
-                        0, op.alternatives.drop(1), op.expectResponse)
-                else null
-                synchronized(writeLock) {
-                    if (retryOp != null) writeQueue.addFirst(retryOp)
-                    currentWrite = null
-                    writeInFlight = false
-                }
-                if (retryOp == null) {
-                    listener.onWriteResult(op.label, op.data, false, "writeCharacteristic() returned false")
-                    op.onResult?.invoke(false)
-                }
-                processNextWrite()
-            }
-        } catch (e: Exception) {
-            // FIX 2: Bei einer unerwarteten Exception darf die Queue NICHT haengen
-            // bleiben -> alle wartenden Ops verwerfen, onResult(false), entsperren.
-            listener.onLog("> tx: Exception in processNextWrite: ${e.message}")
-            failPendingWrites("processNextWrite exception")
-        }
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  NOTIFY -> TELEMETRIE                                               */
-    /* ------------------------------------------------------------------ */
-    private fun handleNotification(value: ByteArray) {
-        try {
-            // Primaer nach aktivem Protokoll dekodieren, danach Cross-Fallback,
-            // damit auch abweichende/unvollstaendige GT3-Max-Frames sicher greifen.
-            var t = when (protocol) {
-                BleProtocol.NAVEE_BRIGHTWAY -> TelemetryDecoder.decodeNavee(value)
-                BleProtocol.NINEBOT -> TelemetryDecoder.decodeNinebot(value)
-            }
-            if (t == null) {
-                t = when (protocol) {
-                    BleProtocol.NAVEE_BRIGHTWAY -> TelemetryDecoder.decodeNinebot(value)
-                    BleProtocol.NINEBOT -> TelemetryDecoder.decodeNavee(value)
-                }
-            }
-            if (t != null) {
-                listener.onTelemetry(t)
-            } else {
-                listener.onLog("> rx: unbehandeltes Frame ${value.joinToString(" ") { "%02X".format(it) }}")
-            }
-        } catch (e: Exception) {
-            listener.onLog("> rx: Exception beim Dekodieren: ${e.message}")
-        }
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  ECHTES CHUNK-FLASHING                                              */
-    /* ------------------------------------------------------------------ */
-    /**
-     * Startet einen echten Flash-Vorgang:
-     *   1. optionaler Unlock-Handshake (protocol-spezifisch)
-     *   2. Firmware blockweise (MTU-gerecht) schreiben, jeweils ACK abwarten
-     *   3. optionaler Reboot-/Finalize-Frame
-     * Der Fortschritt basiert ausschließlich auf tatsächlich geschriebenen Bytes.
-     */
-    fun startFlash(
-        firmware: ByteArray,
-        unlockFrame: ByteArray?,
-        rebootFrame: ByteArray?
-    ) {
-        if (writeChar == null) {
-            listener.onFlashFinished(false, "Kein Write-Characteristic — Flash abgebrochen.")
-            return
-        }
-        if (firmware.isEmpty()) {
-            listener.onFlashFinished(false, "Firmware-Daten leer.")
-            return
-        }
-        val chunkSize = maxWritePayload()
-        val chunks = ArrayList<ByteArray>()
-        var off = 0
-        while (off < firmware.size) {
-            val end = (off + chunkSize).coerceAtMost(firmware.size)
-            chunks.add(firmware.copyOfRange(off, end))
-            off = end
-        }
-        flashChunks = chunks
-        flashTotalBytes = firmware.size
-        flashWrittenBytes = 0
-        flashIndex = 0
-        flashActive = true
-        listener.onLog("> flash: START — ${firmware.size} Bytes in ${chunks.size} Chunks à $chunkSize B")
-
-        val begin = {
-            if (unlockFrame != null) {
-                listener.onLog("> flash: Unlock-Handshake ${hexOf(unlockFrame)}")
-                enqueueWrite(unlockFrame, "flash-unlock") { ok ->
-                    if (!ok) finishFlash(false, "Unlock-Handshake fehlgeschlagen.")
-                    else postToMain { writeNextChunk(rebootFrame) }
-                }
-            } else {
-                writeNextChunk(rebootFrame)
-            }
-        }
-        begin()
-    }
-
-    private fun writeNextChunk(rebootFrame: ByteArray?) {
-        if (!flashActive) return
-        if (flashIndex >= flashChunks.size) {
-            if (rebootFrame != null) {
-                listener.onLog("> flash: Reboot-Frame ${hexOf(rebootFrame)}")
-                enqueueWrite(rebootFrame, "flash-reboot") { ok ->
-                    finishFlash(ok, if (ok) "Flash abgeschlossen & Reboot gesendet."
-                    else "Reboot-Frame fehlgeschlagen.")
-                }
-            } else {
-                finishFlash(true, "Flash abgeschlossen.")
-            }
-            return
-        }
-        val chunk = flashChunks[flashIndex]
-        val idx = flashIndex
-        // FIX 7: Pflicht-ACK pro Chunk mit Timeout-Schutz (kein haengender Flash).
-        armFlashChunkTimeout(idx)
-        enqueueWrite(chunk, "flash-chunk-$idx") { ok ->
-            cancelFlashChunkTimeout()
-            if (!ok) {
-                finishFlash(false, "Chunk $idx fehlgeschlagen — Flash abgebrochen.")
-                return@enqueueWrite
-            }
-            flashWrittenBytes += chunk.size
-            flashIndex++
-            listener.onFlashProgress(flashWrittenBytes, flashTotalBytes)
-            postToMain { writeNextChunk(rebootFrame) }
-        }
-    }
-
-    private fun finishFlash(success: Boolean, message: String) {
-        cancelFlashChunkTimeout()
-        flashActive = false
-        flashChunks = emptyList()
-        listener.onFlashFinished(success, message)
-    }
-
-    /** FIX 7: Scharfschaltung des per-Chunk-ACK-Timeouts. */
-    private fun armFlashChunkTimeout(idx: Int) {
-        cancelFlashChunkTimeout()
-        val r = Runnable {
-            if (flashActive && flashIndex == idx) {
-                listener.onLog("> flash: Timeout fuer Chunk $idx (kein ACK in ${FLASH_CHUNK_TIMEOUT_MS} ms) - Flash abgebrochen")
-                finishFlash(false, "Chunk $idx Timeout - Flash abgebrochen.")
-            }
-        }
-        flashChunkTimeout = r
-        Handler(Looper.getMainLooper()).postDelayed(r, FLASH_CHUNK_TIMEOUT_MS)
-    }
-
-    private fun cancelFlashChunkTimeout() {
-        flashChunkTimeout?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
-        flashChunkTimeout = null
-    }
-
-    fun abortFlash() {
-        if (!flashActive) return
-        cancelFlashChunkTimeout()
-        flashActive = false
-        synchronized(writeLock) { writeQueue.clear() }
-        listener.onFlashFinished(false, "Flash manuell abgebrochen.")
-    }
-
-    /* ------------------------------------------------------------------ */
-    /*  HILFEN                                                             */
-    /* ------------------------------------------------------------------ */
-    /**
-     * FIX 1: Prueft, ob [rx] ein ECHTES Controller-ACK fuer die Operation [op] ist.
-     * Ein ACK muss (a) ein strukturell gueltiger Frame des jeweiligen Protokolls sein,
-     * (b) die Pruefsumme bestehen und (c) DIESELBE Kommando-ID tragen wie der
-     * gesendete Befehl. Reine Telemetrie (andere CMD) zaehlt ausdruecklich NICHT.
-     */
-    private fun isControllerAckFor(op: PendingWrite, rx: ByteArray): Boolean {
-        val expectedCmd = commandIdOf(op.data) ?: return false
-        val rxCmd = commandIdOf(rx) ?: return false
-        if (expectedCmd != rxCmd) return false
-        return isStructurallyValidFrame(rx)
-    }
-
-    /**
-     * Liest die Kommando-ID eines Frames protokollabhaengig aus:
-     *   Ninebot  5A A5 | LEN | ADDR | CMD | ...  -> CMD @ Index 4
-     *   Brightway AA 55 | CMD | LEN | ...        -> CMD @ Index 2
-     *   Brightway 55 AA | CMD | LEN | ...        -> CMD @ Index 2
-     */
-    private fun commandIdOf(frame: ByteArray): Int? {
-        if (frame.size < 4) return null
-        val b0 = frame[0].toInt() and 0xFF
-        val b1 = frame[1].toInt() and 0xFF
-        return when {
-            b0 == 0x5A && b1 == 0xA5 -> frame[4].toInt() and 0xFF
-            b0 == 0xAA && b1 == 0x55 -> frame[2].toInt() and 0xFF
-            b0 == 0x55 && b1 == 0xAA -> frame[2].toInt() and 0xFF
-            else -> null
-        }
-    }
-
-    /**
-     * FIX 1: Strukturelle + Pruefsummen-Validierung eines Frames.
-     * Nur ein vollstaendiger, konsistenter Frame kann ein echtes ACK sein.
-     */
-    private fun isStructurallyValidFrame(frame: ByteArray): Boolean {
-        if (frame.size < 5) return false
-        val b0 = frame[0].toInt() and 0xFF
-        val b1 = frame[1].toInt() and 0xFF
-        val sum = frame[frame.size - 1].toInt() and 0xFF
-        return when {
-            b0 == 0x5A && b1 == 0xA5 -> {
-                if (frame.size < 6) return false
-                val len = frame[2].toInt() and 0xFF
-                if (len + 4 != frame.size) return false
-                var s = 0
-                for (i in 2 until frame.size - 1) s += frame[i].toInt() and 0xFF
-                ((0x100 - (s and 0xFF)) and 0xFF) == sum
-            }
-            b0 == 0xAA && b1 == 0x55 -> {
-                val len = frame[3].toInt() and 0xFF
-                if (len + 5 != frame.size) return false
-                var s = 0
-                for (i in 0 until frame.size - 1) s += frame[i].toInt() and 0xFF
-                (s and 0xFF) == sum
-            }
-            b0 == 0x55 && b1 == 0xAA -> {
-                val len = frame[3].toInt() and 0xFF
-                if (len + 5 != frame.size) return false
-                var x = 0
-                for (i in 0 until frame.size - 1) x = x xor (frame[i].toInt() and 0xFF)
-                (x and 0xFF) == sum
-            }
-            else -> false
-        }
-    }
-
-    private fun postToMain(block: () -> Unit) =
-        Handler(Looper.getMainLooper()).post(block)
-
-    private fun hexOf(frame: ByteArray) =
-        frame.joinToString(" ") { "%02X".format(it) }
-}
-
-/* ============================================================================
- *  MAIN ACTIVITY
+ *  Die GESAMTE UI (Tabs, Trip-Computer, Dashboards, Log-Terminal, Systemleiste,
+ *  Disclaimers, Scan, Flash, Config) bleibt unveraendert funktionsfaehig.
  * ==========================================================================*/
 class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
@@ -1705,7 +74,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private lateinit var scanButton: Button
     private lateinit var deviceListContainer: LinearLayout
 
-    private lateinit var prefs: SharedPreferences
+    private lateinit var repository: ScooterRepository
 
     private var connectedDevice: ScooterDevice? = null
     private var bleEngine: BleEngine? = null
@@ -1779,7 +148,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private val sportPlusPhaseCurrentA = 27
 
     // ---- Trip-Computer --------------------------------------------------
-    private val tripData = TripData()
+    private val tripData get() = repository.trip
     private var dashSoh: TextView? = null
     private var dashCycles: TextView? = null
     private var dashVmax: TextView? = null
@@ -1871,9 +240,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("SyrakPrefs", Context.MODE_PRIVATE)
-        currentRegion = Region.fromCountry(Locale.getDefault().country)
-        autoReconnectEnabled = prefs.getBoolean("auto_reconnect", true)
+        repository = ScooterRepository(this)
+        currentRegion = repository.region
+        autoReconnectEnabled = repository.autoReconnect
 
         window.statusBarColor = Palette.BG
         window.navigationBarColor = Palette.BG
@@ -2039,7 +408,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     status.text = steps[index++]
                     handler.postDelayed(this, 600)
                 } else {
-                    if (prefs.getBoolean("disclaimers_accepted", false)) showScanScreen()
+                    if (repository.disclaimersAccepted) showScanScreen()
                     else showCriticalDisclaimer()
                 }
             }
@@ -2150,7 +519,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             override fun onFinish() {
                 accept.text = "Accept & Proceed"; accept.isEnabled = true
                 accept.setOnClickListener {
-                    prefs.edit().putBoolean("disclaimers_accepted", true).apply()
+                    repository.disclaimersAccepted = true
                     showScanScreen()
                 }
             }
@@ -2500,13 +869,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
     }
 
-    private fun hexFor(frame: ByteArray): String {
-        val proto = bleEngine?.protocol ?: activeProtocol
-        return if (proto == BleProtocol.NAVEE_BRIGHTWAY) {
-            val out = NaveeFrames.fromNinebot(frame) ?: frame
-            NaveeFrames.toHex(out)
-        } else ScooterFrames.toHex(frame)
-    }
+    private fun hexFor(frame: ByteArray): String =
+        frame.joinToString(" ") { "%02X".format(it) }
 
     /* ------------------------------------------------------------------ */
     /*  DASHBOARD-SHELL                                                    */
@@ -2699,7 +1063,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             valueFormatter = { if (it == 0) "0 km/h · ZERO-START" else "$it km/h" }
         ) { value ->
             zeroStartKmh = value
-            sendFrame(ScooterFrames.zeroStart(value), "zero-start")
+            sendFrame(bleEngine?.adapter?.buildZeroStartFrame(value), "zero-start")
         }, cardParams())
 
         tabContent.addView(makeSectionLabel("GESCHWINDIGKEIT"))
@@ -2714,7 +1078,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         gm.addView(makePrimaryButton("GERMAN MANEUVER ANWENDEN") {
             snapshotRegisters()
             germanManeuverActive = true
-            val frame = ScooterFrames.germanManeuver()
+            val frame = bleEngine?.adapter?.buildGermanManeuverFrame()
             ramOverlay.apply("german-maneuver", frame)
             sendFrame(frame, "german-maneuver")
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
@@ -2725,7 +1089,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             "KERS (Rekuperation)", "Stärke der Energierückgewinnung.", 0, 3, kersLevel, "Stufe"
         ) { value ->
             kersLevel = value
-            sendFrame(ScooterFrames.kers(value), "kers")
+            sendFrame(bleEngine?.adapter?.buildKersFrame(value), "kers")
         }, cardParams())
 
         val cruise = makeCard()
@@ -2733,32 +1097,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             "Tempomat (Cruise Control)", "Hält die Geschwindigkeit konstant.", cruiseEnabled
         ) { on ->
             cruiseEnabled = on
-            sendFrame(ScooterFrames.cruise(on), "cruise")
+            sendFrame(bleEngine?.adapter?.buildCruiseFrame(on), "cruise")
         })
         tabContent.addView(cruise, cardParams())
 
         tabContent.addView(makeSectionLabel("FAHRMODUS"))
         val rideCard = makeCard()
-        rideCard.addView(makeText("Motor-Performance-Profil", 15f, Color.WHITE, true))
-        rideCard.addView(makeText(
-            "Eco-Saver drosselt sanft unter ${ecoThresholdPercent} % Akkustand. " +
-            "Sport-Plus gibt maximale Beschleunigung mit temporärem Phasenstrom — der Thermalschutz bleibt aktiv.",
-            12f, Palette.TEXT_MUTED
-        ).apply { setPadding(0, dp(4), 0, dp(10)) })
-        RideMode.values().forEach { mode ->
-            val isSel = rideMode == mode
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10))
-                setBackgroundColor(if (isSel) Palette.SURFACE_DEEP else Palette.SURFACE_ALT)
-                setOnClickListener { applyRideMode(mode) }
-            }
-            row.addView(makeText("${if (isSel) "● " else "○ "}${mode.displayName}", 13f,
-                if (isSel) Palette.ACCENT_GREEN else Color.WHITE, true))
-            row.addView(makeText(mode.description, 11f, Palette.TEXT_MUTED).apply { setPadding(0, dp(3), 0, 0) })
-            rideCard.addView(row, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 0, dp(6)) })
-        }
+        addRideModeSelector(rideCard, 15f)
         tabContent.addView(rideCard, cardParams())
 
         tabContent.addView(makeSectionLabel("MOTORSCHUTZ"))
@@ -2770,14 +1115,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         ) { on ->
             motorTempGuardEnabled = on
             if (!on) motorGuardTripped = false
-            sendFrame(ScooterFrames.motorTempGuard(if (on) motorTempGuardC else 0), "temp-guard")
+            sendFrame(bleEngine?.adapter?.buildTempGuardFrame(if (on) motorTempGuardC else 0), "temp-guard")
         })
         guard.addView(makeSliderCard(
             "Abschalt-Schwelle", "Temperatur, ab der die Leistung gekappt wird.",
             60, 95, motorTempGuardC, "°C"
         ) { value ->
             motorTempGuardC = value
-            if (motorTempGuardEnabled) sendFrame(ScooterFrames.motorTempGuard(value), "temp-guard")
+            if (motorTempGuardEnabled) sendFrame(bleEngine?.adapter?.buildTempGuardFrame(value), "temp-guard")
         })
         tabContent.addView(guard, cardParams())
 
@@ -2848,7 +1193,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             lastCommit = System.currentTimeMillis()
             if (pendingReal <= easy) {
                 maxSpeedKmh = pendingReal
-                sendFrame(ScooterFrames.maxSpeed(pendingReal), "max-speed")
+                sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(pendingReal), "max-speed")
             }
         }
         bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -2904,8 +1249,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 bar.progress = capped - 15
                 valueView.text = "$capped km/h"
                 valueView.setTextColor(Palette.ACCENT_ORANGE)
-                val maxFrame = ScooterFrames.maxSpeed(capped)
-                val powerFrame = ScooterFrames.maxPower()
+                val maxFrame = bleEngine?.adapter?.buildSpeedCeilingFrame(capped)
+                val powerFrame = bleEngine?.adapter?.buildMaxPowerFrame()
                 ramOverlay.apply("extended-power", powerFrame)
                 ramOverlay.apply("max-speed-$capped", maxFrame)
                 sendFrame(maxFrame, "max-speed")
@@ -2918,7 +1263,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 bar.progress = easy - 15
                 valueView.text = "$easy km/h"
                 valueView.setTextColor(Palette.ACCENT_GREEN)
-                sendFrame(ScooterFrames.maxSpeed(easy), "max-speed")
+                sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(easy), "max-speed")
             }
             .setCancelable(false)
             .show()
@@ -3019,26 +1364,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         // ---- FAHRMODUS (Eco-Saver / Sport-Plus) --------------------------
         tabContent.addView(makeSectionLabel("FAHRMODUS"))
         val modeCard = makeCard()
-        modeCard.addView(makeText("Motor-Performance-Profil", 14f, Color.WHITE, true))
-        modeCard.addView(makeText(
-            "Eco-Saver drosselt sanft unter ${ecoThresholdPercent} % Akkustand. " +
-            "Sport-Plus gibt maximale Beschleunigung mit temporärem Phasenstrom — der Thermalschutz bleibt aktiv.",
-            12f, Palette.TEXT_MUTED
-        ).apply { setPadding(0, dp(4), 0, dp(10)) })
-        RideMode.values().forEach { mode ->
-            val isSel = rideMode == mode
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10))
-                setBackgroundColor(if (isSel) Palette.SURFACE_DEEP else Palette.SURFACE_ALT)
-                setOnClickListener { applyRideMode(mode) }
-            }
-            row.addView(makeText("${if (isSel) "● " else "○ "}${mode.displayName}", 13f,
-                if (isSel) Palette.ACCENT_GREEN else Color.WHITE, true))
-            row.addView(makeText(mode.description, 11f, Palette.TEXT_MUTED).apply { setPadding(0, dp(3), 0, 0) })
-            modeCard.addView(row, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 0, dp(6)) })
-        }
+        addRideModeSelector(modeCard, 14f)
         tabContent.addView(modeCard, cardParams())
 
         // ---- BATTERY HEALTH / SoH + Zell-Grafik --------------------------
@@ -3117,7 +1443,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     maxSpeedKmh > 15
                 ) {
                     maxSpeedKmh = 15
-                    sendFrame(ScooterFrames.maxSpeed(15), "eco-saver")
+                    sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(15), "eco-saver")
                 }
             }
             if (t.voltageV != null && t.currentA != null)
@@ -3211,23 +1537,50 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     /** Wendet ein Motor-Performance-Profil an (echte Frames). */
+    /**
+     * DRY: Baut den "Motor-Performance-Profil"-Selektor. Wird identisch im
+     * Tools- und im Dashboard-Tab verwendet — nur die Titelgroesse unterscheidet sich.
+     */
+    private fun addRideModeSelector(container: LinearLayout, titleSize: Float) {
+        container.addView(makeText("Motor-Performance-Profil", titleSize, Color.WHITE, true))
+        container.addView(makeText(
+            "Eco-Saver drosselt sanft unter ${ecoThresholdPercent} % Akkustand. " +
+            "Sport-Plus gibt maximale Beschleunigung mit temporärem Phasenstrom — der Thermalschutz bleibt aktiv.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(4), 0, dp(10)) })
+        RideMode.values().forEach { mode ->
+            val isSel = rideMode == mode
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10))
+                setBackgroundColor(if (isSel) Palette.SURFACE_DEEP else Palette.SURFACE_ALT)
+                setOnClickListener { applyRideMode(mode) }
+            }
+            row.addView(makeText("${if (isSel) "● " else "○ "}${mode.displayName}", 13f,
+                if (isSel) Palette.ACCENT_GREEN else Color.WHITE, true))
+            row.addView(makeText(mode.description, 11f, Palette.TEXT_MUTED).apply { setPadding(0, dp(3), 0, 0) })
+            container.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(6)) })
+        }
+    }
+
     private fun applyRideMode(mode: RideMode) {
         rideMode = mode
         when (mode) {
             RideMode.NORMAL -> {
                 val target = minOf(maxSpeedKmh, detectedModel.easySpeedKmh)
-                sendFrame(ScooterFrames.maxSpeed(target), "ride-normal")
+                sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(target), "ride-normal")
                 log("> ride: NORMAL — Leistung auf $target km/h")
             }
             RideMode.ECO_SAVER -> {
                 val target = minOf(maxSpeedKmh, 15)
-                sendFrame(ScooterFrames.maxSpeed(target), "ride-eco")
-                sendFrame(ScooterFrames.kers(3), "ride-eco-kers")
+                sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(target), "ride-eco")
+                sendFrame(bleEngine?.adapter?.buildKersFrame(3), "ride-eco-kers")
                 log("> ride: ECO-SAVER — Drosselung unter $ecoThresholdPercent %, Ziel $target km/h, KERS 3")
             }
             RideMode.SPORT_PLUS -> {
-                sendFrame(ScooterFrames.maxPower(), "ride-sport")
-                sendFrame(ScooterFrames.motorTempGuard(motorTempGuardC), "ride-sport-guard")
+                sendFrame(bleEngine?.adapter?.buildMaxPowerFrame(), "ride-sport")
+                sendFrame(bleEngine?.adapter?.buildTempGuardFrame(motorTempGuardC), "ride-sport-guard")
                 log("> ride: SPORT-PLUS — max. Beschleunigung, Phasenstrom $sportPlusPhaseCurrentA A, Thermalschutz $motorTempGuardC °C")
             }
         }
@@ -3349,13 +1702,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 val verifiedStopped = speed != null && speed < RAMP_CUT_SPEED_KMH
                 if (verifiedStopped) {
                     // Verifizierter Stillstand -> jetzt ist ein echter Cut sicher.
-                    sendFrame(ScooterFrames.emergencyCut(), "$reason-cut")
+                    sendFrame(bleEngine?.adapter?.buildEmergencyCutFrame(), "$reason-cut")
                     log("> safety: Stillstand verifiziert (${String.format(Locale.US, "%.1f", speed)} km/h) -> Notaus gesendet")
                     endSafeStopRamp()
                     return
                 }
                 // Sonst: sanft weiter drosseln (nie hart abschalten).
-                sendFrame(ScooterFrames.maxSpeed(target), "$reason-ramp")
+                sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(target), "$reason-ramp")
                 if (rampTicks >= RAMP_MAX_TICKS) {
                     log("> safety: Rampe beendet nach $RAMP_MAX_TICKS Ticks -> Drosselung aktiv, kein Cut (Geschwindigkeit nicht verifiziert)")
                     endSafeStopRamp()
@@ -3582,11 +1935,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         if (bytes == null || bytes.isEmpty()) {
             Toast.makeText(this, "Keine Firmware-Bytes geladen.", Toast.LENGTH_SHORT).show(); return
         }
-        val proto = bleEngine?.protocol ?: activeProtocol
-        val unlock: ByteArray? = if (proto == BleProtocol.NAVEE_BRIGHTWAY) NaveeFrames.handshake() else null
-        val reboot: ByteArray? = if (proto == BleProtocol.NAVEE_BRIGHTWAY)
-            NaveeFrames.buildFrame(NaveeFrames.CMD_EMERGENCY, byteArrayOf(0x01))
-        else ScooterFrames.buildFrame(0x20, 0x7E, byteArrayOf(0x01))
+        val adapter = bleEngine?.adapter ?: ProtocolAdapters.forProtocol(activeProtocol)
+        val unlock: ByteArray? = adapter.buildUnlockFrame()
+        val reboot: ByteArray? = adapter.buildRebootFrame()
         flashProgressBar?.progress = 0
         flashStatusView?.text = "Starte echten Flash…"
         flashStatusView?.setTextColor(Palette.TEXT_SECONDARY)
@@ -3760,7 +2111,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             overspeedAlarmMuted = !overspeedAlarmMuted
             alarmState.text = if (overspeedAlarmMuted) "AUS (stumm)" else "AN"
             alarmState.setTextColor(if (overspeedAlarmMuted) Palette.TEXT_MUTED else Palette.ACCENT_GREEN)
-            val frame = ScooterFrames.overspeedAlarmMute(overspeedAlarmMuted)
+            val frame = bleEngine?.adapter?.buildOverspeedMuteFrame(overspeedAlarmMuted)
             ramOverlay.apply("overspeed-alarm", frame)
             sendFrame(frame, "overspeed-alarm")
         }
@@ -3792,7 +2143,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val absMax = detectedModel.absMaxKmh
         if (target <= easy) {
             maxSpeedKmh = target
-            sendFrame(ScooterFrames.maxSpeed(target), "max-speed")
+            sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(target), "max-speed")
         } else confirmThermalSpeed(target, easy, absMax)
     }
 
@@ -3808,8 +2159,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             .setPositiveButton("Freischalten & senden") { _, _ ->
                 extendedPowerUnlocked = true
                 maxSpeedKmh = capped
-                val maxFrame = ScooterFrames.maxSpeed(capped)
-                val powerFrame = ScooterFrames.maxPower()
+                val maxFrame = bleEngine?.adapter?.buildSpeedCeilingFrame(capped)
+                val powerFrame = bleEngine?.adapter?.buildMaxPowerFrame()
                 ramOverlay.apply("extended-power", powerFrame)
                 ramOverlay.apply("max-speed-$capped", maxFrame)
                 sendFrame(maxFrame, "max-speed")
@@ -3817,7 +2168,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             }
             .setNegativeButton("Abbrechen") { _, _ ->
                 maxSpeedKmh = easy
-                sendFrame(ScooterFrames.maxSpeed(easy), "max-speed")
+                sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(easy), "max-speed")
             }
             .setCancelable(false)
             .show()
@@ -3852,7 +2203,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         profileCard.addView(nameRow)
         tabContent.addView(profileCard, cardParams())
 
-        val saved = prefs.getStringSet("profiles", emptySet())?.sorted() ?: emptyList()
+        val saved = repository.profileEntries()
         if (saved.isNotEmpty()) {
             tabContent.addView(makeSectionLabel("GESPEICHERT"))
             val listCard = makeCard()
@@ -3877,7 +2228,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             autoReconnectEnabled
         ) { on ->
             autoReconnectEnabled = on
-            prefs.edit().putBoolean("auto_reconnect", on).apply()
+            repository.autoReconnect = on
         })
         tabContent.addView(connCard, cardParams())
 
@@ -3891,24 +2242,20 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun saveProfile(name: String) {
-        val entry = "$name|$maxSpeedKmh|$zeroStartKmh|$kersLevel|$cruiseEnabled"
-        val set = prefs.getStringSet("profiles", emptySet())?.toMutableSet() ?: mutableSetOf()
-        set.add(entry)
-        prefs.edit().putStringSet("profiles", set).apply()
+        repository.saveProfile(ScooterProfile(name, maxSpeedKmh, zeroStartKmh, kersLevel, cruiseEnabled))
     }
 
     private fun loadProfile(entry: String) {
-        val parts = entry.split("|")
-        if (parts.size < 5) return
-        maxSpeedKmh = parts[1].toIntOrNull() ?: maxSpeedKmh
-        zeroStartKmh = parts[2].toIntOrNull() ?: zeroStartKmh
-        kersLevel = parts[3].toIntOrNull() ?: kersLevel
-        cruiseEnabled = parts[4].toBoolean()
-        sendFrame(ScooterFrames.maxSpeed(maxSpeedKmh), "max-speed")
-        sendFrame(ScooterFrames.zeroStart(zeroStartKmh), "zero-start")
-        sendFrame(ScooterFrames.kers(kersLevel), "kers")
-        sendFrame(ScooterFrames.cruise(cruiseEnabled), "cruise")
-        Toast.makeText(this, "Profil '${parts[0]}' geladen", Toast.LENGTH_SHORT).show()
+        val p = repository.loadProfile(entry) ?: return
+        maxSpeedKmh = p.maxSpeed
+        zeroStartKmh = p.zeroStart
+        kersLevel = p.kers
+        cruiseEnabled = p.cruiseControl
+        sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(maxSpeedKmh), "max-speed")
+        sendFrame(bleEngine?.adapter?.buildZeroStartFrame(zeroStartKmh), "zero-start")
+        sendFrame(bleEngine?.adapter?.buildKersFrame(kersLevel), "kers")
+        sendFrame(bleEngine?.adapter?.buildCruiseFrame(cruiseEnabled), "cruise")
+        Toast.makeText(this, "Profil '${p.name}' geladen", Toast.LENGTH_SHORT).show()
     }
 
     private fun disconnectAndReturn() {
@@ -3931,16 +2278,19 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         "police-mode", "police-speed", "unlock", "kers", "cruise", "max-power"
     )
 
-    private fun sendFrame(frame: ByteArray, label: String) {
+    private fun sendFrame(frame: ByteArray?, label: String) {
         val engine = bleEngine
         if (engine == null || connectedDevice?.isDemo == true) {
             // Demo / nicht verbunden: KEIN Fake-Erfolg, klare Kennzeichnung
-            log("> tx[$label]: (Demo/offline) ${hexFor(frame)} — nicht gesendet")
+            log("> tx[$label]: (Demo/offline) — nicht gesendet")
             return
         }
-        // Auf Brightway: automatische Protokoll-Übersetzung (Ninebot -> Brightway)
-        // + Fallback-Kette [Standard, Alt-Header, Ninebot] + Unlock-Handshake-Gating,
-        // falls der Scooter noch gesperrt ist.
+        if (frame == null) {
+            log("> tx[$label]: Befehl wird vom aktiven Adapter (${engine.adapter.displayName}) nicht unterstuetzt")
+            return
+        }
+        // Der Frame wurde vom aktiven ScooterProtocolAdapter gebaut. Die Engine
+        // uebernimmt Fallback-Kette + Unlock-Handshake-Gating (falls gesperrt).
         engine.enqueueCommand(frame, label, label in unlockGatedLabels)
     }
 
@@ -3960,7 +2310,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             speedCeiling = maxSpeedKmh, zeroStart = zeroStartKmh, kers = kersLevel,
             cruise = cruiseEnabled, locked = isLocked
         )
-        engine.enqueueCommand(ScooterFrames.readTelemetry(), "read-status", false)
+        engine.enqueueCommand(engine.adapter.buildReadStatusFrame(), "read-status", false)
         log("> snapshot: Register-Snapshot gesichert (Speed=$maxSpeedKmh, Zero=$zeroStartKmh, KERS=$kersLevel)")
     }
 
@@ -3972,8 +2322,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         maxSpeedKmh = currentRegion.legalSpeedKmh
 
         // Echte Drossel-Frames
-        sendFrame(ScooterFrames.policeMode(currentRegion.legalSpeedKmh), "police-mode")
-        sendFrame(ScooterFrames.maxSpeed(currentRegion.legalSpeedKmh), "police-speed")
+        sendFrame(bleEngine?.adapter?.buildPoliceModeFrame(currentRegion.legalSpeedKmh), "police-mode")
+        sendFrame(bleEngine?.adapter?.buildSpeedCeilingFrame(currentRegion.legalSpeedKmh), "police-speed")
         // FIX 4: KEIN harter Notaus. Stattdessen faultolerante Power-Rampe:
         // erst auf das legale Limit drosseln, echter Cut erst bei verifizierter
         // Stillstandnaehe (speedKmh < 3 km/h).
@@ -3981,8 +2331,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
         // Ursprungs-Bytes wiederherstellen, falls Snapshot vorhanden
         registerSnapshot?.let { snap ->
-            snap.zeroStart?.let { sendFrame(ScooterFrames.zeroStart(it), "restore-zero") }
-            snap.kers?.let { sendFrame(ScooterFrames.kers(it), "restore-kers") }
+            snap.zeroStart?.let { sendFrame(bleEngine?.adapter?.buildZeroStartFrame(it), "restore-zero") }
+            snap.kers?.let { sendFrame(bleEngine?.adapter?.buildKersFrame(it), "restore-kers") }
             log("> police: Ursprungs-Register wiederhergestellt (Zero=${snap.zeroStart}, KERS=${snap.kers})")
         }
         val elapsed = System.currentTimeMillis() - start
@@ -4008,7 +2358,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun triggerStealthUnlock() {
         log("> hotkey: Stealth Unlock (${detectedModel.stealthUnlockHotkey})")
         snapshotRegisters()
-        val frame = ScooterFrames.germanManeuver()
+        val frame = bleEngine?.adapter?.buildGermanManeuverFrame()
         ramOverlay.apply("stealth-unlock", frame)
         sendFrame(frame, "stealth-unlock")
         germanManeuverActive = true
@@ -4033,15 +2383,17 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     return@setPositiveButton
                 }
                 if (isLocked) {
-                    if (pin == prefs.getString("lock_pin", "")) {
+                    if (repository.verifyPin(pin)) {
                         isLocked = false
-                        sendFrame(ScooterFrames.lock(false), "unlock")
+                        repository.isLocked = false
+                        sendFrame(bleEngine?.adapter?.buildLockFrame(false), "unlock")
                         Toast.makeText(this, "Scooter entsperrt", Toast.LENGTH_SHORT).show()
                     } else Toast.makeText(this, "Falscher PIN.", Toast.LENGTH_SHORT).show()
                 } else {
-                    prefs.edit().putString("lock_pin", pin).apply()
+                    repository.setPin(pin)
                     isLocked = true
-                    sendFrame(ScooterFrames.lock(true), "lock")
+                    repository.isLocked = true
+                    sendFrame(bleEngine?.adapter?.buildLockFrame(true), "lock")
                     Toast.makeText(this, "Wegfahrsperre aktiv", Toast.LENGTH_SHORT).show()
                 }
                 if (currentTab == Tab.TOOLS) renderTab(Tab.TOOLS)
@@ -4302,13 +2654,3 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         return card
     }
 }
-
-/** Ergebnis der Firmware-Integritätsprüfung inkl. extrahierter Flash-Bytes. */
-data class FirmwareValidation(
-    val valid: Boolean,
-    val message: String,
-    val sha256: String,
-    val isZip: Boolean,
-    val modelCompatible: Boolean,
-    val extractedBinary: ByteArray?
-)
