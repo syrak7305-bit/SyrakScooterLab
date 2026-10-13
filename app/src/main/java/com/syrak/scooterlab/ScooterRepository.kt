@@ -1,111 +1,172 @@
-package com.syrak.scooterlab.data
+package com.syrak.scooterlab
 
-import com.syrak.scooterlab.core.ble.BleManager
-import com.syrak.scooterlab.core.ble.ConnectionState
-import com.syrak.scooterlab.core.ble.DiscoveredScooter
-import com.syrak.scooterlab.core.ble.GattEvent
-import com.syrak.scooterlab.core.protocol.NinebotProtocol
-import com.syrak.scooterlab.core.protocol.NinebotSession
-import com.syrak.scooterlab.core.protocol.RegisterMap
-import com.syrak.scooterlab.feature.safety.KillSwitch
-import com.syrak.scooterlab.feature.telemetry.NinebotTelemetrySource
-import com.syrak.scooterlab.feature.telemetry.SimulatedTelemetrySource
-import com.syrak.scooterlab.feature.telemetry.Telemetry
-import com.syrak.scooterlab.feature.telemetry.TelemetrySource
-import com.syrak.scooterlab.feature.tuning.GermanManeuver
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
+import android.content.Context
+import android.content.SharedPreferences
+import android.util.Base64
+import java.security.SecureRandom
+import java.util.Locale
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
-/**
- * Single façade the UI talks to. Owns the composition of transport + protocol +
- * features and exposes immutable streams of state. No Android UI types leak out.
- */
-class ScooterRepository(
-    private val ble: BleManager,
-    private val scope: CoroutineScope,
-) {
-    private val session = NinebotSession(ble, scope)
+/* ============================================================================
+ *  SCOOTER-REPOSITORY
+ *  ----------------------------------------------------------------------------
+ *  Kapselt die PERSISTENZ der App (SharedPreferences) hinter einer sauberen API:
+ *    • Disclaimer-/Reconnect-Einstellungen
+ *    • Region + Adapter-State (zuletzt genutztes Protokoll)
+ *    • PIN fuer die Wegfahrsperre — SICHER via PBKDF2 (NICHT mehr Klartext!)
+ *    • Tuning-Profile (Speichern/Laden)
+ *    • Trip-Computer-Daten (Fahrtstatistik)
+ *
+ *  BUGFIX: Die PIN wurde zuvor im KLARTEXT in SharedPreferences gespeichert und
+ *  per String-Vergleich geprueft. Jetzt wird ein zufaelliges Salt erzeugt und
+ *  die PIN mit PBKDF2 (HmacSHA256, 120_000 Iterationen) gehasht. Gespeichert
+ *  werden nur Salt + Hash (Base64). Die Klartext-PIN verlaesst nie den Speicher.
+ * ==========================================================================*/
+class ScooterRepository(context: Context) {
 
-    val germanManeuver = GermanManeuver(session)
-    val killSwitch = KillSwitch(session)
+    private val prefs: SharedPreferences =
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private val realTelemetry: TelemetrySource = NinebotTelemetrySource(session)
-    private val simulatedTelemetry: TelemetrySource = SimulatedTelemetrySource()
+    /** Trip-Computer (Fahrtstatistik) — vom UI genutzt. */
+    val trip = TripData()
 
-    val scanResults: StateFlow<List<DiscoveredScooter>> = ble.scanResults
-    val connectionState: StateFlow<ConnectionState> = ble.connectionState
-    val gattEvents: SharedFlow<GattEvent> = ble.gattEvents
+    /* ------------------------------------------------------------------ */
+    /*  EINSTELLUNGEN                                                      */
+    /* ------------------------------------------------------------------ */
+    var disclaimersAccepted: Boolean
+        get() = prefs.getBoolean(KEY_DISCLAIMERS, false)
+        set(value) = prefs.edit().putBoolean(KEY_DISCLAIMERS, value).apply()
 
-    private val _telemetry = MutableStateFlow(Telemetry.Empty)
-    val telemetry: StateFlow<Telemetry> = _telemetry.asStateFlow()
+    var autoReconnect: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_RECONNECT, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_RECONNECT, value).apply()
 
-    private var telemetryJob: Job? = null
+    var region: Region
+        get() = Region.fromCountry(prefs.getString(KEY_REGION, null) ?: Locale.getDefault().country)
+        set(value) = prefs.edit().putString(KEY_REGION, value.code).apply()
 
-    /* ------------------------------ Discovery -------------------------------- */
+    /** Zuletzt genutztes Protokoll (Adapter-State). */
+    var lastProtocol: BleProtocol
+        get() = try {
+            BleProtocol.valueOf(prefs.getString(KEY_PROTOCOL, BleProtocol.NINEBOT.name) ?: BleProtocol.NINEBOT.name)
+        } catch (_: Exception) { BleProtocol.NINEBOT }
+        set(value) = prefs.edit().putString(KEY_PROTOCOL, value.name).apply()
 
-    fun startScan(filtered: Boolean = true) = ble.startScan(filtered)
-    fun stopScan() = ble.stopScan()
-    val isBluetoothEnabled: Boolean get() = ble.isBluetoothEnabled
+    /** Zuletzt genutzte Adapter-ID (Adapter-State). */
+    var lastAdapterId: String
+        get() = prefs.getString(KEY_ADAPTER_ID, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_ADAPTER_ID, value).apply()
 
-    /* ------------------------------ Connection ------------------------------- */
+    /* ------------------------------------------------------------------ */
+    /*  WEGFAHRSPERRE (PIN, PBKDF2)                                        */
+    /* ------------------------------------------------------------------ */
+    var isLocked: Boolean
+        get() = prefs.getBoolean(KEY_LOCKED, false)
+        set(value) = prefs.edit().putBoolean(KEY_LOCKED, value).apply()
 
-    suspend fun connect(scooter: DiscoveredScooter): Result<Unit> {
-        val result = ble.connect(scooter)
-        if (result.isSuccess) startTelemetry(realTelemetry) else startTelemetry(simulatedTelemetry)
-        return result
+    /** true, wenn bereits eine PIN gesetzt wurde. */
+    val hasPin: Boolean
+        get() = prefs.contains(KEY_PIN_HASH) && prefs.contains(KEY_PIN_SALT)
+
+    /**
+     * Setzt eine neue PIN. Es wird ein frisches 16-Byte-Salt erzeugt und die PIN
+     * mit PBKDF2 gehasht. Die Klartext-PIN wird NICHT gespeichert.
+     */
+    fun setPin(pin: String) {
+        val salt = ByteArray(SALT_BYTES).also { SecureRandom().nextBytes(it) }
+        val hash = derive(pin, salt, ITERATIONS, KEY_LENGTH_BYTES)
+        prefs.edit()
+            .putString(KEY_PIN_SALT, Base64.encodeToString(salt, Base64.NO_WRAP))
+            .putString(KEY_PIN_HASH, Base64.encodeToString(hash, Base64.NO_WRAP))
+            .putInt(KEY_PIN_ITER, ITERATIONS)
+            .apply()
     }
 
-    fun disconnect() {
-        telemetryJob?.cancel()
-        telemetryJob = null
-        ble.disconnect()
-        startTelemetry(simulatedTelemetry)
+    /** Verifiziert eine PIN gegen den gespeicherten PBKDF2-Hash (konstante Zeit). */
+    fun verifyPin(pin: String): Boolean {
+        val saltB64 = prefs.getString(KEY_PIN_SALT, null) ?: return false
+        val hashB64 = prefs.getString(KEY_PIN_HASH, null) ?: return false
+        val iterations = prefs.getInt(KEY_PIN_ITER, ITERATIONS)
+        val salt = try { Base64.decode(saltB64, Base64.NO_WRAP) } catch (_: Exception) { return false }
+        val expected = try { Base64.decode(hashB64, Base64.NO_WRAP) } catch (_: Exception) { return false }
+        val actual = derive(pin, salt, iterations, expected.size)
+        return constantTimeEquals(expected, actual)
     }
 
-    /** Drive the dashboard with synthetic data (development / demo only). */
-    fun startSimulation() = startTelemetry(simulatedTelemetry)
+    fun clearPin() {
+        prefs.edit()
+            .remove(KEY_PIN_SALT).remove(KEY_PIN_HASH).remove(KEY_PIN_ITER)
+            .remove(KEY_LOCKED)
+            .apply()
+    }
 
-    private fun startTelemetry(source: TelemetrySource) {
-        telemetryJob?.cancel()
-        telemetryJob = scope.launch {
-            source.stream().collect { _telemetry.value = it }
+    private fun derive(pin: String, salt: ByteArray, iterations: Int, keyLen: Int): ByteArray {
+        val spec = PBEKeySpec(pin.toCharArray(), salt, iterations, keyLen * 8)
+        val factory = try {
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        } catch (_: Exception) {
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
         }
+        return factory.generateSecret(spec).encoded
     }
 
-    /* ------------------------------- Features -------------------------------- */
-
-    suspend fun readRegister(
-        destination: Int = NinebotProtocol.ADDR_ESC,
-        register: Int,
-    ): ByteArray? = session.readRegister(destination, register)
-
-    suspend fun applyGermanManeuver(
-        targetSpeedKmh: Int = 30,
-        onProgress: (GermanManeuver.Progress) -> Unit = {},
-    ): Result<GermanManeuver.Result> =
-        germanManeuver.execute(targetSpeedKmh = targetSpeedKmh, onProgress = onProgress)
-
-    suspend fun engageKillSwitch(onStep: (String) -> Unit = {}): Boolean =
-        killSwitch.engage(onStep = onStep)
-
-    suspend fun releaseKillSwitch(onStep: (String) -> Unit = {}): Boolean =
-        killSwitch.release(onStep = onStep)
-
-    val isKillSwitchEngaged: Boolean get() = killSwitch.isEngaged
-
-    /** Read the controller serial number (diagnostics / auth key material). */
-    suspend fun readSerial(): String? {
-        val bytes = session.readRegister(NinebotProtocol.ADDR_ESC, RegisterMap.SERIAL_NUMBER) ?: return null
-        return bytes.joinToString("") { "%02X".format(it) }
+    private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
+        if (a.size != b.size) return false
+        var diff = 0
+        for (i in a.indices) diff = diff or (a[i].toInt() xor b[i].toInt())
+        return diff == 0
     }
 
-    fun release() {
-        telemetryJob?.cancel()
-        ble.release()
+    /* ------------------------------------------------------------------ */
+    /*  TUNING-PROFILE                                                     */
+    /* ------------------------------------------------------------------ */
+    /** Speichert/ueberschreibt ein Profil (Format identisch zum Original). */
+    fun saveProfile(profile: ScooterProfile) {
+        val entry = "${profile.name}|${profile.maxSpeed}|${profile.zeroStart}|${profile.kers}|${profile.cruiseControl}"
+        val set = prefs.getStringSet(KEY_PROFILES, emptySet())?.toMutableSet() ?: mutableSetOf()
+        set.removeAll { it.substringBefore('|') == profile.name }
+        set.add(entry)
+        prefs.edit().putStringSet(KEY_PROFILES, set).apply()
+    }
+
+    /**
+     * Alle gespeicherten Profil-Eintraege (roh, alphabetisch sortiert).
+     * Format je Eintrag: "name|maxSpeed|zeroStart|kers|cruise" — identisch zum
+     * Original, damit die UI-Darstellung unveraendert bleibt.
+     */
+    fun profileEntries(): List<String> =
+        prefs.getStringSet(KEY_PROFILES, emptySet())?.sorted() ?: emptyList()
+
+    /** Laedt ein Profil aus einem rohen Eintrag (null, wenn ungueltig). */
+    fun loadProfile(entry: String): ScooterProfile? {
+        val parts = entry.split("|")
+        if (parts.size < 5) return null
+        return ScooterProfile(
+            name = parts[0],
+            maxSpeed = parts[1].toIntOrNull() ?: return null,
+            zeroStart = parts[2].toIntOrNull() ?: 0,
+            kers = parts[3].toIntOrNull() ?: 1,
+            cruiseControl = parts[4].toBoolean()
+        )
+    }
+
+    companion object {
+        private const val PREFS_NAME = "SyrakPrefs"
+
+        private const val KEY_DISCLAIMERS = "disclaimers_accepted"
+        private const val KEY_AUTO_RECONNECT = "auto_reconnect"
+        private const val KEY_REGION = "region_code"
+        private const val KEY_PROTOCOL = "last_protocol"
+        private const val KEY_ADAPTER_ID = "last_adapter_id"
+        private const val KEY_LOCKED = "is_locked"
+        private const val KEY_PIN_SALT = "pin_salt"
+        private const val KEY_PIN_HASH = "pin_hash"
+        private const val KEY_PIN_ITER = "pin_iterations"
+        private const val KEY_PROFILES = "profiles"
+
+        private const val SALT_BYTES = 16
+        private const val ITERATIONS = 120_000
+        private const val KEY_LENGTH_BYTES = 32
     }
 }
