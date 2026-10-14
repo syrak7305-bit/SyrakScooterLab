@@ -1,4 +1,5 @@
-package com.syrak.scooterlab.ui.dashboard
+package com.syrak.scooterlab
+
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
