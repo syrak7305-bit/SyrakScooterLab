@@ -1,43 +1,81 @@
-package com.syrak.scooterlab.feature.telemetry
 
-/**
- * A single telemetry sample decoded from the ESC/BMS registers.
- * All units are normalised to SI-friendly display units.
- */
-data class Telemetry(
-    val speedKmh: Float = 0f,
-    val voltageV: Float = 0f,
-    val currentA: Float = 0f,
-    val batteryPercent: Int = 0,
-    val motorTempC: Float = 0f,
-    val batteryTempC: Float = 0f,
-    val cellMinV: Float = 0f,
-    val cellMaxV: Float = 0f,
-    val odometerKm: Float = 0f,
-    val timestampMs: Long = System.currentTimeMillis(),
+package com.syrak.scooterlab.data
+
+import com.syrak.scooterlab.core.ble.BleManager
+import com.syrak.scooterlab.core.ble.ConnectionState
+import com.syrak.scooterlab.core.ble.DiscoveredScooter
+import com.syrak.scooterlab.core.ble.GattEvent
+import com.syrak.scooterlab.feature.telemetry.Telemetry
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+
+class ScooterRepository(
+    val bleManager: BleManager,
+    val scope: CoroutineScope
 ) {
-    /** Instantaneous electrical power draw. */
-    val powerW: Float get() = voltageV * currentA
+    val scanResults = bleManager.scanResults
+    val connectionState = bleManager.connectionState
+    val gattEvents = bleManager.gattEvents
+    val incoming = bleManager.incoming
 
-    /** Cell imbalance in millivolts — a health signal. */
-    val cellDeltaMv: Float get() = (cellMaxV - cellMinV) * 1000f
+    private val _telemetry = MutableStateFlow(Telemetry.Empty)
+    val telemetry: StateFlow<Telemetry> = _telemetry.asStateFlow()
 
-    /** Naive remaining-range estimate; refined once a real consumption model exists. */
-    val estimatedRangeKm: Float
-        get() = if (batteryPercent <= 0) 0f else (batteryPercent / 100f) * NOMINAL_RANGE_KM
+    fun startSimulation() {
+        // Keine simulierten Messwerte als echte Scooter-Daten ausgeben.
+        _telemetry.value = Telemetry.Empty
+    }
 
-    /** Battery health heuristic for the UI status chip. */
-    val health: BatteryHealth
-        get() = when {
-            cellDeltaMv > 120f || batteryTempC > 55f -> BatteryHealth.CRITICAL
-            cellDeltaMv > 60f || batteryTempC > 45f -> BatteryHealth.DEGRADED
-            else -> BatteryHealth.NOMINAL
-        }
+    fun startScan(filtered: Boolean = true) {
+        bleManager.startScan(filtered)
+    }
 
-    companion object {
-        const val NOMINAL_RANGE_KM = 30f
-        val Empty = Telemetry()
+    fun stopScan() {
+        bleManager.stopScan()
+    }
+
+    suspend fun connect(scooter: DiscoveredScooter): Result<Unit> {
+        return bleManager.connect(scooter)
+    }
+
+    fun disconnect() {
+        bleManager.disconnect()
+        _telemetry.value = Telemetry.Empty
+    }
+
+    suspend fun sendFrame(frame: ByteArray) {
+        bleManager.write(frame)
+    }
+
+    suspend fun applyGermanManeuver(
+        targetSpeedKmh: Int,
+        onProgress: (String) -> Unit
+    ): Result<ManeuverResult> {
+        onProgress("Nicht verfügbar: kein geprüfter Controller-Befehl implementiert")
+        return Result.failure(
+            UnsupportedOperationException(
+                "German Maneuver ist für diesen Controller noch nicht implementiert."
+            )
+        )
+    }
+
+    suspend fun engageKillSwitch(onProgress: (String) -> Unit) {
+        onProgress("Nicht verfügbar: kein geprüfter Kill-Switch-Befehl implementiert")
+    }
+
+    suspend fun releaseKillSwitch(onProgress: (String) -> Unit) {
+        onProgress("Nicht verfügbar: kein geprüfter Kill-Switch-Befehl implementiert")
+    }
+
+    fun release() {
+        bleManager.release()
     }
 }
 
-enum class BatteryHealth { NOMINAL, DEGRADED, CRITICAL }
+data class ManeuverResult(
+    val newSpeedLimit: Int,
+    val verified: Boolean
+)
