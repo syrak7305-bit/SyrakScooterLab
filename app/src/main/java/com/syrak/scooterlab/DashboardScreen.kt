@@ -199,284 +199,61 @@ private fun ConnectionState.statusMeta(): Pair<String, Color> =
         is ConnectionState.Scanning ->
             "Scanning" to com.syrak.scooterlab.ui.theme.Cyan
 
-        is ConnectionState.Connecting,
-        is ConnectionState.Discovering,
-        is ConnectionState.Authenticating ->
-            "Linking" to com.syrak.scooterlab.ui.theme.Amber
+        is ConnectionState.Connecting ->
+            "Connecting" to com.syrak.scooterlab.ui.theme.Amber
+
+        is ConnectionState.Discovering ->
+            "Bringing link up" to com.syrak.scooterlab.ui.theme.Amber
 
         is ConnectionState.Failed ->
-            "Fault" to com.syrak.scooterlab.ui.theme.Crimson
+            "Link failed" to com.syrak.scooterlab.ui.theme.Crimson
 
-        ConnectionState.Disconnected ->
-            "Offline" to com.syrak.scooterlab.ui.theme.TextSecondary
-
-        ConnectionState.Idle ->
-            "Idle" to com.syrak.scooterlab.ui.theme.TextSecondary
+        else -> "Idle" to com.syrak.scooterlab.ui.theme.Slate
     }
-
-@Composable
-private fun BannerStrip(text: String, danger: Boolean) {
-    val color =
-        if (danger) SyrakTheme.colors.danger
-        else SyrakTheme.colors.data
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(color.copy(alpha = 0.10f))
-            .padding(
-                horizontal = SyrakTheme.spacing.md,
-                vertical = SyrakTheme.spacing.sm,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(6.dp)
-                .background(color, RoundedCornerShape(3.dp)),
-        )
-
-        Spacer(Modifier.width(SyrakTheme.spacing.sm))
-
-        Text(
-            text = text,
-            style = SyrakTheme.type.dataSm,
-            color = color,
-        )
-    }
-}
-
-/* Connection */
-
-@Composable
-private fun ConnectionPanel(
-    state: DashboardUiState,
-    onScanToggle: () -> Unit,
-    onConnect: (DiscoveredScooter) -> Unit,
-    onDisconnect: () -> Unit,
-) {
-    val spacing = SyrakTheme.spacing
-    val ready = state.connection as? ConnectionState.Ready
-
-    NeonCard(
-        modifier = Modifier.fillMaxWidth(),
-        accent = if (ready != null) SyrakTheme.colors.success else null,
-    ) {
-        if (ready != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_scooter),
-                    contentDescription = null,
-                    tint = SyrakTheme.colors.success,
-                    modifier = Modifier.size(22.dp),
-                )
-
-                Spacer(Modifier.width(spacing.md))
-
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = ready.name ?: "Unknown controller",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-
-                    Text(
-                        text = "${ready.brand.displayName} · ${ready.address} · MTU ${ready.mtu}",
-                        style = SyrakTheme.type.dataSm,
-                        color = SyrakTheme.colors.onSurfaceMuted,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(spacing.lg))
-
-            SyrakButton(
-                text = "Disconnect",
-                onClick = onDisconnect,
-                variant = SyrakButtonVariant.Secondary,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_bluetooth),
-                    contentDescription = null,
-                    tint = SyrakTheme.colors.data,
-                    modifier = Modifier.size(20.dp),
-                )
-
-                Spacer(Modifier.width(spacing.md))
-
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = "No controller linked",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-
-                    Text(
-                        text = "Scan for compatible scooter controllers.",
-                        style = SyrakTheme.type.dataSm,
-                        color = SyrakTheme.colors.onSurfaceMuted,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(spacing.lg))
-
-            SyrakButton(
-                text = if (state.connection is ConnectionState.Scanning) {
-                    "Stop scan"
-                } else {
-                    "Scan airspace"
-                },
-                onClick = onScanToggle,
-                leadingIcon = painterResource(R.drawable.ic_bluetooth),
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            if (state.scanResults.isNotEmpty()) {
-                Spacer(Modifier.height(spacing.md))
-                HairlineDivider(Modifier.fillMaxWidth())
-                Spacer(Modifier.height(spacing.sm))
-
-                state.scanResults.take(6).forEach { scooter ->
-                    ScanResultRow(scooter, onConnect)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ScanResultRow(
-    scooter: DiscoveredScooter,
-    onConnect: (DiscoveredScooter) -> Unit,
-) {
-    val spacing = SyrakTheme.spacing
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable { onConnect(scooter) }
-            .padding(
-                vertical = spacing.md,
-                horizontal = spacing.sm,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = scooter.name ?: "Unnamed device",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
-            Text(
-                text = scooter.address,
-                style = SyrakTheme.type.microLabel,
-                color = SyrakTheme.colors.onSurfaceFaint,
-            )
-        }
-
-        Text(
-            text = "${scooter.rssi} dBm",
-            style = SyrakTheme.type.dataSm,
-            color = SyrakTheme.colors.data,
-        )
-
-        Spacer(Modifier.width(spacing.md))
-
-        StatusChip(
-            text = scooter.brand.displayName,
-            color = SyrakTheme.colors.accent,
-        )
-    }
-}
 
 /* Speed */
 
 @Composable
 private fun SpeedPanel(state: DashboardUiState) {
     val spacing = SyrakTheme.spacing
-    val telemetry = state.telemetry
+    val t = state.telemetry
 
     NeonCard(modifier = Modifier.fillMaxWidth()) {
-        Box(
-            Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center,
-        ) {
-            GaugeRing(
-                value = telemetry.speedKmh,
-                maxValue = 45f,
-                diameter = 210.dp,
-                unit = "KM/H",
-                caption = if (state.isSimulated) {
-                    "simulated feed"
-                } else {
-                    "live feed"
-                },
-            )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "${t.speedKmh} km/h",
+                    style = MaterialTheme.typography.displaySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+
+                Text(
+                    text = "${t.odometerKm} km",
+                    style = SyrakTheme.type.dataSm,
+                    color = SyrakTheme.colors.onSurfaceMuted,
+                )
+            }
+
+            GaugeRing(percent = (t.batteryPercent ?: 0) / 100f)
         }
 
-        Spacer(Modifier.height(spacing.md))
-        HairlineDivider(Modifier.fillMaxWidth())
-        Spacer(Modifier.height(spacing.md))
+        Spacer(Modifier.height(spacing.lg))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            MiniMetric(
-                "Power",
-                "%.0f".format(telemetry.powerW),
-                "W",
-            )
-            MiniMetric(
-                "Odometer",
-                "%.1f".format(telemetry.odometerKm),
-                "KM",
-            )
-            MiniMetric(
-                "Range",
-                "%.1f".format(telemetry.estimatedRangeKm),
-                "KM",
-            )
-        }
-    }
-}
-
-@Composable
-private fun MiniMetric(
-    label: String,
-    value: String,
-    unit: String,
-) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = label.uppercase(),
-            style = SyrakTheme.type.microLabel,
-            color = SyrakTheme.colors.onSurfaceMuted,
-        )
-
-        Spacer(Modifier.height(4.dp))
-
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                text = value,
-                style = SyrakTheme.type.dataMd,
-                color = MaterialTheme.colorScheme.onSurface,
+        Row(horizontalArrangement = Arrangement.spacedBy(spacing.md)) {
+            SyrakButton(
+                text = "Panic",
+                onClick = { /* TODO */ },
+                variant = SyrakButtonVariant.Destructive,
+                modifier = Modifier.weight(1f),
             )
 
-            Spacer(Modifier.width(3.dp))
+            Spacer(Modifier.width(spacing.sm))
 
-            Text(
-                text = unit,
-                style = SyrakTheme.type.unit,
-                color = SyrakTheme.colors.data,
-                modifier = Modifier.padding(bottom = 2.dp),
+            SyrakButton(
+                text = "Eco",
+                onClick = { /* TODO */ },
+                variant = SyrakButtonVariant.Secondary,
+                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -511,7 +288,7 @@ private fun PowerGrid(state: DashboardUiState) {
         Row(horizontalArrangement = Arrangement.spacedBy(spacing.md)) {
             StatTile(
                 label = "Battery",
-                value = t.batteryPercent.toString(),
+                value = t.batteryPercent?.toString() ?: "--",
                 unit = "%",
                 icon = painterResource(R.drawable.ic_battery),
                 accent = batteryAccent(t.batteryPercent),
@@ -520,7 +297,7 @@ private fun PowerGrid(state: DashboardUiState) {
 
             StatTile(
                 label = "Motor temp",
-                value = "%.0f".format(t.motorTempC),
+                value = t.motorTempC?.let { "%.0f".format(it) } ?: "--",
                 unit = "°C",
                 icon = painterResource(R.drawable.ic_thermometer),
                 accent = tempAccent(t.motorTempC),
@@ -570,120 +347,56 @@ private fun BatteryPanel(state: DashboardUiState) {
         HairlineDivider(Modifier.fillMaxWidth())
         Spacer(Modifier.height(spacing.md))
 
-        DataRow("Cell min", "%.3f V".format(t.cellMinV))
-        DataRow("Cell max", "%.3f V".format(t.cellMaxV))
-        DataRow("Cell delta", "%.0f mV".format(t.cellDeltaMv))
-        DataRow("Battery temp", "%.1f °C".format(t.batteryTempC))
-    }
-}
+        DataRow("Cell min", t.cellMinV?.let { "%.3f V".format(it) } ?: "--")
+        DataRow("Cell max", t.cellMaxV?.let { "%.3f V".format(it) } ?: "--")
+        DataRow("Delta", if (t.cellMinV != null && t.cellMaxV != null) "%.0f mV".format((t.cellMaxV - t.cellMinV) * 1000) else "--")
 
-@Composable
-private fun DataRow(label: String, value: String) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = SyrakTheme.colors.onSurfaceMuted,
-            modifier = Modifier.weight(1f),
-        )
+        Spacer(Modifier.height(spacing.md))
 
-        Text(
-            text = value,
-            style = SyrakTheme.type.dataSm,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(spacing.md)) {
+            DataRow("SoH", t.fullChargeCapacityMah?.let { design ->
+                val designCap = t.designCapacityMah
+                if (designCap != null && designCap > 0) {
+                    val soh = design.toDouble() / designCap.toDouble() * 100.0
+                    String.format(Locale.US, "%.1f %%", soh)
+                } else "--"
+            } ?: "--")
+
+            DataRow("Cycles", t.cycleCount?.toString() ?: "--")
+        }
     }
 }
 
 /* Safety */
 
 @Composable
-private fun SafetyPanel(
-    state: DashboardUiState,
-    onToggleKillSwitch: () -> Unit,
-) {
+private fun SafetyPanel(state: DashboardUiState, onToggleKillSwitch: () -> Unit) {
     val spacing = SyrakTheme.spacing
-    val engaged = state.killSwitchEngaged
 
-    NeonCard(
-        modifier = Modifier.fillMaxWidth(),
-        accent = SyrakTheme.colors.danger,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                painter = painterResource(R.drawable.ic_shield),
-                contentDescription = null,
-                tint = SyrakTheme.colors.danger,
-                modifier = Modifier.size(20.dp),
+    NeonCard(modifier = Modifier.fillMaxWidth()) {
+        Column {        
+            SyrakButton(
+                text = if (state.killSwitchEngaged) "Release Kill Switch" else "Engage Kill Switch",
+                onClick = onToggleKillSwitch,
+                variant = if (state.killSwitchEngaged) SyrakButtonVariant.Secondary else SyrakButtonVariant.Destructive,
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
             )
-
-            Spacer(Modifier.width(spacing.md))
-
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = "Emergency killswitch",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-
-                Text(
-                    text = "Safety control. Its actual effect depends on controller support. Always use the physical brake.",
-                    style = SyrakTheme.type.dataSm,
-                    color = SyrakTheme.colors.onSurfaceMuted,
-                )
-            }
         }
-
-        Spacer(Modifier.height(spacing.lg))
-
-        SyrakButton(
-            text = if (engaged) {
-                "Release containment"
-            } else {
-                "Engage killswitch"
-            },
-            onClick = onToggleKillSwitch,
-            variant = if (engaged) {
-                SyrakButtonVariant.Secondary
-            } else {
-                SyrakButtonVariant.Danger
-            },
-            leadingIcon = painterResource(R.drawable.ic_shield),
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 
 /* Tuning */
 
 @Composable
-private fun TuningPanel(
-    state: DashboardUiState,
-    onApplyManeuver: (Int) -> Unit,
-) {
+private fun TuningPanel(state: DashboardUiState, onApplyManeuver: (Int) -> Unit) {
     val spacing = SyrakTheme.spacing
-    var target by remember { mutableIntStateOf(30) }
-    val options = listOf(25, 30, 35, 40)
+    var target by remember { mutableIntStateOf(25) }
+    val options = listOf(10, 15, 20, 25, 30)
 
-    NeonCard(
-        modifier = Modifier.fillMaxWidth(),
-        accent = SyrakTheme.colors.accent,
-    ) {
+    NeonCard(modifier = Modifier.fillMaxWidth()) {
         Text(
-            text = "German Maneuver",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-
-        Spacer(Modifier.height(4.dp))
-
-        Text(
-            text = "Select a target speed. Applying it only works if the connected controller supports the required operation.",
+            text = "Apply a conservative speed limit to the controller",
             style = SyrakTheme.type.dataSm,
             color = SyrakTheme.colors.onSurfaceMuted,
         )
@@ -792,7 +505,8 @@ private fun ConsolePanel(state: DashboardUiState) {
 
 /* Helpers */
 
-private fun batteryAccent(percent: Int): Color = when {
+private fun batteryAccent(percent: Int?): Color = when {
+    percent == null -> SyrakTheme.colors.onSurfaceFaint
     percent <= 15 ->
         com.syrak.scooterlab.ui.theme.Crimson
 
@@ -803,7 +517,8 @@ private fun batteryAccent(percent: Int): Color = when {
         com.syrak.scooterlab.ui.theme.Acid
 }
 
-private fun tempAccent(tempC: Float): Color = when {
+private fun tempAccent(tempC: Float?): Color = when {
+    tempC == null -> SyrakTheme.colors.onSurfaceFaint
     tempC >= 70f ->
         com.syrak.scooterlab.ui.theme.Crimson
 
