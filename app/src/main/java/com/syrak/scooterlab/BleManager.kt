@@ -266,24 +266,24 @@ class BleManager(
     fun close() {
         writerJob?.cancel()
         writerJob = null
+
+        val currentGatt = gatt
+        gatt = null
+
         readyDeferred?.cancel()
         readyDeferred = null
+
+        writeDeferred?.completeExceptionally(IOException("Connection closed"))
         writeDeferred = null
+
         writeChar = null
         notifyChar = null
         currentMtu = BleConstants.DEFAULT_MTU
         try {
-            gatt?.let { g ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    // Requires CONNECT permission — already gated upstream.
-                }
-                g.disconnect()
-                g.close()
-            }
+            currentGatt?.disconnect()
+            currentGatt?.close()
         } catch (e: SecurityException) {
             Timber.w(e, "GATT close denied")
-        } finally {
-            gatt = null
         }
     }
 
@@ -386,12 +386,16 @@ class BleManager(
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    val wasReady = readyDeferred?.isActive == false
-                    if (readyDeferred?.isActive == true) {
+                    val handshakeActive = readyDeferred?.isActive == true
+                    val wasReady = readyDeferred?.isCompleted == true ||
+                        _connectionState.value is ConnectionState.Ready
+
+                    if (handshakeActive) {
                         failReady("Disconnected during handshake (status $status)")
                     } else if (wasReady) {
                         _connectionState.value = ConnectionState.Disconnected
                     }
+
                     _gattEvents.tryEmit(GattEvent.Warning("Disconnected (status $status)"))
                     close()
                     if (readyDeferred == null) {
