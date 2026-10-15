@@ -1,4 +1,3 @@
-
 package com.syrak.scooterlab
 
 import androidx.compose.foundation.background
