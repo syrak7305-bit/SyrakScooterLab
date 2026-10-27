@@ -21,6 +21,7 @@ import android.os.Bundle
 import android.os.CountDownTimer
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
@@ -39,16 +40,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
-import java.util.zip.ZipInputStream
 
 /* ==========================================================================
  *  SYRAK SCOOTERLAB  —  MainActivity.kt  (v7 "Modular Protocol Engine")
@@ -73,6 +71,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
+
+    // Scan-UI-Throttle: Scan-Callbacks kommen teils mehrfach pro Sekunde und pro
+    // Geraet. Ein vollstaendiger Listen-Rebuild je Callback fuehrt zu Ruckeln und
+    // zu flackernden RSSI-Werten. Daher max. ein Rebuild alle LIST_THROTTLE_MS.
+    private var lastListUpdateMs = 0L
+    private var pendingListUpdate: Runnable? = null
+    private val LIST_THROTTLE_MS = 350L
     private lateinit var statusText: TextView
     private lateinit var scanButton: Button
     private lateinit var deviceListContainer: LinearLayout
@@ -83,6 +88,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var bleEngine: BleEngine? = null
     private var currentRegion: Region = Region.WORLD
     private var detectedModel: ScooterModel = ScooterModel.UNKNOWN
+    private var detectedConfidence: DetectionConfidence = DetectionConfidence.UNKNOWN
+    private var detectionEvidence: String = ""
     private var activeProtocol: BleProtocol = BleProtocol.NINEBOT
     private var autoReconnectEnabled = true
     private var reconnectAttempts = 0
@@ -117,7 +124,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var lastValidation: FirmwareValidation? = null
     private var loadedFirmwareBytes: ByteArray? = null
     /** FIX 7: hartes Limit gegen ZIP-Bomben / uebergrosse Firmware-Dateien. */
-    private val MAX_FIRMWARE_BYTES = 512 * 1024
+    private val MAX_FIRMWARE_BYTES = FirmwareValidator.MAX_FIRMWARE_BYTES
 
     private var flashMode: FlashMode = FlashMode.SOFT_PATCH
     private var overspeedAlarmMuted = false
@@ -141,7 +148,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var sysMtuView: TextView? = null
     private var sysQueueView: TextView? = null
     private var sysLinkView: TextView? = null
-    private var linkState: String = "IDLE"
+    private var linkState: BleLinkState = BleLinkState.IDLE
     private var lastRssi: Int = Int.MIN_VALUE
     private var sysBarRunnable: Runnable? = null
 
@@ -231,20 +238,49 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             val keywords = listOf("scooter", "ninebot", "xiaomi", "navee", "m365", "segway", "soflow")
             val candidate = keywords.any { name.contains(it, ignoreCase = true) }
 
-            // WICHTIG: Callback läuft auf Binder-Thread -> UI-Update auf Main-Thread
+            // WICHTIG: Callback laeuft auf Binder-Thread -> UI-Update auf Main-Thread
             runOnUiThread {
                 foundDevices[address] = ScooterDevice(device, name, address, result.rssi, candidate, false)
-                updateDeviceList()
+                requestThrottledListUpdate()
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
             runOnUiThread {
                 isScanning = false
-                scanButton.isEnabled = true
-                statusText.text = "BLE-Scan fehlgeschlagen (Code $errorCode)."
+                // Null-sicher: onScanFailed kann vor dem UI-Aufbau oder nach einem
+                // Recreate eintreffen.
+                if (::scanButton.isInitialized) scanButton.isEnabled = true
+                if (::statusText.isInitialized) {
+                    statusText.text = "BLE-Scan fehlgeschlagen (Code $errorCode)."
+                }
+                addLog(LogCategory.ERROR, "BLE-Scan fehlgeschlagen (Code $errorCode).")
             }
         }
+    }
+
+    /** Baut die Geraeteliste hoechstens alle [LIST_THROTTLE_MS] neu auf. */
+    private fun requestThrottledListUpdate() {
+        val now = SystemClock.elapsedRealtime()
+        val elapsed = now - lastListUpdateMs
+        if (elapsed >= LIST_THROTTLE_MS) {
+            lastListUpdateMs = now
+            updateDeviceList()
+            return
+        }
+        if (pendingListUpdate != null) return
+        val r = Runnable {
+            pendingListUpdate = null
+            lastListUpdateMs = SystemClock.elapsedRealtime()
+            updateDeviceList()
+        }
+        pendingListUpdate = r
+        handler.postDelayed(r, LIST_THROTTLE_MS - elapsed)
+    }
+
+    private fun cancelPendingListUpdate() {
+        pendingListUpdate?.let { handler.removeCallbacks(it) }
+        pendingListUpdate = null
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -388,6 +424,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             android.util.Log.w("SyrakScooterLab", "BLE scanner stop failed unexpectedly")
         } finally {
             isScanning = false
+            cancelPendingListUpdate()
             if (::scanButton.isInitialized) {
                 scanButton.isEnabled = true
             }
@@ -612,9 +649,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         tabContent.addView(makeSectionLabel("ERKANNTES MODELL"))
         val modelCard = makeCard()
         modelCard.addView(makeText(
-            if (detectedModel.isKnown) detectedModel.displayName else "Modell nicht erkannt",
+            if (detectedModel.isKnown)
+                "${detectedModel.displayName} — ${detectedConfidence.label}"
+            else "Modell nicht erkannt (${detectedConfidence.label})",
             16f,
-            if (detectedModel.isKnown) Palette.ACCENT_GREEN else Palette.ACCENT_ORANGE,
+            when (detectedConfidence) {
+                DetectionConfidence.CONFIRMED -> Palette.ACCENT_GREEN
+                DetectionConfidence.PROBABLE -> Palette.ACCENT_YELLOW
+                DetectionConfidence.UNKNOWN -> Palette.ACCENT_ORANGE
+            },
             true
         ))
         modelCard.addView(makeText(modelEvidence(), 12f, Palette.TEXT_MUTED).apply {
@@ -635,13 +678,29 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         tabContent.addView(makeSectionLabel("DIAGNOSE"))
         val diag = makeCard()
         diag.addView(makeText(
-            "MTU: ${bleEngine?.currentMtu() ?: "—"}   Queue: ${bleEngine?.queueDepth() ?: 0}   Link: $linkState",
+            "MTU: ${bleEngine?.currentMtu() ?: "—"}   Queue: ${bleEngine?.queueDepth() ?: 0}   Link: ${linkState.name}",
             12f, Palette.TEXT_SECONDARY
         ))
         diag.addView(makeText(
             "RSSI: ${if (lastRssi == Int.MIN_VALUE) "—" else "$lastRssi dBm"}   Adapter: ${adapter().displayName}",
             12f, Palette.TEXT_SECONDARY
         ).apply { setPadding(0, dp(5), 0, 0) })
+        diag.addView(makeText(
+            "Telemetrie-Offsets sind NICHT am realen GT3 Max verifiziert. " +
+                "Nur tatsaechlich empfangene Frames werden angezeigt; DEMO-Werte sind als DEMO markiert.",
+            11f, Palette.ACCENT_YELLOW
+        ).apply { setPadding(0, dp(5), 0, 0) })
+        val dumpButton = makePrimaryButton("GATT-DIAGNOSE (LOG)", Palette.ACCENT_BLUE) {
+            val e = bleEngine
+            if (e == null) {
+                addLog(LogCategory.ERROR, "GATT-Diagnose: keine Engine (nicht verbunden).")
+            } else {
+                e.dumpGatt("manuell")
+            }
+        }
+        diag.addView(dumpButton, LinearLayout.LayoutParams(WRAP, WRAP).apply {
+            setMargins(0, dp(8), 0, 0)
+        })
         tabContent.addView(diag, cardParams())
 
         tabContent.addView(makeSectionLabel("LOG-TERMINAL"))
@@ -653,11 +712,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         if (name.isNullOrBlank()) {
             return "Kein Gerätename vorhanden — es wird bewusst kein Modell angenommen."
         }
-        val model = ScooterModel.detect(name, connectedDevice?.address ?: "")
-        return if (model.isKnown) {
-            val tokens = model.matchKeywords.filter { name.lowercase(Locale.ROOT).contains(it) }
-            "Namens-Token: ${tokens.joinToString(", ") { "\"$it\"" }} in \"$name\". " +
-                "Reine Namensheuristik — keine Hardware-Verifikation."
+        val det = ScooterModel.detectDetailed(name, connectedDevice?.address ?: "")
+        return if (det.model.isKnown) {
+            "Vertrauensstufe: ${det.confidence.label} (${det.evidence}). " +
+                "${det.confidence.description} Reine Namensheuristik — keine Hardware-Verifikation."
         } else {
             "\"$name\" enthält kein eindeutiges Modell-Token. " +
                 "Ein Gerät mit \"NAVEE\" im Namen wird NICHT automatisch als GT3 Max eingestuft."
@@ -742,11 +800,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 setPadding(dp(10), dp(8), dp(10), dp(8))
                 setBackgroundColor(Palette.SURFACE)
             }
-            val model = ScooterModel.detect(device.name, device.address)
+            val det = ScooterModel.detectDetailed(device.name, device.address)
             row.addView(makeText(device.name, 14f, Palette.TEXT_PRIMARY, true))
+            val modelLine = if (det.model.isKnown)
+                "${det.model.displayName} (${det.confidence.label})"
+            else "Modell unklar (${det.confidence.label})"
             row.addView(makeText(
-                "${device.address} · ${device.rssi} dBm · " +
-                    if (model.isKnown) model.displayName else "Modell unklar",
+                "${device.address} · ${device.rssi} dBm · $modelLine",
                 11f, Palette.TEXT_MUTED
             ))
             val connected = connectedDevice?.address == device.address
@@ -772,7 +832,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             return
         }
         safeStopBleScan()
-        detectedModel = ScooterModel.detect(device.name, device.address)
+        val det = ScooterModel.detectDetailed(device.name, device.address)
+        detectedModel = det.model
+        detectedConfidence = det.confidence
+        detectionEvidence = det.evidence
         activeProtocol = detectedModel.protocol
         connectedDevice = device
         userInitiatedDisconnect = false
@@ -782,6 +845,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val engine = BleEngine(this, this)
         bleEngine = engine
         engine.setProtocolHint(activeProtocol)
+        linkState = linkState.transition(BleLinkEvent.CONNECT_REQUESTED)
         engine.connect(bt)
         updateDeviceList()
     }
@@ -1447,71 +1511,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
     }
 
-    private fun validateFirmware(bytes: ByteArray, name: String): FirmwareValidation {
-        val sha = MessageDigest.getInstance("SHA-256").digest(bytes)
-            .joinToString("") { "%02x".format(it) }
-        val isZip = bytes.size >= 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()
-        val binary = if (isZip) extractFirstBinary(bytes) else bytes
-        val sizeOk = binary != null && binary.isNotEmpty() && binary.size <= MAX_FIRMWARE_BYTES
-
-        val modelTokens = if (detectedModel.isKnown) {
-            detectedModel.matchKeywords.filter { it.length >= 4 }
-        } else emptyList()
-        val haystack = (name + " " + (selectedFirmware?.name ?: "")).lowercase(Locale.ROOT)
-        val modelCompatible = detectedModel.isKnown && modelTokens.any { haystack.contains(it) }
-
-        val expected = selectedFirmware?.expectedSha256
-        val hashVerified = expected != null && expected.equals(sha, ignoreCase = true)
-
-        val message = when {
-            !sizeOk -> "Datei leer oder größer als ${MAX_FIRMWARE_BYTES / 1024} KiB."
-            expected != null && !hashVerified -> "SHA-256 stimmt nicht mit dem hinterlegten Wert überein."
-            !modelCompatible -> "Modellkompatibilität nicht belegt (erkannt: ${detectedModel.displayName})."
-            expected == null -> "Gültige Struktur, aber SHA-256 ist NICHT verifiziert. Hard-Flash bleibt gesperrt."
-            else -> "Struktur, Hash und Modellbezug geprüft."
-        }
-        val valid = sizeOk && modelCompatible && (expected == null || hashVerified)
-        return FirmwareValidation(
-            valid = valid,
-            message = message,
-            sha256 = sha,
-            isZip = isZip,
-            modelCompatible = modelCompatible,
-            extractedBinary = binary,
-            hashVerified = hashVerified
+    private fun validateFirmware(bytes: ByteArray, name: String): FirmwareValidation =
+        FirmwareValidator.validate(
+            bytes = bytes,
+            fileName = name,
+            catalogName = selectedFirmware?.name,
+            model = detectedModel,
+            expectedSha256 = selectedFirmware?.expectedSha256
         )
-    }
-
-    private fun extractFirstBinary(zipBytes: ByteArray): ByteArray? {
-        return try {
-            ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
-                var entry = zip.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory && entry.name.lowercase(Locale.ROOT).endsWith(".bin")) {
-                        val output = ByteArrayOutputStream()
-                        val buffer = ByteArray(8 * 1024)
-                        var total = 0
-                        while (true) {
-                            val read = zip.read(buffer)
-                            if (read <= 0) break
-                            total += read
-                            if (total > MAX_FIRMWARE_BYTES) return null
-                            output.write(buffer, 0, read)
-                        }
-                        return output.toByteArray()
-                    }
-                    entry = zip.nextEntry
-                }
-            }
-            null
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /* ================================================================== */
-    /*  CONFIG                                                            */
-    /* ================================================================== */
 
     private fun renderConfig() {
         tabContent.addView(makeSectionLabel("REGION / LIMIT"))
@@ -1729,7 +1736,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         stopSystemBar()
         sysBarRunnable = object : Runnable {
             override fun run() {
-                sysLinkView?.text = linkState
+                sysLinkView?.text = linkState.name
                 sysMtuView?.text = "MTU ${bleEngine?.currentMtu() ?: "—"}"
                 sysQueueView?.text = "Q ${bleEngine?.queueDepth() ?: 0}"
                 sysRssiView?.text = if (lastRssi == Int.MIN_VALUE) "RSSI —" else "RSSI $lastRssi"
@@ -1764,6 +1771,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         reconnectRunnable = Runnable {
             if (!userInitiatedDisconnect) {
                 addLog(LogCategory.INFO, "Reconnect-Versuch…")
+                linkState = linkState.transition(BleLinkEvent.CONNECT_REQUESTED)
                 bleEngine?.reconnect()
             }
         }
@@ -1815,7 +1823,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     override fun onConnected(address: String) {
         runOnUiThread {
-            linkState = "CONNECTED"
+            linkState = linkState.transition(BleLinkEvent.GATT_CONNECTED)
             addLog(LogCategory.INFO, "GATT verbunden: $address")
             if (::statusText.isInitialized) statusText.text = "Verbunden. Service-Discovery läuft…"
         }
@@ -1825,11 +1833,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         runOnUiThread {
             engineReady = true
             activeProtocol = protocol
-            linkState = "READY"
+            linkState = linkState.transition(BleLinkEvent.READY)
             reconnectAttempts = 0
             addLog(LogCategory.INFO, "Bereit: ${protocol.displayName}, MTU $mtu")
             if (::statusText.isInitialized) {
-                statusText.text = "Bereit: ${detectedModel.displayName} (${protocol.displayName})"
+                statusText.text = "Bereit: ${detectedModel.displayName} [${detectedConfidence.label}] (${protocol.displayName})"
             }
             startTelemetry()
             if (currentTab == Tab.INFO) showTab(Tab.INFO)
@@ -1839,7 +1847,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onDisconnected(unexpected: Boolean) {
         runOnUiThread {
             engineReady = false
-            linkState = "IDLE"
+            linkState = linkState.transition(BleLinkEvent.DISCONNECTED)
             stopTelemetry()
             addLog(
                 if (unexpected) LogCategory.ERROR else LogCategory.INFO,

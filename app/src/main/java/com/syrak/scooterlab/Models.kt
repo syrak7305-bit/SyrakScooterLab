@@ -229,20 +229,87 @@ enum class ScooterModel(
          * wird derzeit bewusst NICHT ausgewertet \u2014 es werden keine Werte erfunden.
          */
         @Suppress("UNUSED_PARAMETER")
-        fun detect(name: String, address: String): ScooterModel {
-            val n = name.lowercase(Locale.ROOT)
+        fun detect(name: String, address: String): ScooterModel =
+            detectDetailed(name, address).model
+
+        /**
+         * Wie [detect], liefert aber zusaetzlich eine ehrliche Vertrauensstufe.
+         *
+         * Regeln (bewusst konservativ):
+         *  - leerer/fehlender Name                  -> UNKNOWN
+         *  - kein Keyword-Treffer                   -> UNKNOWN
+         *  - zwei Modelle mit identischem Top-Score -> UNKNOWN (mehrdeutig)
+         *  - Treffer nur ueber ein kurzes/allgemeines Keyword -> PROBABLE
+         *  - Treffer ueber ein spezifisches Keyword (>= 5 Zeichen UND Ziffer,
+         *    z. B. "gt3 max", "max g30", "navee s65") -> CONFIRMED
+         *
+         * Damit wird ein Geraet mit "NAVEE" im Namen NICHT als GT3 Max
+         * eingestuft - "navee" allein ist kein Modellmerkmal.
+         */
+        @Suppress("UNUSED_PARAMETER")
+        fun detectDetailed(name: String, address: String): DetectionResult {
+            val n = name.lowercase(Locale.ROOT).trim()
+            if (n.isEmpty() || n == "unknown device") {
+                return DetectionResult(UNKNOWN, DetectionConfidence.UNKNOWN, "kein Geraetename")
+            }
             var best: ScooterModel? = null
             var bestScore = 0
+            var bestKeyword = ""
+            var ties = 0
             for (m in values()) {
                 if (m == UNKNOWN) continue
                 var score = 0
-                for (kw in m.matchKeywords) if (n.contains(kw)) score += kw.length
-                if (score > bestScore) { bestScore = score; best = m }
+                var longest = ""
+                for (kw in m.matchKeywords) {
+                    if (n.contains(kw)) {
+                        score += kw.length
+                        if (kw.length > longest.length) longest = kw
+                    }
+                }
+                if (score > bestScore) {
+                    bestScore = score; best = m; bestKeyword = longest; ties = 1
+                } else if (score > 0 && score == bestScore) {
+                    ties++
+                }
             }
-            return best ?: UNKNOWN
+            val model = best ?: return DetectionResult(
+                UNKNOWN, DetectionConfidence.UNKNOWN, "kein Modellmerkmal im Namen"
+            )
+            if (ties > 1) {
+                return DetectionResult(
+                    UNKNOWN, DetectionConfidence.UNKNOWN,
+                    "mehrdeutiger Name (\"$name\") - kein Modell bestaetigt"
+                )
+            }
+            val specific = bestKeyword.length >= 5 && bestKeyword.any { it.isDigit() }
+            val confidence = if (specific) DetectionConfidence.CONFIRMED else DetectionConfidence.PROBABLE
+            return DetectionResult(model, confidence, "Treffer \"$bestKeyword\"")
         }
     }
 }
+
+/** Vertrauensstufe der Modellerkennung. */
+enum class DetectionConfidence(val label: String, val description: String) {
+    CONFIRMED(
+        "sicher erkannt",
+        "Der BLE-Name enthaelt ein eindeutiges, modellspezifisches Merkmal."
+    ),
+    PROBABLE(
+        "vermutet",
+        "Nur ein allgemeines/uneindeutiges Merkmal gefunden - Modell nicht bestaetigt."
+    ),
+    UNKNOWN(
+        "unbekannt",
+        "Kein belastbares Modellmerkmal im BLE-Namen."
+    )
+}
+
+/** Ergebnis der Modellerkennung inkl. Begruendung. */
+data class DetectionResult(
+    val model: ScooterModel,
+    val confidence: DetectionConfidence,
+    val evidence: String
+)
 
 /** Ergebnis der Firmware-Integritätsprüfung inkl. extrahierter Flash-Bytes. */
 data class FirmwareValidation(
