@@ -8,7 +8,9 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.util.UUID
@@ -79,6 +81,9 @@ class BleEngine(
 
         /** Max. Wartezeit auf das per-Chunk-ACK beim Flash (sonst Abbruch). */
         private const val FLASH_CHUNK_TIMEOUT_MS = 3000L
+
+        /** Max. Zeit vom connectGatt() bis zur einsatzbereiten Verbindung (onReady). */
+        private const val CONNECT_TIMEOUT_MS = 15_000L
     }
 
     @Volatile private var gatt: BluetoothGatt? = null
@@ -127,6 +132,40 @@ class BleEngine(
     /** afterMtu() (Notify-Setup + Handshake + onReady) laeuft pro Verbindung GENAU EINMAL. */
     @Volatile private var initializationStarted = false
 
+    // ---- Verbindungs-Timeout ----------------------------------------------
+    /**
+     * Wird bei connect()/reconnect() scharf geschaltet und nach onReady() bzw.
+     * nach DISCONNECTED wieder abgebrochen. Verhindert, dass die UI bei einem
+     * stillen/haengenden Verbindungsaufbau dauerhaft im "Verbinde..."-Zustand
+     * bleibt (klassischer Fehler bei GATT 133 / Geraet ausser Reichweite).
+     */
+    private var connectTimeout: Runnable? = null
+    @Volatile private var readyReached = false
+
+    private fun armConnectTimeout(address: String) {
+        cancelConnectTimeout()
+        readyReached = false
+        val r = Runnable {
+            if (!readyReached) {
+                listener.onLog("> link: TIMEOUT — keine einsatzbereite Verbindung zu $address " +
+                        "nach ${CONNECT_TIMEOUT_MS} ms (Discovery/MTU/Notify unvollstaendig)")
+                // Sauber abraeumen: GATT schliessen, Queue verwerfen, UI informieren.
+                val old = synchronized(writeLock) { val o = gatt; gatt = null; o }
+                try { old?.disconnect(); old?.close() } catch (_: Exception) {}
+                resetConnectionState()
+                failPendingWrites("connect timeout")
+                listener.onDisconnected(true)
+            }
+        }
+        connectTimeout = r
+        Handler(Looper.getMainLooper()).postDelayed(r, CONNECT_TIMEOUT_MS)
+    }
+
+    private fun cancelConnectTimeout() {
+        connectTimeout?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
+        connectTimeout = null
+    }
+
     // ---- Flash-Status -----------------------------------------------------
     @Volatile private var flashChunks: List<ByteArray> = emptyList()
     @Volatile private var flashTotalBytes = 0
@@ -165,6 +204,7 @@ class BleEngine(
             connectionGeneration++          // FIX B
         }
         listener.onLog("> link: connectGatt(${device.address}) [gen=$connectionGeneration]")
+        armConnectTimeout(device.address)
         val newGatt = try {
             device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         } catch (e: Exception) {
@@ -179,6 +219,7 @@ class BleEngine(
     fun reconnect() {
         val d = lastDevice ?: return
         listener.onLog("> link: auto-reconnect ${d.address}")
+        armConnectTimeout(d.address)
         try { gatt?.close() } catch (_: Exception) {}
         resetConnectionState()
         synchronized(writeLock) {
@@ -198,6 +239,8 @@ class BleEngine(
     @SuppressLint("MissingPermission")
     fun disconnect() {
         lastDevice = null
+        cancelConnectTimeout()
+        readyReached = false
         val old = synchronized(writeLock) { val o = gatt; gatt = null; connectingDevice = null; o }
         try { old?.disconnect(); old?.close() } catch (_: Exception) {}
         writeChar = null
@@ -297,6 +340,7 @@ class BleEngine(
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         listener.onLog("> link: DISCONNECTED (status=$status)")
+                        cancelConnectTimeout()
                         resetConnectionState()
                         failPendingWrites("disconnected")
                         listener.onDisconnected(status != BluetoothGatt.GATT_SUCCESS)
@@ -345,6 +389,11 @@ class BleEngine(
                         }
                     }
                 }
+
+                // 1b) Vollstaendigen GATT-Baum protokollieren (echte Daten des Controllers).
+                //     Damit laesst sich ein unbekanntes Geraet (z. B. GT3 Max mit
+                //     abweichendem Service) diagnostizieren, ohne UUIDs zu raten.
+                dumpGatt("Service-Discovery")
 
                 // 2) MTU verhandeln (echt!)
                 listener.onLog("> gatt: requestMtu($REQUESTED_MTU)")
@@ -534,6 +583,8 @@ class BleEngine(
                 }
             }
 
+            readyReached = true
+            cancelConnectTimeout()
             listener.onReady(g.device?.address ?: "?", adapter.protocol, negotiatedMtu)
         } catch (e: Exception) {
             android.util.Log.e("SyrakScooterLab", "afterMtu: ${e.message}")
@@ -569,6 +620,72 @@ class BleEngine(
         val p = ch.properties
         return p and BluetoothGattCharacteristic.PROPERTY_WRITE != 0 ||
                 p and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  GATT-DIAGNOSE                                                      */
+    /*  Liest die REAL vom Controller gemeldeten Services/Characteristics */
+    /*  und protokolliert sie. Es werden KEINE UUIDs erfunden: was hier    */
+    /*  erscheint, stammt ausschliesslich aus der GATT-Datenbank des       */
+    /*  verbundenen Geraets.                                               */
+    /* ------------------------------------------------------------------ */
+    private fun propertiesOf(ch: BluetoothGattCharacteristic): String {
+        val p = ch.properties
+        val out = ArrayList<String>(6)
+        if (p and BluetoothGattCharacteristic.PROPERTY_READ != 0) out.add("READ")
+        if (p and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) out.add("WRITE")
+        if (p and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0) out.add("WRITE_NR")
+        if (p and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) out.add("NOTIFY")
+        if (p and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) out.add("INDICATE")
+        if (p and BluetoothGattCharacteristic.PROPERTY_BROADCAST != 0) out.add("BROADCAST")
+        if (p and BluetoothGattCharacteristic.PROPERTY_SIGNED_WRITE != 0) out.add("SIGNED_WRITE")
+        return if (out.isEmpty()) "0x%02x".format(p) else out.joinToString("|")
+    }
+
+    private fun serviceLabel(uuid: UUID): String = when (uuid) {
+        NAVEE_SERVICE -> "Navee/Brightway (Projekt-UUID)"
+        NINEBOT_SERVICE -> "Ninebot/Xiaomi (Projekt-UUID)"
+        else -> "unbekannt"
+    }
+
+    /**
+     * Schreibt einen vollstaendigen GATT-Baum in das Log-Terminal.
+     * @param reason Kurzkontext (z. B. "nach Service-Discovery").
+     */
+    @SuppressLint("MissingPermission")
+    fun dumpGatt(reason: String = "manuell") {
+        val g = synchronized(writeLock) { gatt }
+        if (g == null) {
+            listener.onLog("> gatt-dump: keine aktive Verbindung")
+            return
+        }
+        try {
+            val services = g.services
+            listener.onLog("> gatt-dump [$reason]: ${services.size} Services, MTU=$negotiatedMtu")
+            if (services.isEmpty()) {
+                listener.onLog("> gatt-dump: keine Services gecacht (Discovery nicht abgeschlossen?)")
+                return
+            }
+            for (s in services) {
+                listener.onLog(">   svc ${s.uuid} [${serviceLabel(s.uuid)}]" +
+                        if (s.type == BluetoothGattService.SERVICE_TYPE_PRIMARY) " primary" else " secondary")
+                for (ch in s.characteristics) {
+                    listener.onLog(">     chr ${ch.uuid} props=${propertiesOf(ch)}" +
+                            if (isWritable(ch)) " -> schreibbar" else "")
+                    for (d in ch.descriptors) {
+                        listener.onLog(">       dsc ${d.uuid}")
+                    }
+                }
+            }
+            if (writeChar == null) {
+                listener.onLog("> gatt-dump: WARNUNG — kein schreibbares Characteristic ermittelt")
+            } else {
+                listener.onLog("> gatt-dump: aktiver Write-Char ${writeChar?.uuid}, " +
+                        "Notify-Char ${notifyChar?.uuid}, Adapter '${adapter.id}'")
+            }
+        } catch (e: Exception) {
+            listener.onLog("> gatt-dump: Exception: ${e.message}")
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -687,12 +804,42 @@ class BleEngine(
                 processNextWrite()
                 return
             }
-            @Suppress("DEPRECATION")
-            op.characteristic.value = op.data
-            @Suppress("DEPRECATION")
-            val started = g.writeCharacteristic(op.characteristic)
+            // Write-Type anhand der tatsaechlichen Characteristic-Properties waehlen.
+            // WRITE_TYPE_DEFAULT (mit Response) bevorzugen, damit onCharacteristicWrite
+            // zuverlaessig als Queue-Freigabe dient. Nur wenn die Characteristic
+            // ausschliesslich WRITE_NO_RESPONSE kann, wird dieser Typ genutzt.
+            val supportsWriteWithResponse =
+                (op.characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+            val writeType = if (supportsWriteWithResponse)
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            else
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+
+            val started: Boolean
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // API 33+: neuer, nicht-deprecated Aufruf mit expliziten Bytes und Write-Type.
+                // Rueckgabe ist ein BluetoothStatusCodes-Status, KEIN Boolean.
+                val status = g.writeCharacteristic(op.characteristic, op.data, writeType)
+                started = status == BluetoothStatusCodes.SUCCESS
+                if (!started) {
+                    listener.onLog("> tx[${op.label}]: writeCharacteristic(API33) status=$status " +
+                            "(type=$writeType, ${op.data.size} B)")
+                }
+            } else {
+                // API < 33: Legacy-Pfad (Characteristic.value + writeCharacteristic(char)).
+                @Suppress("DEPRECATION")
+                run {
+                    op.characteristic.writeType = writeType
+                    op.characteristic.value = op.data
+                }
+                @Suppress("DEPRECATION")
+                started = g.writeCharacteristic(op.characteristic)
+                if (!started) {
+                    listener.onLog("> tx[${op.label}]: writeCharacteristic() returned false " +
+                            "(type=$writeType, ${op.data.size} B)")
+                }
+            }
             if (!started) {
-                listener.onLog("> tx[${op.label}]: writeCharacteristic() returned false")
                 val retryOp = if (op.retries < MAX_WRITE_RETRIES)
                     PendingWrite(op.characteristic, op.data, op.label, op.onResult,
                         op.retries + 1, op.alternatives, op.expectResponse)
