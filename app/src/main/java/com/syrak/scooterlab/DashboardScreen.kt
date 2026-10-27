@@ -33,6 +33,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.util.Locale
 import com.syrak.scooterlab.core.ble.ConnectionState
 import com.syrak.scooterlab.core.ble.DiscoveredScooter
 import com.syrak.scooterlab.feature.telemetry.BatteryHealth
@@ -208,8 +209,174 @@ private fun ConnectionState.statusMeta(): Pair<String, Color> =
         is ConnectionState.Failed ->
             "Link failed" to com.syrak.scooterlab.ui.theme.Crimson
 
-        else -> "Idle" to com.syrak.scooterlab.ui.theme.Slate
+        else -> "Idle" to com.syrak.scooterlab.ui.theme.TextSecondary
     }
+
+/* Banner */
+
+/**
+ * Transient status strip. Rendered whenever the view-model publishes a banner
+ * message (link progress, failures, confirmations). The accent flips to danger
+ * when the kill switch is latched so the operator cannot miss it.
+ */
+@Composable
+private fun BannerStrip(banner: String, killSwitchEngaged: Boolean) {
+    val spacing = SyrakTheme.spacing
+    val accent = if (killSwitchEngaged) SyrakTheme.colors.danger else SyrakTheme.colors.warning
+
+    NeonCard(modifier = Modifier.fillMaxWidth(), accent = accent) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(accent),
+            )
+            Spacer(Modifier.width(spacing.sm))
+            Text(
+                text = banner,
+                style = SyrakTheme.type.dataSm,
+                color = SyrakTheme.colors.onSurfaceMuted,
+            )
+        }
+    }
+}
+
+/* Connection */
+
+/**
+ * Scan / connect / disconnect control surface. The scan list is populated from
+ * [DashboardUiState.scanResults]; each row is only a *candidate* — the brand is
+ * inferred from the advertised name and is never treated as a confirmed model
+ * until the GATT handshake succeeds.
+ */
+@Composable
+private fun ConnectionPanel(
+    state: DashboardUiState,
+    onScanToggle: () -> Unit,
+    onConnect: (DiscoveredScooter) -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    val spacing = SyrakTheme.spacing
+    val scanning = state.connection is ConnectionState.Scanning
+    val connected = state.connection is ConnectionState.Ready
+
+    NeonCard(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Connection",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            val (label, color) = state.connection.statusMeta()
+            StatusChip(text = label, color = color)
+        }
+
+        Spacer(Modifier.height(spacing.md))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(spacing.sm)) {
+            SyrakButton(
+                text = if (scanning) "Stop scan" else "Scan",
+                onClick = onScanToggle,
+                enabled = !state.busy,
+                modifier = Modifier.weight(1f),
+            )
+            if (connected) {
+                SyrakButton(
+                    text = "Disconnect",
+                    onClick = onDisconnect,
+                    variant = SyrakButtonVariant.Secondary,
+                    enabled = !state.busy,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        if (state.scanResults.isNotEmpty()) {
+            Spacer(Modifier.height(spacing.md))
+            HairlineDivider(Modifier.fillMaxWidth())
+            Spacer(Modifier.height(spacing.md))
+            state.scanResults.forEach { scooter ->
+                ScanRow(
+                    scooter = scooter,
+                    enabled = !state.busy,
+                    onClick = { onConnect(scooter) },
+                )
+                Spacer(Modifier.height(spacing.xs))
+            }
+        } else if (scanning) {
+            Spacer(Modifier.height(spacing.md))
+            Text(
+                text = "Searching for BLE devices\u2026",
+                style = SyrakTheme.type.dataSm,
+                color = SyrakTheme.colors.onSurfaceFaint,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScanRow(
+    scooter: DiscoveredScooter,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val spacing = SyrakTheme.spacing
+    val shape = RoundedCornerShape(10.dp)
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = spacing.sm, vertical = spacing.sm),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = scooter.name ?: "Unnamed device",
+                style = SyrakTheme.type.dataMd,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "${scooter.address}  \u2022  ${scooter.brand.displayName}",
+                style = SyrakTheme.type.dataSm,
+                color = SyrakTheme.colors.onSurfaceFaint,
+            )
+        }
+        Text(
+            text = "${scooter.rssi} dBm",
+            style = SyrakTheme.type.dataSm,
+            color = SyrakTheme.colors.data,
+        )
+    }
+}
+
+/* Data row */
+
+/** Label/value pair used inside diagnostic cards. */
+@Composable
+private fun DataRow(label: String, value: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+    ) {
+        Text(
+            text = label,
+            style = SyrakTheme.type.dataSm,
+            color = SyrakTheme.colors.onSurfaceMuted,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = value,
+            style = SyrakTheme.type.dataMd,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
 
 /* Speed */
 
@@ -234,7 +401,12 @@ private fun SpeedPanel(state: DashboardUiState) {
                 )
             }
 
-            GaugeRing(percent = (t.batteryPercent ?: 0) / 100f)
+            GaugeRing(
+                value = (t.batteryPercent ?: 0).toFloat(),
+                maxValue = 100f,
+                unit = "%",
+                caption = "BATTERY",
+            )
         }
 
         Spacer(Modifier.height(spacing.lg))
@@ -243,7 +415,7 @@ private fun SpeedPanel(state: DashboardUiState) {
             SyrakButton(
                 text = "Panic",
                 onClick = { /* TODO */ },
-                variant = SyrakButtonVariant.Destructive,
+                variant = SyrakButtonVariant.Danger,
                 modifier = Modifier.weight(1f),
             )
 
@@ -378,7 +550,7 @@ private fun SafetyPanel(state: DashboardUiState, onToggleKillSwitch: () -> Unit)
             SyrakButton(
                 text = if (state.killSwitchEngaged) "Release Kill Switch" else "Engage Kill Switch",
                 onClick = onToggleKillSwitch,
-                variant = if (state.killSwitchEngaged) SyrakButtonVariant.Secondary else SyrakButtonVariant.Destructive,
+                variant = if (state.killSwitchEngaged) SyrakButtonVariant.Secondary else SyrakButtonVariant.Danger,
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -505,6 +677,7 @@ private fun ConsolePanel(state: DashboardUiState) {
 
 /* Helpers */
 
+@Composable
 private fun batteryAccent(percent: Int?): Color = when {
     percent == null -> SyrakTheme.colors.onSurfaceFaint
     percent <= 15 ->
@@ -517,6 +690,7 @@ private fun batteryAccent(percent: Int?): Color = when {
         com.syrak.scooterlab.ui.theme.Acid
 }
 
+@Composable
 private fun tempAccent(tempC: Float?): Color = when {
     tempC == null -> SyrakTheme.colors.onSurfaceFaint
     tempC >= 70f ->

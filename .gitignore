@@ -1,0 +1,27 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Local configuration (machine-specific SDK path)
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# OS / editor noise
+.DS_Store
+*.swp
+*~
+
+# Keystore material — never commit
+*.jks
+*.keystore
+keystore.properties
+
+# Logs
+*.log
