@@ -26,11 +26,17 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
+    <!-- Vordergrunddienst, der die GATT-Verbindung während Flash/Telemetrie hält -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="false" />
 
     <application
+        android:name=".SyrakApp"
         android:allowBackup="true"
         android:hardwareAccelerated="true"
         android:label="Syrak ScooterLab"
@@ -52,6 +58,11 @@
             </intent-filter>
 
         </activity>
+
+        <service
+            android:name=".core.ble.BleSessionService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
     </application>
 
