@@ -115,6 +115,17 @@ class DashboardViewModel(
         }
     }
 
+    /**
+     * "Eco"-Modus ist für diesen Controller NICHT belegt. Statt einen erfundenen
+     * Befehl zu senden, meldet die UI ehrlich, dass hierfür kein verifizierter
+     * Controller-Befehl existiert (analog zu applyGermanManeuver im Repository).
+     */
+    fun onEcoMode() {
+        _state.update {
+            it.copy(banner = "Eco-Modus: kein belegter Controller-Befehl implementiert.")
+        }
+    }
+
     fun onBannerShown() = _state.update { it.copy(banner = null) }
 
     private fun pushLog(line: String) {
