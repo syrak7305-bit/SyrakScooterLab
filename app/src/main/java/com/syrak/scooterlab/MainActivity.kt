@@ -312,7 +312,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         stopTelemetry()
         stopSystemBar()
         stopBleSession()
-        bleEngine?.disconnect()
+        // notifyListener = false: die Activity wird gerade zerstoert, ein
+        // UI-Update waere hier nur ein spaeter Callback ohne Empfaenger.
+        bleEngine?.disconnect(notifyListener = false)
         safeStopBleScan()
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -643,6 +645,17 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         card.addView(scanButton, LinearLayout.LayoutParams(MATCH, WRAP).apply {
             setMargins(0, dp(10), 0, dp(8))
         })
+        // PHASE 4: Es gab bisher KEINE Moeglichkeit, eine bestehende Verbindung
+        // bewusst zu trennen (der Verbinden-Button ist im verbundenen Zustand
+        // deaktiviert). Ohne manuelles Trennen war "kein Reconnect nach
+        // bewusstem Disconnect" gar nicht erreichbar.
+        if (connectedDevice != null) {
+            card.addView(makePrimaryButton("VERBINDUNG TRENNEN", Palette.ACCENT_RED) {
+                manualDisconnect()
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                setMargins(0, 0, 0, dp(8))
+            })
+        }
         deviceListContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         card.addView(deviceListContainer)
         tabContent.addView(card, cardParams())
@@ -1588,21 +1601,36 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         tabContent.addView(makeSectionLabel("TUNING-PROFILE"))
         val profileCard = makeCard()
         profileCard.addView(makePrimaryButton("AKTUELLES PROFIL SPEICHERN", Palette.ACCENT_GREEN) {
-            val name = "Profil ${repository.profileEntries().size + 1}"
-            repository.saveProfile(ScooterProfile(name, maxSpeedKmh, zeroStartKmh, kersLevel, cruiseEnabled))
-            addLog(LogCategory.INFO, "Profil gespeichert: $name")
-            showTab(Tab.CONFIG)
+            promptSaveProfile()
         }, LinearLayout.LayoutParams(MATCH, WRAP))
-        for (entry in repository.profileEntries()) {
-            val profile = repository.loadProfile(entry) ?: continue
-            profileCard.addView(makePrimaryButton("LADEN: ${profile.name}", Palette.SURFACE) {
+        val invalidProfiles = repository.invalidProfileCount()
+        if (invalidProfiles > 0) {
+            // Ungueltige Alt-Eintraege werden bewusst NICHT geloescht (sie
+            // koennten zu einem anderen Profil gehoeren) — aber sie sollen
+            // auch nicht unsichtbar sein.
+            profileCard.addView(makeText(
+                "$invalidProfiles gespeicherte(r) Eintrag/Eintraege ist/sind unlesbar und " +
+                    "werden uebersprungen. Sie bleiben erhalten und blockieren keine anderen Profile.",
+                11f, Palette.ACCENT_YELLOW
+            ).apply { setPadding(0, dp(6), 0, 0) })
+        }
+        for (profile in ProfileStore.decodeAll(repository.profileEntries())) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(4), 0, 0)
+            }
+            row.addView(makePrimaryButton("LADEN: ${profile.name}", Palette.SURFACE) {
                 maxSpeedKmh = profile.maxSpeed
                 zeroStartKmh = profile.zeroStart
                 kersLevel = profile.kers
                 cruiseEnabled = profile.cruiseControl
                 addLog(LogCategory.INFO, "Profil geladen: ${profile.name}")
                 showTab(Tab.CONFIG)
-            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(4), 0, 0) })
+            }, LinearLayout.LayoutParams(0, WRAP, 1f))
+            row.addView(makePrimaryButton("L\u00d6SCHEN", Palette.ACCENT_RED) {
+                confirmDeleteProfile(profile.name)
+            }, LinearLayout.LayoutParams(WRAP, WRAP).apply { setMargins(dp(6), 0, 0, 0) })
+            profileCard.addView(row)
         }
         tabContent.addView(profileCard, cardParams())
 
@@ -1618,6 +1646,61 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             12f, Palette.TEXT_MUTED
         ))
         tabContent.addView(about, cardParams())
+    }
+
+    /**
+     * Speichert das aktuelle Tuning als Profil unter einem Namen.
+     *
+     * PHASE 4: Vorher wurde der Name automatisch als "Profil N" vergeben. Ein
+     * vorhandenes Profil liess sich damit nie ueberschreiben (N zaehlte immer
+     * hoch) und ein sinnvoller Name war nicht moeglich. Der Vorschlag bleibt
+     * derselbe, ist aber aenderbar; gleicher Name = Ueberschreiben.
+     */
+    private fun promptSaveProfile() {
+        val suggestion = "Profil ${repository.profileEntries().size + 1}"
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            hint = "Profilname"
+            setText(suggestion)
+            setSelection(suggestion.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Profil speichern")
+            .setView(input)
+            .setPositiveButton("Speichern") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) {
+                    toast("Profilname darf nicht leer sein.")
+                    return@setPositiveButton
+                }
+                val existed = ProfileStore.contains(repository.profileEntries(), name)
+                repository.saveProfile(
+                    ScooterProfile(name, maxSpeedKmh, zeroStartKmh, kersLevel, cruiseEnabled)
+                )
+                addLog(
+                    LogCategory.INFO,
+                    if (existed) "Profil ueberschrieben: $name" else "Profil gespeichert: $name"
+                )
+                showTab(Tab.CONFIG)
+            }
+            .setNegativeButton("Abbrechen", null)
+            .show()
+    }
+
+    private fun confirmDeleteProfile(name: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Profil loeschen")
+            .setMessage("Profil \"$name\" wirklich loeschen?")
+            .setPositiveButton("Loeschen") { _, _ ->
+                if (repository.deleteProfile(name)) {
+                    addLog(LogCategory.INFO, "Profil geloescht: $name")
+                } else {
+                    addLog(LogCategory.ERROR, "Profil nicht gefunden: $name")
+                }
+                showTab(Tab.CONFIG)
+            }
+            .setNegativeButton("Abbrechen", null)
+            .show()
     }
 
     private fun promptSetPin() {
@@ -1768,15 +1851,45 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         reconnectRunnable = null
     }
 
+    /**
+     * Bewusstes Trennen durch den Nutzer.
+     *
+     * Setzt [userInitiatedDisconnect], damit [scheduleReconnect] NICHTS plant,
+     * bricht einen bereits geplanten Reconnect ab und laesst [BleEngine] das
+     * Ende melden. Der UI-Reset passiert danach zentral in [onDisconnected].
+     */
+    private fun manualDisconnect() {
+        userInitiatedDisconnect = true
+        cancelReconnectRunnable()
+        reconnectAttempts = 0
+        addLog(LogCategory.INFO, "Verbindung wird auf Wunsch getrennt.")
+        bleEngine?.disconnect()
+        // Falls keine Engine mehr existiert (z. B. nach Prozess-Neuaufbau):
+        // Zustand trotzdem sauber zuruecksetzen, statt "verbunden" anzuzeigen.
+        if (bleEngine == null) onDisconnected(false)
+    }
+
     private fun scheduleReconnect() {
-        if (!autoReconnectEnabled || userInitiatedDisconnect) return
-        if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-            addLog(LogCategory.ERROR, "Reconnect aufgegeben nach $reconnectAttempts Versuchen.")
+        // PHASE 4: Entscheidung und Backoff liegen in [ReconnectPolicy] und sind
+        // damit ohne Android testbar. Verhalten unveraendert:
+        // kein Reconnect bei deaktivierter Einstellung, nach bewusstem Trennen
+        // oder nach Ausschoepfen der Versuche.
+        if (!ReconnectPolicy.shouldSchedule(
+                autoReconnect = autoReconnectEnabled,
+                userInitiated = userInitiatedDisconnect,
+                attempts = reconnectAttempts,
+                maxAttempts = RECONNECT_MAX_ATTEMPTS
+            )
+        ) {
+            if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+                addLog(LogCategory.ERROR, "Reconnect aufgegeben nach $reconnectAttempts Versuchen.")
+            }
             return
         }
         cancelReconnectRunnable()
-        val delay = (RECONNECT_BACKOFF_BASE_MS shl reconnectAttempts)
-            .coerceAtMost(RECONNECT_BACKOFF_MAX_MS)
+        val delay = ReconnectPolicy.delayMillis(
+            reconnectAttempts, RECONNECT_BACKOFF_BASE_MS, RECONNECT_BACKOFF_MAX_MS
+        )
         reconnectAttempts++
         addLog(LogCategory.INFO, "Reconnect in ${delay} ms (Versuch $reconnectAttempts).")
         reconnectRunnable = Runnable {
@@ -1890,12 +2003,22 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             linkState = linkState.transition(BleLinkEvent.DISCONNECTED)
             stopTelemetry()
             stopBleSession()
+            // PHASE 4 FIX: connectedDevice wurde bisher NIE zurueckgesetzt.
+            // Nach jeder Trennung (auch unerwartet) blieb das Geraet in der Liste
+            // als "VERBUNDEN" markiert und der Verbinden-Button deaktiviert —
+            // ein erneutes Verbinden war damit nicht mehr moeglich.
+            connectedDevice = null
             addLog(
                 if (unexpected) LogCategory.ERROR else LogCategory.INFO,
                 if (unexpected) "Verbindung unerwartet getrennt." else "Verbindung getrennt."
             )
             if (::statusText.isInitialized) statusText.text = "Nicht verbunden."
+            updateDeviceList()
             if (unexpected) scheduleReconnect()
+            // Erst NACH der Reconnect-Entscheidung zuruecksetzen: sonst wuerde
+            // ein bewusstes Trennen den naechsten Abbruch wieder reconnects faehig
+            // machen, obwohl der Nutzer genau das nicht wollte.
+            userInitiatedDisconnect = false
         }
     }
 

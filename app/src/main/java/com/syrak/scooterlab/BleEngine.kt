@@ -242,8 +242,22 @@ class BleEngine(
         synchronized(writeLock) { gatt = newGatt; connectingDevice = null }
     }
 
+    /**
+     * Trennt die Verbindung bewusst (Nutzeraktion oder onDestroy).
+     *
+     * PHASE 4 FIX: Bisher wurde `gatt` VOR `old.disconnect()` auf null gesetzt.
+     * Der DISCONNECTED-Callback der alten GATT wurde danach von [isCurrentGatt]
+     * als "veraltet" verworfen — [Listener.onDisconnected] feuerte also NIE.
+     * Folge: UI, Telemetrie und Vordergrunddienst blieben auf "verbunden"
+     * stehen, obwohl keine Verbindung mehr existierte.
+     *
+     * Deshalb meldet die Engine das Ende jetzt selbst. Der Callback der alten
+     * GATT bleibt weiterhin gefiltert, es kommt also genau EINE Meldung.
+     *
+     * @param notifyListener false nur aus onDestroy, wenn die UI schon weg ist.
+     */
     @SuppressLint("MissingPermission")
-    fun disconnect() {
+    fun disconnect(notifyListener: Boolean = true) {
         lastDevice = null
         cancelConnectTimeout()
         readyReached = false
@@ -253,6 +267,7 @@ class BleEngine(
         notifyChar = null
         resetConnectionState()
         failPendingWrites("disconnect")
+        if (notifyListener) listener.onDisconnected(false)
     }
 
     /** Setzt den gesamten Verbindungs-/Initialisierungszustand zurueck. */
