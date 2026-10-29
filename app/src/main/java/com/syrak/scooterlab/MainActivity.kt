@@ -40,6 +40,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.syrak.scooterlab.core.ble.BleSessionService
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -310,6 +311,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         activeTimer?.cancel()
         stopTelemetry()
         stopSystemBar()
+        stopBleSession()
         bleEngine?.disconnect()
         safeStopBleScan()
         handler.removeCallbacksAndMessages(null)
@@ -1192,11 +1194,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private fun updateTrip(t: Telemetry) {
         val speed = t.speedKmh ?: return
-        val now = System.currentTimeMillis()
+        val nowWall = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
         val trip = repository.trip
-        if (trip.startMillis == 0L) trip.startMillis = now
-        if (trip.lastMillis > 0L) {
-            val dtHours = (now - trip.lastMillis) / 3_600_000.0
+        if (trip.startMillis == 0L) trip.startMillis = nowWall
+        // FIX: Integration ausschliesslich ueber die MONOTONE Uhr. Ein
+        // Wanduhr-Sprung oder eine lange Pause (App im Hintergrund, Standby)
+        // darf die Strecke/Energie nicht aufblaehen (siehe TripAccumulator).
+        val dtHours = TripAccumulator.deltaHours(trip.lastElapsedMillis, nowElapsed)
+        if (dtHours > 0.0) {
             trip.distanceKm += speed * dtHours
             val voltage = t.voltageV
             val current = t.currentA
@@ -1204,7 +1210,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 trip.energyWh += voltage * current * dtHours
             }
         }
-        trip.lastMillis = now
+        trip.lastElapsedMillis = nowElapsed
+        trip.lastMillis = nowWall
         if (speed > trip.maxSpeedKmh) trip.maxSpeedKmh = speed.toDouble()
         trip.speedSum += speed
         trip.speedSamples++
@@ -1247,10 +1254,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 t.fullChargeCapacityMah.toDouble() / t.designCapacityMah * 100.0)
         } else "—"
         dashCycles?.text = t?.cycleCount?.toString() ?: "—"
-        dashRange?.text = if (t?.batteryPercent != null) {
-            val usableWh = detectedModel.nominalVoltage * 10.0 * (t.batteryPercent / 100.0)
-            String.format(Locale.US, "%.1f km", usableWh / 15.0)
-        } else "—"
+        // FIX: Bei unbekanntem Modell wird KEINE Reichweite geschaetzt. Der
+        // frueher implizite 36-V-Default war fuer 48-V-Geraete (NAVEE) falsch.
+        dashRange?.text = RangeEstimator.estimateKm(detectedModel, t?.batteryPercent)
+            ?.let { String.format(Locale.US, "%.1f km", it) } ?: "—"
 
         cellGraphRow?.let { row ->
             row.removeAllViews()
@@ -1821,6 +1828,32 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /*  BleEngine.Listener                                                */
     /* ================================================================== */
 
+    /**
+     * Startet den Vordergrunddienst, damit Android den Prozess (und damit den
+     * GATT-Client in [BleEngine]) beim App-Wechsel oder bei ausgeschaltetem
+     * Display nicht sofort freigibt. Der Dienst besitzt die Verbindung NICHT —
+     * es entsteht also keine zweite GATT-Verbindung.
+     *
+     * Ab Android 12 darf ein Vordergrunddienst nicht beliebig aus dem
+     * Hintergrund gestartet werden; der Aufruf ist deshalb abgesichert. Er
+     * erfolgt hier aus [onReady], also regelmaessig im Vordergrund.
+     */
+    private fun startBleSession() {
+        try {
+            BleSessionService.start(
+                this,
+                "Syrak ScooterLab",
+                "Verbindung zu ${detectedModel.displayName} aktiv"
+            )
+        } catch (e: Exception) {
+            addLog(LogCategory.ERROR, "Hintergrunddienst nicht gestartet: ${e.message}")
+        }
+    }
+
+    private fun stopBleSession() {
+        try { BleSessionService.stop(this) } catch (_: Exception) {}
+    }
+
     override fun onLog(line: String) {
         runOnUiThread { addLog(LogCategory.INFO, line) }
     }
@@ -1844,6 +1877,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 statusText.text = "Bereit: ${detectedModel.displayName} [${detectedConfidence.label}] (${protocol.displayName})"
             }
             startTelemetry()
+            // Verbindung ist vollstaendig bereit -> Prozess fuer App-Wechsel
+            // und Display-Off priorisieren (Dienst besitzt die GATT NICHT).
+            startBleSession()
             if (currentTab == Tab.INFO) showTab(Tab.INFO)
         }
     }
@@ -1853,6 +1889,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             engineReady = false
             linkState = linkState.transition(BleLinkEvent.DISCONNECTED)
             stopTelemetry()
+            stopBleSession()
             addLog(
                 if (unexpected) LogCategory.ERROR else LogCategory.INFO,
                 if (unexpected) "Verbindung unerwartet getrennt." else "Verbindung getrennt."

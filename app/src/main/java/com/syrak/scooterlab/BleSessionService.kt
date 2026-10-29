@@ -41,7 +41,12 @@ class BleSessionService : Service() {
             0
         }
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
-        return START_STICKY
+        // FIX: NICHT sticky. Der Dienst haelt nur die Prozessprioritaet; die
+        // GATT-Verbindung selbst gehoert der Activity/Engine. Wird der Prozess
+        // trotzdem beendet, ist die Verbindung ohnehin weg — ein automatischer
+        // Neustart wuerde nur eine dauerhafte "Session aktiv"-Benachrichtigung
+        // ohne Scooter-Link erzeugen.
+        return START_NOT_STICKY
     }
 
     private fun buildNotification(title: String, body: String): Notification {
