@@ -179,3 +179,109 @@ class DeviceIdentificationTest {
         assertNull(TuningSafetyGate.blockReason(hardwareVerified = true, modelKnown = true))
     }
 }
+
+
+/* ============================================================================
+ *  PHASE 8.1 — Sicherheitsaudit: Tests fuer die gefundenen Sicherheitsfaelle
+ *  ---------------------------------------------------------------------------
+ *  Belegte Befunde und ihre Absicherung:
+ *    • Punkt 1: Eager-Unlock-Handshake beim Verbindungsaufbau darf NICHT an ein
+ *      unbekanntes bzw. nicht freigegebenes Geraet gesendet werden.
+ *    • Punkt 3: Manuelle Hardware-Bestaetigung darf ein UNBEKANNTES Modell
+ *      niemals freischalten (keine Umgehung des Gates).
+ * ==========================================================================*/
+class AutoHandshakePolicyTest {
+
+    @Test
+    fun `eager handshake suppressed for unknown model`() {
+        assertFalse(
+            AutoHandshakePolicy.shouldSendEagerHandshake(
+                requiresUnlock = true, modelKnown = false, hardwareVerified = true
+            )
+        )
+    }
+
+    @Test
+    fun `eager handshake suppressed when hardware not verified`() {
+        assertFalse(
+            AutoHandshakePolicy.shouldSendEagerHandshake(
+                requiresUnlock = true, modelKnown = true, hardwareVerified = false
+            )
+        )
+    }
+
+    @Test
+    fun `eager handshake suppressed when both unknown and unverified`() {
+        assertFalse(
+            AutoHandshakePolicy.shouldSendEagerHandshake(
+                requiresUnlock = true, modelKnown = false, hardwareVerified = false
+            )
+        )
+    }
+
+    @Test
+    fun `eager handshake allowed only when model known and hardware verified`() {
+        assertTrue(
+            AutoHandshakePolicy.shouldSendEagerHandshake(
+                requiresUnlock = true, modelKnown = true, hardwareVerified = true
+            )
+        )
+    }
+
+    @Test
+    fun `adapter without unlock never sends eager handshake`() {
+        // Ninebot: requiresUnlock = false — auch bei bekannter+verifizierter Hardware.
+        assertFalse(
+            AutoHandshakePolicy.shouldSendEagerHandshake(
+                requiresUnlock = false, modelKnown = true, hardwareVerified = true
+            )
+        )
+    }
+
+    @Test
+    fun `suppression reason names the blocking condition`() {
+        val unknown = AutoHandshakePolicy.suppressionReason(
+            requiresUnlock = true, modelKnown = false, hardwareVerified = true
+        )
+        assertNotNull(unknown)
+        assertTrue(unknown!!.contains("Modell"))
+
+        val unverified = AutoHandshakePolicy.suppressionReason(
+            requiresUnlock = true, modelKnown = true, hardwareVerified = false
+        )
+        assertNotNull(unverified)
+        assertTrue(unverified!!.contains("Hardware"))
+
+        // Kein Grund, wenn gesendet werden darf bzw. gar kein Handshake noetig ist.
+        assertNull(
+            AutoHandshakePolicy.suppressionReason(
+                requiresUnlock = true, modelKnown = true, hardwareVerified = true
+            )
+        )
+        assertNull(
+            AutoHandshakePolicy.suppressionReason(
+                requiresUnlock = false, modelKnown = false, hardwareVerified = false
+            )
+        )
+    }
+}
+
+class TuningGateBypassTest {
+
+    @Test
+    fun `manual hardware confirmation cannot unlock an unknown model`() {
+        // Der Nutzer hat in CONFIG bestaetigt — trotzdem bleibt ein unbekanntes
+        // Modell gesperrt. Das ist der Schutz gegen Umgehung des Gates.
+        assertFalse(TuningSafetyGate.canSendTuning(hardwareVerified = true, modelKnown = false))
+        assertNotNull(TuningSafetyGate.blockReason(hardwareVerified = true, modelKnown = false))
+    }
+
+    @Test
+    fun `police mode style tuning frame is gated like any other tuning write`() {
+        // Polizei-Modus (Speed-Ceiling / CMD 0x1F) nutzt denselben Gate-Pfad.
+        // Bei unbekanntem Modell und bei fehlender Freigabe gesperrt.
+        assertFalse(TuningSafetyGate.canSendTuning(hardwareVerified = false, modelKnown = true))
+        assertFalse(TuningSafetyGate.canSendTuning(hardwareVerified = false, modelKnown = false))
+        assertTrue(TuningSafetyGate.canSendTuning(hardwareVerified = true, modelKnown = true))
+    }
+}

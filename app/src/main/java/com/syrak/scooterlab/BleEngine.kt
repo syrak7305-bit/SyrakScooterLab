@@ -114,6 +114,27 @@ class BleEngine(
     val protocol: BleProtocol get() = adapter.protocol
 
     @Volatile private var naveeHandshakeSent = false
+
+    /**
+     * PHASE 8.1 (Sicherheitsaudit, Punkt 1): Erlaubt den EAGER-Unlock-Handshake
+     * bereits beim Verbindungsaufbau. Standard = false/false, damit an ein NICHT
+     * verifiziertes Geraet kein Schreibbefehl geht. Die Activity setzt dies
+     * ueber [setAutoHandshakeAllowed] nur, wenn Modell erkannt UND Hardware
+     * bestaetigt sind. Der LAZY-Handshake vor erlaubten Befehlen (inkl. Not-Aus)
+     * bleibt davon unberuehrt.
+     */
+    @Volatile private var autoHandshakeModelKnown = false
+    @Volatile private var autoHandshakeHardwareVerified = false
+
+    /**
+     * Setzt die Freigabe fuer den EAGER-Unlock-Handshake beim Verbindungsaufbau.
+     * Beide Bedingungen muessen erfuellt sein (siehe [AutoHandshakePolicy]).
+     */
+    fun setAutoHandshakeAllowed(modelKnown: Boolean, hardwareVerified: Boolean) {
+        autoHandshakeModelKnown = modelKnown
+        autoHandshakeHardwareVerified = hardwareVerified
+    }
+
     @Volatile private var notifyActive = false
     @Volatile private var lastRxMillis = 0L
     private var responseTimeout: Runnable? = null
@@ -621,11 +642,32 @@ class BleEngine(
             // Unlock-Handshake (adapter-getrieben): Der Scooter gilt erst als
             // entsperrt, wenn der Handshake quittiert wurde. Vor jedem Tuning-Befehl
             // wird der Zustand geprueft und bei Bedarf erneut gesendet.
+            //
+            // PHASE 8.1 FIX (Punkt 1): Der EAGER-Handshake wird nur noch gesendet,
+            // wenn [AutoHandshakePolicy] ihn freigibt (Modell erkannt + Hardware
+            // bestaetigt). Sonst wuerde an ein unbekanntes FFE0-Geraet ungefragt
+            // ein Schreibbefehl gehen. Der LAZY-Handshake in enqueueCommand()
+            // bleibt fuer erlaubte Befehle und Not-Aus vollstaendig erhalten.
             if (adapter.requiresUnlock && !naveeHandshakeSent) {
-                val hs = adapter.handshake()
-                if (hs != null) {
-                    naveeHandshakeSent = true
-                    enqueueWrite(hs, "unlock-handshake") { ok -> if (ok) adapter.setUnlocked(true) }
+                if (AutoHandshakePolicy.shouldSendEagerHandshake(
+                        requiresUnlock = true,
+                        modelKnown = autoHandshakeModelKnown,
+                        hardwareVerified = autoHandshakeHardwareVerified
+                    )
+                ) {
+                    val hs = adapter.handshake()
+                    if (hs != null) {
+                        naveeHandshakeSent = true
+                        enqueueWrite(hs, "unlock-handshake") { ok -> if (ok) adapter.setUnlocked(true) }
+                    }
+                } else {
+                    listener.onLog("> gatt: " +
+                        (AutoHandshakePolicy.suppressionReason(
+                            requiresUnlock = true,
+                            modelKnown = autoHandshakeModelKnown,
+                            hardwareVerified = autoHandshakeHardwareVerified
+                        ) ?: "Unlock-Handshake unterdrueckt.") +
+                        " (lazy vor erlaubtem Befehl/Not-Aus)")
                 }
             }
 

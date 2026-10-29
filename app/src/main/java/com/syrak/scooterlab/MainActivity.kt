@@ -929,6 +929,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val engine = BleEngine(this, this)
         bleEngine = engine
         engine.setProtocolHint(activeProtocol)
+        // PHASE 8.1 (Punkt 1): Eager-Unlock-Handshake nur bei erkanntem Modell UND
+        // bestaetigter Hardware. Sonst geht beim Verbindungsaufbau kein Schreibbefehl
+        // an ein unbekanntes Geraet. Not-Aus/Tuning holen den Handshake lazy nach.
+        engine.setAutoHandshakeAllowed(
+            modelKnown = detectedModel.isKnown,
+            hardwareVerified = hardwareVerified
+        )
         linkState = linkState.transition(BleLinkEvent.CONNECT_REQUESTED)
         engine.connect(bt)
         updateDeviceList()
@@ -1103,12 +1110,21 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     "(${currentRegion.displayName}). Fortfahren?"
             )
             .setPositiveButton("Setzen") { _, _ ->
-                sendCommand(
+                // PHASE 8.1 FIX (Sicherheitsaudit, Punkt 3): Der Polizei-Modus ist
+                // ein Tuning-Schreibbefehl (Speed-Ceiling / CMD 0x1F). Er lief
+                // bisher direkt ueber sendCommand() und UMGEHING damit das
+                // Tuning-Gate. Jetzt laeuft er ueber sendTuning() und ist bei
+                // unbekanntem Modell bzw. fehlender Hardware-Freigabe gesperrt.
+                val sent = sendTuning(
                     adapter().buildPoliceModeFrame(currentRegion.legalSpeedKmh),
-                    "policeMode=${currentRegion.legalSpeedKmh}", true
+                    "policeMode=${currentRegion.legalSpeedKmh}"
                 )
-                maxSpeedKmh = currentRegion.legalSpeedKmh
-                addLog(LogCategory.INFO, "Polizei-Modus auf ${currentRegion.legalSpeedKmh} km/h gesetzt.")
+                if (sent) {
+                    maxSpeedKmh = currentRegion.legalSpeedKmh
+                    addLog(LogCategory.INFO, "Polizei-Modus auf ${currentRegion.legalSpeedKmh} km/h gesetzt.")
+                } else {
+                    addLog(LogCategory.ERROR, "Polizei-Modus NICHT gesetzt (Tuning gesperrt).")
+                }
             }
             .setNegativeButton("Abbrechen", null)
             .show()
@@ -1135,14 +1151,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      * bleibt vollstaendig erhalten — sie ist nur gesperrt, nicht entfernt.
      * Not-Aus, Unlock, Reboot und Lese-Befehle laufen weiter ueber [sendCommand].
      */
-    private fun sendTuning(frame: ByteArray, label: String) {
+    private fun sendTuning(frame: ByteArray, label: String): Boolean {
         val reason = TuningSafetyGate.blockReason(hardwareVerified, detectedModel.isKnown)
         if (reason != null) {
             toast("Tuning gesperrt: $reason")
             addLog(LogCategory.ERROR, "Tuning-Befehl '$label' blockiert: $reason")
-            return
+            return false
         }
         sendCommand(frame, label, true)
+        return true
     }
 
     private fun sendCommand(
@@ -1702,6 +1719,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             hardwareVerified
         ) { value ->
             hardwareVerified = value
+            // PHASE 8.1 (Punkt 1): Freigabe des Eager-Handshakes an den neuen
+            // Zustand anpassen. Bei unbekanntem Modell bleibt er gesperrt.
+            bleEngine?.setAutoHandshakeAllowed(
+                modelKnown = detectedModel.isKnown,
+                hardwareVerified = value
+            )
             addLog(
                 LogCategory.INFO,
                 "Tuning-Freigabe: ${if (value) "aktiv (Sitzung)" else "gesperrt"}"
@@ -2153,6 +2176,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         runOnUiThread {
             engineReady = false
             linkState = linkState.transition(BleLinkEvent.DISCONNECTED)
+            // PHASE 8.1 FIX (Sicherheitsaudit, Punkt 2): Eine laufende Not-Aus-Rampe
+            // muss beim Verbindungsabbruch sauber beendet werden. Bisher lief sie
+            // weiter (sendCommand() verwarf die Schreibversuche still), und
+            // rampActive blieb bis zu 10 s true — in dieser Zeit haette ein erneuter
+            // Not-Aus (beginSafeStopRamp) wirkungslos abgebrochen. Jetzt: Rampe
+            // stoppen, damit Not-Aus nach einem Reconnect sofort wieder greift.
+            endSafeStopRamp()
             stopTelemetry()
             stopBleSession()
             // PHASE 4 FIX: connectedDevice wurde bisher NIE zurueckgesetzt.
