@@ -832,6 +832,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             return
         }
         safeStopBleScan()
+        // FIX: Ein noch geplanter Auto-Reconnect darf einen manuellen Verbindungs-
+        // aufbau nicht ueberholen. Sonst feuert der alte Runnable spaeter gegen die
+        // NEUE Engine und baut eine zweite, konkurrierende GATT-Verbindung auf.
+        cancelReconnectRunnable()
         val det = ScooterModel.detectDetailed(device.name, device.address)
         detectedModel = det.model
         detectedConfidence = det.confidence
