@@ -159,14 +159,21 @@ data class TripData(
     var speedSamples: Int = 0,
     var energyWh: Double = 0.0,
     var startMillis: Long = 0L,
-    var lastMillis: Long = 0L
+    var lastMillis: Long = 0L,
+    /**
+     * Letzter Telemetrie-Tick auf der MONOTONEN Uhr
+     * ([android.os.SystemClock.elapsedRealtime]). Nur fuer die
+     * Strecken-/Energieintegration; Wanduhr-Spruenge duerfen sie nicht
+     * verfaelschen. Nicht persistiert.
+     */
+    var lastElapsedMillis: Long = 0L
 ) {
     val avgSpeedKmh: Double get() = if (speedSamples > 0) speedSum / speedSamples else 0.0
     val durationMillis: Long get() = if (startMillis == 0L) 0L else (lastMillis - startMillis)
 
     fun reset() {
         distanceKm = 0.0; maxSpeedKmh = 0.0; speedSum = 0.0; speedSamples = 0
-        energyWh = 0.0; startMillis = 0L; lastMillis = 0L
+        energyWh = 0.0; startMillis = 0L; lastMillis = 0L; lastElapsedMillis = 0L
     }
 }
 

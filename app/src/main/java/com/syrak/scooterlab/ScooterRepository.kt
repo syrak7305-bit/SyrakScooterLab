@@ -123,9 +123,11 @@ class ScooterRepository(context: Context) {
     /* ------------------------------------------------------------------ */
     /** Speichert/ueberschreibt ein Profil (Format identisch zum Original). */
     fun saveProfile(profile: ScooterProfile) {
-        val entry = "${profile.name}|${profile.maxSpeed}|${profile.zeroStart}|${profile.kers}|${profile.cruiseControl}"
+        val entry = encodeProfile(profile)
         val set = prefs.getStringSet(KEY_PROFILES, emptySet())?.toMutableSet() ?: mutableSetOf()
-        set.removeAll { it.substringBefore('|') == profile.name }
+        // FIX: Namen ueber denselben Parser bestimmen (nicht substringBefore('|')),
+        // damit ein Profilname mit '|' beim Ueberschreiben korrekt erkannt wird.
+        set.removeAll { decodeProfile(it)?.name == profile.name }
         set.add(entry)
         prefs.edit().putStringSet(KEY_PROFILES, set).apply()
     }
@@ -152,6 +154,32 @@ class ScooterRepository(context: Context) {
     }
 
     companion object {
+        /**
+         * Serialisiert ein Profil. Format bleibt "name|maxSpeed|zeroStart|kers|cruise".
+         * Der Name steht vorn und darf selbst '|' enthalten.
+         */
+        fun encodeProfile(profile: ScooterProfile): String =
+            "${profile.name}|${profile.maxSpeed}|${profile.zeroStart}|${profile.kers}|${profile.cruiseControl}"
+
+        /**
+         * FIX: Parst von RECHTS. Die letzten vier Felder sind immer
+         * maxSpeed|zeroStart|kers|cruise; alles davor ist der Name. Dadurch
+         * verschiebt ein '|' im Namen die Zahlenfelder nicht mehr.
+         * Abwaertskompatibel zu allen alten Eintraegen (Name ohne '|').
+         */
+        fun decodeProfile(entry: String): ScooterProfile? {
+            val parts = entry.split("|")
+            if (parts.size < 5) return null
+            val name = parts.subList(0, parts.size - 4).joinToString("|")
+            return ScooterProfile(
+                name = name,
+                maxSpeed = parts[parts.size - 4].toIntOrNull() ?: return null,
+                zeroStart = parts[parts.size - 3].toIntOrNull() ?: 0,
+                kers = parts[parts.size - 2].toIntOrNull() ?: 1,
+                cruiseControl = parts[parts.size - 1].toBoolean()
+            )
+        }
+
         private const val PREFS_NAME = "SyrakPrefs"
 
         private const val KEY_DISCLAIMERS = "disclaimers_accepted"
