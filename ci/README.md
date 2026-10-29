@@ -57,11 +57,11 @@ durch `if: always()` trotzdem hochgeladen, sofern er erzeugt wurde
 
 ```
 ./gradlew --no-build-cache --no-configuration-cache testDebugUnitTest
-  -> 103 Tests, 0 Failures, 0 Errors, 0 Skipped
+  -> 110 Tests, 0 Failures, 0 Errors, 0 Skipped
 
 ./gradlew --no-build-cache --no-configuration-cache assembleDebug
   -> BUILD SUCCESSFUL, app-debug.apk
 ```
 
 Diese Zahlen stammen aus einem lokalen Lauf auf dem Branch
-`fix/phase4-ci-profile-persistence-ble-lifecycle`, **nicht** aus GitHub Actions.
+`fix/phase5-ble-scan-and-connection-switch`, **nicht** aus GitHub Actions.
