@@ -1613,6 +1613,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         ) { value ->
             autoReconnectEnabled = value
             repository.autoReconnect = value
+            // PHASE 7: Abschalten wirkt sofort — ein bereits geplantes
+            // Reconnect-Runnable wird verworfen, statt spaeter doch zu verbinden.
+            if (!value) cancelReconnectRunnable()
         })
         tabContent.addView(connCard, cardParams())
 
@@ -1946,10 +1949,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         reconnectAttempts++
         addLog(LogCategory.INFO, "Reconnect in ${delay} ms (Versuch $reconnectAttempts).")
         reconnectRunnable = Runnable {
-            if (!userInitiatedDisconnect) {
+            // PHASE 7 FIX: Beim Feuern erneut pruefen. Wurde "Auto-Reconnect"
+            // waehrend des Backoff-Fensters abgeschaltet oder inzwischen bewusst
+            // getrennt, darf KEINE Verbindung aufgebaut werden.
+            if (ReconnectPolicy.shouldFire(autoReconnectEnabled, userInitiatedDisconnect)) {
                 addLog(LogCategory.INFO, "Reconnect-Versuch…")
                 linkState = linkState.transition(BleLinkEvent.CONNECT_REQUESTED)
                 bleEngine?.reconnect()
+            } else {
+                addLog(LogCategory.INFO, "Reconnect verworfen (Auto-Reconnect aus oder bewusst getrennt).")
             }
         }
         handler.postDelayed(reconnectRunnable!!, delay)

@@ -3,10 +3,7 @@ package com.syrak.scooterlab
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
-import java.security.SecureRandom
 import java.util.Locale
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.PBEKeySpec
 
 /* ============================================================================
  *  SCOOTER-REPOSITORY
@@ -74,8 +71,10 @@ class ScooterRepository(context: Context) {
      * mit PBKDF2 gehasht. Die Klartext-PIN wird NICHT gespeichert.
      */
     fun setPin(pin: String) {
-        val salt = ByteArray(SALT_BYTES).also { SecureRandom().nextBytes(it) }
-        val hash = derive(pin, salt, ITERATIONS, KEY_LENGTH_BYTES)
+        // Krypto delegiert an [PinHasher] (reine Logik, ohne Android-Context
+        // testbar). Salt-/Hash-Erzeugung und Parameter sind unveraendert.
+        val salt = PinHasher.newSalt()
+        val hash = PinHasher.derive(pin, salt, ITERATIONS, KEY_LENGTH_BYTES)
         prefs.edit()
             .putString(KEY_PIN_SALT, Base64.encodeToString(salt, Base64.NO_WRAP))
             .putString(KEY_PIN_HASH, Base64.encodeToString(hash, Base64.NO_WRAP))
@@ -93,7 +92,6 @@ class ScooterRepository(context: Context) {
         val actual = derive(pin, salt, iterations, expected.size)
         return constantTimeEquals(expected, actual)
     }
-
     fun clearPin() {
         prefs.edit()
             .remove(KEY_PIN_SALT).remove(KEY_PIN_HASH).remove(KEY_PIN_ITER)
@@ -101,22 +99,13 @@ class ScooterRepository(context: Context) {
             .apply()
     }
 
-    private fun derive(pin: String, salt: ByteArray, iterations: Int, keyLen: Int): ByteArray {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, iterations, keyLen * 8)
-        val factory = try {
-            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        } catch (_: Exception) {
-            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
-        }
-        return factory.generateSecret(spec).encoded
-    }
+    /** Delegiert an [PinHasher] (reine, testbare Krypto). */
+    private fun derive(pin: String, salt: ByteArray, iterations: Int, keyLen: Int): ByteArray =
+        PinHasher.derive(pin, salt, iterations, keyLen)
 
-    private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
-        if (a.size != b.size) return false
-        var diff = 0
-        for (i in a.indices) diff = diff or (a[i].toInt() xor b[i].toInt())
-        return diff == 0
-    }
+    /** Delegiert an [PinHasher] (konstantzeitiger Vergleich). */
+    private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean =
+        PinHasher.constantTimeEquals(a, b)
 
     /* ------------------------------------------------------------------ */
     /*  TUNING-PROFILE                                                     */
@@ -197,7 +186,6 @@ class ScooterRepository(context: Context) {
         private const val KEY_PIN_ITER = "pin_iterations"
         private const val KEY_PROFILES = "profiles"
 
-        private const val SALT_BYTES = 16
         private const val ITERATIONS = 120_000
         private const val KEY_LENGTH_BYTES = 32
     }
