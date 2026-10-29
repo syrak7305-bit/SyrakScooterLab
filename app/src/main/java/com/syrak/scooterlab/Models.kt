@@ -229,6 +229,28 @@ enum class ScooterModel(
 
     val isKnown: Boolean get() = this != UNKNOWN
 
+    /**
+     * Hersteller-/Marken-Ebene, getrennt vom Modell (Phase 8).
+     *
+     * Bewusst aus dem Enum ABGELEITET statt aus dem BLE-Namen geraten: ein
+     * einmal korrekt erkanntes Modell kennt seinen Hersteller. Die
+     * Namensheuristik fuer den Hersteller liegt in [ScooterManufacturer.classify]
+     * und wird nur fuer UNBEKANNTE Modelle befragt.
+     */
+    val manufacturer: ScooterManufacturer
+        get() = when (this) {
+            NINEBOT_MAX_G2, NINEBOT_MAX_G30, NINEBOT_F2_PRO, NINEBOT_ES ->
+                ScooterManufacturer.NINEBOT
+            XIAOMI_PRO_2, XIAOMI_M365 ->
+                ScooterManufacturer.XIAOMI
+            NAVEE_GT3_MAX, NAVEE_GT3_PRO, NAVEE_ST3, NAVEE_N65, NAVEE_V40, NAVEE_S65 ->
+                ScooterManufacturer.NAVEE
+            SOFLOW_SO4 ->
+                ScooterManufacturer.SOFLOW
+            UNKNOWN ->
+                ScooterManufacturer.UNKNOWN
+        }
+
     companion object {
         /**
          * Erkennt das Modell aus dem BLE-Namen (Keyword-Scoring). [address] ist
@@ -257,14 +279,23 @@ enum class ScooterModel(
         fun detectDetailed(name: String, address: String): DetectionResult {
             val n = name.lowercase(Locale.ROOT).trim()
             if (n.isEmpty() || n == "unknown device") {
-                return DetectionResult(UNKNOWN, DetectionConfidence.UNKNOWN, "kein Geraetename")
+                return DetectionResult(
+                    UNKNOWN, DetectionConfidence.UNKNOWN, "kein Geraetename",
+                    ScooterManufacturer.UNKNOWN
+                )
             }
             var best: ScooterModel? = null
             var bestScore = 0
             var bestKeyword = ""
             var ties = 0
+            // PHASE 8 FIX (falsche Modellzuordnung): Ist im Namen ein BEKANNTER
+            // Hersteller enthalten, darf nur ein Modell DIESES Herstellers
+            // gewinnen. Sonst wurde z. B. "KuKirin G2 Max" ueber das generische
+            // Token "g2" als Segway-Ninebot Max G2 eingestuft.
+            val nameBrand = ScooterManufacturer.classify(name)
             for (m in values()) {
                 if (m == UNKNOWN) continue
+                if (nameBrand.isKnown && m.manufacturer != nameBrand) continue
                 var score = 0
                 var longest = ""
                 for (kw in m.matchKeywords) {
@@ -280,17 +311,23 @@ enum class ScooterModel(
                 }
             }
             val model = best ?: return DetectionResult(
-                UNKNOWN, DetectionConfidence.UNKNOWN, "kein Modellmerkmal im Namen"
+                UNKNOWN, DetectionConfidence.UNKNOWN, "kein Modellmerkmal im Namen",
+                // Modell unbekannt, aber der Hersteller kann trotzdem belegt sein
+                // (z. B. "KuKirin G2 Max" -> Marke KuKirin, Modell noch nicht gefuehrt).
+                ScooterManufacturer.classify(name)
             )
             if (ties > 1) {
                 return DetectionResult(
                     UNKNOWN, DetectionConfidence.UNKNOWN,
-                    "mehrdeutiger Name (\"$name\") - kein Modell bestaetigt"
+                    "mehrdeutiger Name (\"$name\") - kein Modell bestaetigt",
+                    ScooterManufacturer.classify(name)
                 )
             }
             val specific = bestKeyword.length >= 5 && bestKeyword.any { it.isDigit() }
             val confidence = if (specific) DetectionConfidence.CONFIRMED else DetectionConfidence.PROBABLE
-            return DetectionResult(model, confidence, "Treffer \"$bestKeyword\"")
+            return DetectionResult(
+                model, confidence, "Treffer \"$bestKeyword\"", model.manufacturer
+            )
         }
     }
 }
@@ -315,7 +352,12 @@ enum class DetectionConfidence(val label: String, val description: String) {
 data class DetectionResult(
     val model: ScooterModel,
     val confidence: DetectionConfidence,
-    val evidence: String
+    val evidence: String,
+    /**
+     * Hersteller-/Marken-Ebene, getrennt von Modell und Erkennungssicherheit
+     * (Phase 8). Default haelt bestehende Aufrufer kompatibel.
+     */
+    val manufacturer: ScooterManufacturer = ScooterManufacturer.UNKNOWN
 )
 
 /** Ergebnis der Firmware-Integritätsprüfung inkl. extrahierter Flash-Bytes. */

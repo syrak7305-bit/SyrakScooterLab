@@ -379,7 +379,16 @@ class BleEngine(
             if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    listener.onLog("> gatt: Service-Discovery FEHLGESCHLAGEN status=$status")
+                    // PHASE 8 FIX (Punkt 3, GATT-Service-Discovery): Bisher wurde
+                    // bei fehlgeschlagener Discovery nur geloggt und zurueckgekehrt.
+                    // Die UI blieb dann bis zum 15-s-Connect-Timeout im Zustand
+                    // "Verbinde...". Jetzt wird die Verbindung sofort sauber
+                    // abgebrochen (analog zum discoverServices()==false-Pfad in
+                    // onConnectionStateChange). Der Connect-Timeout bleibt als
+                    // Sicherheitsnetz weiterhin scharf.
+                    listener.onLog("> gatt: Service-Discovery FEHLGESCHLAGEN status=$status \u2014 Verbindung wird abgebrochen")
+                    failPendingWrites("service discovery failed")
+                    listener.onDisconnected(true)
                     return
                 }
                 listener.onLog("> gatt: ${g.services.size} Services gefunden")

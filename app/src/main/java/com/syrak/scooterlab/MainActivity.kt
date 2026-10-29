@@ -90,9 +90,18 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var currentRegion: Region = Region.WORLD
     private var detectedModel: ScooterModel = ScooterModel.UNKNOWN
     private var detectedConfidence: DetectionConfidence = DetectionConfidence.UNKNOWN
+    /** PHASE 8: Hersteller-Ebene, getrennt von Modell und Sicherheit. */
+    private var detectedManufacturer: ScooterManufacturer = ScooterManufacturer.UNKNOWN
     private var detectionEvidence: String = ""
     private var activeProtocol: BleProtocol = BleProtocol.NINEBOT
     private var autoReconnectEnabled = true
+    /**
+     * PHASE 8 (Regel 6): Tuning-Schreibbefehle sind standardmaessig GESPERRT.
+     * Der Nutzer muss die Hardware-Kompatibilitaet in CONFIG bewusst
+     * bestaetigen. Bewusst NICHT persistiert: die Bestaetigung gilt nur fuer
+     * die laufende Sitzung und wird bei jedem App-Start zurueckgesetzt.
+     */
+    private var hardwareVerified = false
     private var reconnectAttempts = 0
     // ---- FIX 2: Reconnect-Backoff ---------------------------------------
     private var reconnectRunnable: Runnable? = null
@@ -236,8 +245,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 result.scanRecord?.deviceName ?: "Unknown Device"
             }
 
-            val keywords = listOf("scooter", "ninebot", "xiaomi", "navee", "m365", "segway", "soflow")
-            val candidate = keywords.any { name.contains(it, ignoreCase = true) }
+            // PHASE 8: Kandidaten-Erkennung in eine reine, testbare Funktion
+            // ausgelagert ([ScooterCandidateFilter]). Vorher lag hier eine
+            // private Inline-Liste, die KuKirin nicht kannte und nicht testbar war.
+            val candidate = ScooterCandidateFilter.looksLikeScooter(name)
 
             // WICHTIG: Callback laeuft auf Binder-Thread -> UI-Update auf Main-Thread
             runOnUiThread {
@@ -697,6 +708,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         modelCard.addView(makeText(modelEvidence(), 12f, Palette.TEXT_MUTED).apply {
             setPadding(0, dp(6), 0, 0)
         })
+        // PHASE 8: Hersteller, Modell und Erkennungssicherheit getrennt darstellen.
+        modelCard.addView(makeText(
+            "Hersteller: ${detectedManufacturer.displayName}  ·  " +
+                "Modell: ${if (detectedModel.isKnown) detectedModel.displayName else "unbekannt"}  ·  " +
+                "Sicherheit: ${detectedConfidence.label}",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(6), 0, 0) })
         modelCard.addView(makeText("Protokoll: ${activeProtocol.displayName}", 12f, Palette.TEXT_SECONDARY).apply {
             setPadding(0, dp(6), 0, 0)
         })
@@ -848,8 +866,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             val modelLine = if (det.model.isKnown)
                 "${det.model.displayName} (${det.confidence.label})"
             else "Modell unklar (${det.confidence.label})"
+            // PHASE 8: Hersteller getrennt vom Modell anzeigen. Bei unbekanntem
+            // Modell kann der Hersteller trotzdem belegt sein (z. B. KuKirin).
+            val brandLine = if (det.manufacturer.isKnown)
+                " · Hersteller: ${det.manufacturer.displayName}" else ""
             row.addView(makeText(
-                "${device.address} · ${device.rssi} dBm · $modelLine",
+                "${device.address} · ${device.rssi} dBm · $modelLine$brandLine",
                 11f, Palette.TEXT_MUTED
             ))
             val connected = connectedDevice?.address == device.address
@@ -888,7 +910,16 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val det = ScooterModel.detectDetailed(device.name, device.address)
         detectedModel = det.model
         detectedConfidence = det.confidence
+        detectedManufacturer = det.manufacturer
         detectionEvidence = det.evidence
+        // PHASE 8: Erkennungsergebnis nachvollziehbar protokollieren
+        // (Hersteller, Modell, Sicherheit, Evidenz). Keine privaten Daten.
+        addLog(
+            LogCategory.INFO,
+            "Erkennung: Hersteller=${det.manufacturer.displayName}, " +
+                "Modell=${det.model.displayName}, Sicherheit=${det.confidence.label}, " +
+                "Evidenz=${det.evidence}"
+        )
         activeProtocol = detectedModel.protocol
         connectedDevice = device
         userInitiatedDisconnect = false
@@ -908,6 +939,21 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /* ================================================================== */
 
     private fun renderTools() {
+        // PHASE 8: Sichtbarer Sperrhinweis, damit die Slider nicht faelschlich
+        // so wirken, als wuerden sie sofort etwas am Scooter aendern.
+        val lockReason = TuningSafetyGate.blockReason(hardwareVerified, detectedModel.isKnown)
+        if (lockReason != null) {
+            val banner = makeCard()
+            banner.addView(makeText("TUNING GESPERRT", 14f, Palette.ACCENT_RED, true))
+            banner.addView(makeText(lockReason, 11f, Palette.ACCENT_YELLOW).apply {
+                setPadding(0, dp(4), 0, 0)
+            })
+            banner.addView(makeText(
+                "Freigabe in CONFIG unter \"SICHERHEIT / TUNING-FREIGABE\".",
+                11f, Palette.TEXT_MUTED
+            ).apply { setPadding(0, dp(4), 0, 0) })
+            tabContent.addView(banner, cardParams())
+        }
         tabContent.addView(makeSectionLabel("FAHRPARAMETER"))
         val maxLimit = if (detectedModel.isKnown) detectedModel.absMaxKmh.coerceAtMost(45) else 45
         tabContent.addView(makeSliderCard(
@@ -916,7 +962,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             5, maxLimit, maxSpeedKmh.coerceIn(5, maxLimit), "km/h"
         ) { value ->
             maxSpeedKmh = value
-            sendCommand(adapter().buildSpeedCeilingFrame(value), "maxSpeed=$value", true)
+            sendTuning(adapter().buildSpeedCeilingFrame(value), "maxSpeed=$value")
         }, cardParams())
 
         tabContent.addView(makeSliderCard(
@@ -925,7 +971,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             0, 10, zeroStartKmh.coerceIn(0, 10), "km/h"
         ) { value ->
             zeroStartKmh = value
-            sendCommand(adapter().buildZeroStartFrame(value), "zeroStart=$value", true)
+            sendTuning(adapter().buildZeroStartFrame(value), "zeroStart=$value")
         }, cardParams())
 
         tabContent.addView(makeSliderCard(
@@ -934,7 +980,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             0, 3, kersLevel.coerceIn(0, 3), "Stufe"
         ) { value ->
             kersLevel = value
-            sendCommand(adapter().buildKersFrame(value), "kers=$value", true)
+            sendTuning(adapter().buildKersFrame(value), "kers=$value")
         }, cardParams())
 
         tabContent.addView(makeSliderCard(
@@ -943,7 +989,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             50, 90, motorTempGuardC.coerceIn(50, 90), "°C"
         ) { value ->
             motorTempGuardC = value
-            sendCommand(adapter().buildTempGuardFrame(value), "tempGuard=$value", true)
+            sendTuning(adapter().buildTempGuardFrame(value), "tempGuard=$value")
         }, cardParams())
 
         tabContent.addView(makeSectionLabel("SCHALTER"))
@@ -952,20 +998,20 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             "Cruise Control", "Hält die Geschwindigkeit auf Tastendruck.", cruiseEnabled
         ) { value ->
             cruiseEnabled = value
-            sendCommand(adapter().buildCruiseFrame(value), "cruise=$value", true)
+            sendTuning(adapter().buildCruiseFrame(value), "cruise=$value")
         })
         toggles.addView(makeToggleRow(
             "Diebstahl-Sperre", "Sperrt den Motor elektronisch.", isLocked
         ) { value ->
             isLocked = value
             repository.isLocked = value
-            sendCommand(adapter().buildLockFrame(value), "lock=$value", true)
+            sendTuning(adapter().buildLockFrame(value), "lock=$value")
         })
         toggles.addView(makeToggleRow(
             "Übergeschwindigkeits-Alarm stumm", "Unterdrückt den akustischen Alarm.", overspeedAlarmMuted
         ) { value ->
             overspeedAlarmMuted = value
-            sendCommand(adapter().buildOverspeedMuteFrame(value), "overspeedMute=$value", true)
+            sendTuning(adapter().buildOverspeedMuteFrame(value), "overspeedMute=$value")
         })
         toggles.addView(makeToggleRow(
             "Motor-Temp.-Guard aktiv", "Reduziert die Leistung bei Überhitzung.", motorTempGuardEnabled
@@ -1022,12 +1068,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private fun applyRideMode(mode: RideMode) {
         when (mode) {
-            RideMode.NORMAL -> sendCommand(adapter().buildSpeedCeilingFrame(maxSpeedKmh), "ride=normal", true)
+            RideMode.NORMAL -> sendTuning(adapter().buildSpeedCeilingFrame(maxSpeedKmh), "ride=normal")
             RideMode.ECO_SAVER -> {
                 val ecoLimit = currentRegion.legalSpeedKmh.coerceAtMost(maxSpeedKmh)
-                sendCommand(adapter().buildSpeedCeilingFrame(ecoLimit), "ride=eco", true)
+                sendTuning(adapter().buildSpeedCeilingFrame(ecoLimit), "ride=eco")
             }
-            RideMode.SPORT_PLUS -> sendCommand(adapter().buildMaxPowerFrame(), "ride=sport+", true)
+            RideMode.SPORT_PLUS -> sendTuning(adapter().buildMaxPowerFrame(), "ride=sport+")
         }
         addLog(LogCategory.INFO, "Fahrmodus: ${mode.displayName}")
     }
@@ -1041,7 +1087,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     "Verkehr ausführen. Fortfahren?"
             )
             .setPositiveButton("Ausführen") { _, _ ->
-                sendCommand(adapter().buildGermanManeuverFrame(), "germanManeuver", true)
+                sendTuning(adapter().buildGermanManeuverFrame(), "germanManeuver")
                 germanManeuverActive = true
                 addLog(LogCategory.INFO, "German Maneuver gesendet (volatil, nicht verifiziert).")
             }
@@ -1079,6 +1125,24 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             .setPositiveButton("NOTAUS") { _, _ -> beginSafeStopRamp("Manueller Panik-Button") }
             .setNegativeButton("Abbrechen", null)
             .show()
+    }
+
+    /**
+     * PHASE 8: Tuning-Schreibbefehl mit Sicherheitssperre.
+     *
+     * Bis echte Hardwaretests/Protokollvalidierung vorliegen, wird NICHTS
+     * gesendet, solange nicht [TuningSafetyGate] freigibt. Die Funktion selbst
+     * bleibt vollstaendig erhalten — sie ist nur gesperrt, nicht entfernt.
+     * Not-Aus, Unlock, Reboot und Lese-Befehle laufen weiter ueber [sendCommand].
+     */
+    private fun sendTuning(frame: ByteArray, label: String) {
+        val reason = TuningSafetyGate.blockReason(hardwareVerified, detectedModel.isKnown)
+        if (reason != null) {
+            toast("Tuning gesperrt: $reason")
+            addLog(LogCategory.ERROR, "Tuning-Befehl '$label' blockiert: $reason")
+            return
+        }
+        sendCommand(frame, label, true)
     }
 
     private fun sendCommand(
@@ -1471,9 +1535,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     "Ziel: ${pkg.name} (${pkg.recommendedMaxKmh} km/h). Fortfahren?"
             )
             .setPositiveButton("Senden") { _, _ ->
-                sendCommand(
+                sendTuning(
                     adapter().buildSpeedCeilingFrame(pkg.recommendedMaxKmh),
-                    "softPatch=${pkg.id}", true
+                    "softPatch=${pkg.id}"
                 )
                 addLog(LogCategory.INFO, "Soft-Patch '${pkg.name}' gesendet.")
             }
@@ -1618,6 +1682,33 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             if (!value) cancelReconnectRunnable()
         })
         tabContent.addView(connCard, cardParams())
+
+        // PHASE 8 (Regel 6): Tuning ist standardmaessig gesperrt. Diese Karte
+        // macht die Sperre sichtbar und erlaubt eine bewusste Sitzungs-Freigabe.
+        tabContent.addView(makeSectionLabel("SICHERHEIT / TUNING-FREIGABE"))
+        val safetyCard = makeCard()
+        safetyCard.addView(makeText(
+            "Tuning-Schreibbefehle (Geschwindigkeit, KERS, Zero-Start, Cruise, Lock, " +
+                "German Maneuver, Soft-Patch) sind GESPERRT, bis die Kompatibilitaet auf " +
+                "echter Hardware geprueft wurde. Die Freigabe gilt nur fuer diese Sitzung " +
+                "und wird beim naechsten App-Start zurueckgesetzt. Not-Aus, Trennen und " +
+                "alle Diagnosefunktionen bleiben immer aktiv.",
+            11f, Palette.ACCENT_YELLOW
+        ))
+        safetyCard.addView(makeToggleRow(
+            "Hardware-Kompatibilitaet bestaetigt",
+            "Nur aktivieren, wenn du das erkannte Modell auf deinem eigenen Geraet " +
+                "tatsaechlich verifiziert hast. Ohne Freigabe wird kein Tuning-Befehl gesendet.",
+            hardwareVerified
+        ) { value ->
+            hardwareVerified = value
+            addLog(
+                LogCategory.INFO,
+                "Tuning-Freigabe: ${if (value) "aktiv (Sitzung)" else "gesperrt"}"
+            )
+            showTab(Tab.CONFIG)
+        })
+        tabContent.addView(safetyCard, cardParams())
 
         tabContent.addView(makeSectionLabel("PIN-SCHUTZ"))
         val pinCard = makeCard()
