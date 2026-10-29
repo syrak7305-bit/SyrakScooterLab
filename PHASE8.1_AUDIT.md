@@ -84,7 +84,8 @@ Neu hinzugefügt (8): `AutoHandshakePolicyTest` (6) — unbekanntes Modell, nich
 ## 6. Tatsächlicher aktueller Commit-Hash
 
 - **Basis (`main`):** `442e9bfaca03499e31640dae773834cb477d06d4`
-- **Audit-Commit:** siehe PR (Branch `fix/phase8.1-security-audit`)
+- **Audit-Commit:** `6c3e83981dd75899beca0c36f977b8d6a5695730`
+- **Pull Request:** https://github.com/syrak7305-bit/SyrakScooterLab/pull/11 (OPEN, MERGEABLE, nicht auto-gemerged)
 
 ---
 
