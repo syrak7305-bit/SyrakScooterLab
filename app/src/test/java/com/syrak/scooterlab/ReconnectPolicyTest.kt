@@ -65,4 +65,32 @@ class ReconnectPolicyTest {
     fun `zero base yields zero delay`() {
         assertEquals(0L, ReconnectPolicy.delayMillis(3, 0L, 8_000L))
     }
+
+    /* ------------------------------------------------------------------ */
+    /*  PHASE 7 — shouldFire (Pruefung zur FEUERZEIT des Runnables)        */
+    /* ------------------------------------------------------------------ */
+    /*  Belegte Luecke: shouldSchedule entscheidet nur beim PLANEN. Das     */
+    /*  Runnable feuert bis zu 8 s spaeter. Wurde Auto-Reconnect in dieser  */
+    /*  Zeit abgeschaltet, verband die App trotzdem. shouldFire schliesst   */
+    /*  genau dieses Fenster.                                              */
+
+    @Test
+    fun `fires when auto reconnect on and not user initiated`() {
+        assertTrue(ReconnectPolicy.shouldFire(autoReconnect = true, userInitiated = false))
+    }
+
+    @Test
+    fun `does not fire when auto reconnect was turned off during backoff`() {
+        assertFalse(ReconnectPolicy.shouldFire(autoReconnect = false, userInitiated = false))
+    }
+
+    @Test
+    fun `does not fire after a user initiated disconnect`() {
+        assertFalse(ReconnectPolicy.shouldFire(autoReconnect = true, userInitiated = true))
+    }
+
+    @Test
+    fun `does not fire when both auto reconnect off and user initiated`() {
+        assertFalse(ReconnectPolicy.shouldFire(autoReconnect = false, userInitiated = true))
+    }
 }

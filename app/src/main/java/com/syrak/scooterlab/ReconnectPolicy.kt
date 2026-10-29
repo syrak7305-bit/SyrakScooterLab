@@ -36,6 +36,19 @@ object ReconnectPolicy {
     }
 
     /**
+     * true, wenn ein bereits GEPLANTES Reconnect-Runnable beim Feuern noch
+     * ausgefuehrt werden darf.
+     *
+     * Belegte Luecke (Phase 7): Zwischen dem Planen und dem Feuern liegt ein
+     * Backoff-Fenster (bis zu 8 s). Wurde "Auto-Reconnect" in dieser Zeit in der
+     * CONFIG abgeschaltet, feuerte das Runnable trotzdem und baute eine
+     * Verbindung auf — entgegen der Einstellung. Zusaetzlich wird hier erneut
+     * geprueft, ob der Nutzer inzwischen bewusst getrennt hat.
+     */
+    fun shouldFire(autoReconnect: Boolean, userInitiated: Boolean): Boolean =
+        autoReconnect && !userInitiated
+
+    /**
      * Wartezeit vor dem naechsten Versuch: exponentieller Backoff
      * (base, base*2, base*4, ...), hart begrenzt durch [maxDelayMillis].
      * Negative Eingaben werden auf 0 geklemmt, damit postDelayed nie negativ wird.
