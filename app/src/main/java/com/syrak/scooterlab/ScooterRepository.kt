@@ -140,18 +140,16 @@ class ScooterRepository(context: Context) {
     fun profileEntries(): List<String> =
         prefs.getStringSet(KEY_PROFILES, emptySet())?.sorted() ?: emptyList()
 
-    /** Laedt ein Profil aus einem rohen Eintrag (null, wenn ungueltig). */
-    fun loadProfile(entry: String): ScooterProfile? {
-        val parts = entry.split("|")
-        if (parts.size < 5) return null
-        return ScooterProfile(
-            name = parts[0],
-            maxSpeed = parts[1].toIntOrNull() ?: return null,
-            zeroStart = parts[2].toIntOrNull() ?: 0,
-            kers = parts[3].toIntOrNull() ?: 1,
-            cruiseControl = parts[4].toBoolean()
-        )
-    }
+    /**
+     * Laedt ein Profil aus einem rohen Eintrag (null, wenn ungueltig).
+     *
+     * FIX: Verwendet bewusst denselben Parser wie [saveProfile]/[decodeProfile].
+     * Zuvor nutzte [loadProfile] einen naiven `split("|")` mit `parts[0]` als
+     * Namen. Ein Profilname mit '|' wurde dadurch beim SPEICHERN/UEBERSCHREIBEN
+     * korrekt behandelt, beim LADEN aber falsch (Name abgeschnitten, Zahlenfelder
+     * verschoben) bzw. ganz verworfen. Jetzt gibt es genau EINE Parsing-Quelle.
+     */
+    fun loadProfile(entry: String): ScooterProfile? = decodeProfile(entry)
 
     companion object {
         /**

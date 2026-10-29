@@ -1,6 +1,7 @@
 package com.syrak.scooterlab
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -48,6 +49,23 @@ class ProfileSerializationTest {
     @Test
     fun `non numeric speed is rejected`() {
         assertNull(ScooterRepository.decodeProfile("Name|schnell|0|1|true"))
+    }
+
+    /**
+     * Regression fuer die fruehere Divergenz: [ScooterRepository.loadProfile]
+     * nutzte einen naiven split("|") mit parts[0] als Namen und haette diesen
+     * Eintrag (Name mit '|') verworfen bzw. falsch gelesen. Der kanonische
+     * Parser [ScooterRepository.decodeProfile] muss ihn korrekt laden.
+     */
+    @Test
+    fun `pipe name entry that old naive loader rejected now parses`() {
+        val decoded = ScooterRepository.decodeProfile("Wald|Tour|25|1|2|false")
+        assertNotNull(decoded)
+        assertEquals("Wald|Tour", decoded!!.name)
+        assertEquals(25, decoded.maxSpeed)
+        assertEquals(1, decoded.zeroStart)
+        assertEquals(2, decoded.kers)
+        assertEquals(false, decoded.cruiseControl)
     }
 
     @Test
