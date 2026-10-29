@@ -1,0 +1,79 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Show checkout information
+        run: |
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "Branch: $GITHUB_REF"
+          git status --short
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Verify Compose plugin configuration
+        run: |
+          grep -n "kotlin-compose" gradle/libs.versions.toml
+          grep -n "libs.plugins.kotlin.compose" app/build.gradle.kts
+          grep -n "compose = true" app/build.gradle.kts
+
+      - name: Show Gradle version
+        run: ./gradlew --version
+
+      # Unit-Tests laufen VOR dem APK-Build. Ein erfolgreicher assembleDebug
+      # beweist NICHT, dass die Logik-Tests bestehen. Beide Nachweise bleiben
+      # getrennt sichtbar (siehe "Build Android APK" vs. "Run unit tests").
+      - name: Run unit tests
+        run: |
+          ./gradlew \
+            --no-build-cache \
+            --no-configuration-cache \
+            testDebugUnitTest \
+            --stacktrace
+
+      - name: Upload unit test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SyrakScooterLab-unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: warn
+
+      - name: Build Debug APK without caches
+        run: |
+          ./gradlew \
+            --no-build-cache \
+            --no-configuration-cache \
+            --refresh-dependencies \
+            assembleDebug \
+            --stacktrace \
+            --info
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SyrakScooterLab-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

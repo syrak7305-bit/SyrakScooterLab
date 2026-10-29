@@ -121,16 +121,32 @@ class ScooterRepository(context: Context) {
     /* ------------------------------------------------------------------ */
     /*  TUNING-PROFILE                                                     */
     /* ------------------------------------------------------------------ */
-    /** Speichert/ueberschreibt ein Profil (Format identisch zum Original). */
+    /**
+     * Speichert/ueberschreibt ein Profil (Format identisch zum Original).
+     *
+     * PHASE 4: Die Mengen-/Formatlogik liegt jetzt in [ProfileStore] und ist
+     * damit ohne Android-Context testbar. Das Verhalten ist unveraendert:
+     * gleicher Name = Ueberschreiben, ungueltige Alt-Eintraege bleiben erhalten.
+     */
     fun saveProfile(profile: ScooterProfile) {
-        val entry = encodeProfile(profile)
-        val set = prefs.getStringSet(KEY_PROFILES, emptySet())?.toMutableSet() ?: mutableSetOf()
-        // FIX: Namen ueber denselben Parser bestimmen (nicht substringBefore('|')),
-        // damit ein Profilname mit '|' beim Ueberschreiben korrekt erkannt wird.
-        set.removeAll { decodeProfile(it)?.name == profile.name }
-        set.add(entry)
+        val set = ProfileStore.upsert(profileEntries(), profile)
         prefs.edit().putStringSet(KEY_PROFILES, set).apply()
     }
+
+    /**
+     * Loescht das Profil mit [name]. Liefert true, wenn etwas entfernt wurde.
+     * Nicht parsebare Alt-Eintraege werden NICHT angefasst.
+     */
+    fun deleteProfile(name: String): Boolean {
+        val before = profileEntries()
+        val after = ProfileStore.remove(before, name)
+        if (after.size == before.size) return false
+        prefs.edit().putStringSet(KEY_PROFILES, after).apply()
+        return true
+    }
+
+    /** Anzahl gespeicherter Eintraege, die nicht parsebar sind (werden nie geloescht). */
+    fun invalidProfileCount(): Int = ProfileStore.invalidCount(profileEntries())
 
     /**
      * Alle gespeicherten Profil-Eintraege (roh, alphabetisch sortiert).
@@ -155,28 +171,18 @@ class ScooterRepository(context: Context) {
         /**
          * Serialisiert ein Profil. Format bleibt "name|maxSpeed|zeroStart|kers|cruise".
          * Der Name steht vorn und darf selbst '|' enthalten.
+         * Delegiert an [ProfileStore] (einzige Format-Quelle).
          */
-        fun encodeProfile(profile: ScooterProfile): String =
-            "${profile.name}|${profile.maxSpeed}|${profile.zeroStart}|${profile.kers}|${profile.cruiseControl}"
+        fun encodeProfile(profile: ScooterProfile): String = ProfileStore.encode(profile)
 
         /**
-         * FIX: Parst von RECHTS. Die letzten vier Felder sind immer
+         * Parst von RECHTS. Die letzten vier Felder sind immer
          * maxSpeed|zeroStart|kers|cruise; alles davor ist der Name. Dadurch
          * verschiebt ein '|' im Namen die Zahlenfelder nicht mehr.
          * Abwaertskompatibel zu allen alten Eintraegen (Name ohne '|').
+         * Delegiert an [ProfileStore] (einzige Format-Quelle).
          */
-        fun decodeProfile(entry: String): ScooterProfile? {
-            val parts = entry.split("|")
-            if (parts.size < 5) return null
-            val name = parts.subList(0, parts.size - 4).joinToString("|")
-            return ScooterProfile(
-                name = name,
-                maxSpeed = parts[parts.size - 4].toIntOrNull() ?: return null,
-                zeroStart = parts[parts.size - 3].toIntOrNull() ?: 0,
-                kers = parts[parts.size - 2].toIntOrNull() ?: 1,
-                cruiseControl = parts[parts.size - 1].toBoolean()
-            )
-        }
+        fun decodeProfile(entry: String): ScooterProfile? = ProfileStore.decode(entry)
 
         private const val PREFS_NAME = "SyrakPrefs"
 
