@@ -65,6 +65,12 @@ class BleEngine(
         private val NAVEE_CHAR_WRITE = UUID.fromString(NaveeFrames.CHAR_UUID)
         private val NAVEE_CHAR_WRITE_ALT = UUID.fromString(NaveeFrames.CHAR_WRITE_UUID)
 
+        // Bevorzugte Notify-UUIDs (Brightway: FFE1 = Notify, FFE2 = Write).
+        // Diese UUIDs stammen aus den bereits dokumentierten Projekt-Konstanten,
+        // es werden KEINE neuen UUIDs erfunden.
+        private val NAVEE_CHAR_NOTIFY = UUID.fromString(NaveeFrames.CHAR_UUID)
+        private val NAVEE_CHAR_NOTIFY_ALT = UUID.fromString(NaveeFrames.CHAR_WRITE_UUID)
+
         // Ninebot / Xiaomi
         private val NINEBOT_SERVICE = UUID.fromString("0000e003-0000-1000-8000-00805f9b34fb")
         private val NINEBOT_CHAR_WRITE = UUID.fromString("0000fff1-0000-1000-8000-00805f9b34fb")
@@ -369,20 +375,36 @@ class BleEngine(
                     adapter = ProtocolAdapters.forProtocol(BleProtocol.NAVEE_BRIGHTWAY)
                     adapter.setUnlocked(false)
                     writeChar = naveeWrite.first
-                    notifyChar = naveeWrite.first
-                    listener.onLog("> gatt: Navee/Brightway erkannt (FFE0) -> Adapter '${adapter.id}'")
+                    // FIX: Notify-Characteristic UNABHAENGIG vom Write-Characteristic waehlen.
+                    // Brightway nutzt FFE1 fuer Notify und FFE2 fuer Write; ein Write-Char
+                    // ohne NOTIFY-Property haette sonst Telemetrie und ACK verhindert.
+                    notifyChar = findNotifyChar(
+                        g, NAVEE_SERVICE,
+                        listOf(NAVEE_CHAR_NOTIFY, NAVEE_CHAR_NOTIFY_ALT),
+                        naveeWrite.first
+                    )
+                    listener.onLog("> gatt: Navee/Brightway erkannt (FFE0) -> Adapter '${adapter.id}', " +
+                            "write=${writeChar?.uuid}, notify=${notifyChar?.uuid}")
                 } else {
                     val nbWrite = findChar(g, NINEBOT_SERVICE, listOf(NINEBOT_CHAR_WRITE, NINEBOT_CHAR_WRITE_ALT))
                     if (nbWrite != null) {
                         adapter = ProtocolAdapters.forProtocol(BleProtocol.NINEBOT)
                         writeChar = nbWrite.first
-                        notifyChar = nbWrite.first
-                        listener.onLog("> gatt: Ninebot/Xiaomi erkannt (E003) -> Adapter '${adapter.id}'")
+                        notifyChar = findNotifyChar(
+                            g, NINEBOT_SERVICE,
+                            listOf(NINEBOT_CHAR_WRITE, NINEBOT_CHAR_WRITE_ALT),
+                            nbWrite.first
+                        )
+                        listener.onLog("> gatt: Ninebot/Xiaomi erkannt (E003) -> Adapter '${adapter.id}', " +
+                                "write=${writeChar?.uuid}, notify=${notifyChar?.uuid}")
                     } else {
                         val generic = firstWritable(g)
                         if (generic != null) {
                             writeChar = generic
-                            notifyChar = generic
+                            val svc = generic.service?.uuid
+                            notifyChar = if (svc != null) {
+                                findNotifyChar(g, svc, listOf(generic.uuid), generic)
+                            } else generic
                             listener.onLog("> gatt: kein bekanntes Service — generischer Write-Char ${generic.uuid}")
                         } else {
                             listener.onLog("> gatt: KEIN writable Characteristic gefunden — Tuning nicht moeglich")
@@ -594,6 +616,51 @@ class BleEngine(
     /* ------------------------------------------------------------------ */
     /*  LOOKUP-HELFER                                                      */
     /* ------------------------------------------------------------------ */
+    /**
+     * Waehlt das Notify-Characteristic UNABHAENGIG vom Write-Characteristic.
+     *
+     * Belegter Defekt: zuvor wurde `notifyChar = writeChar` gesetzt. Bei
+     * Brightway/Navee ist FFE1 das Notify- und FFE2 das Write-Characteristic.
+     * Wurde FFE2 als schreibbar gewaehlt, blieben Notifications aus (keine
+     * Telemetrie, kein echtes ACK). Die eigentliche Auswahl ist als reine
+     * Funktion in [GattCharacteristicSelector] gekapselt und damit testbar.
+     *
+     * @param preferredUuids bevorzugte Notify-UUIDs in Prioritaetsreihenfolge.
+     * @param fallback       Rueckfall, wenn kein notify-faehiges Char existiert
+     *                       (bisheriges Verhalten: das Write-Characteristic).
+     */
+    private fun findNotifyChar(
+        g: BluetoothGatt,
+        serviceUuid: UUID,
+        preferredUuids: List<UUID>,
+        fallback: BluetoothGattCharacteristic?
+    ): BluetoothGattCharacteristic? {
+        val candidates = ArrayList<GattCharacteristicSelector.Candidate>()
+        val byUuid = HashMap<String, BluetoothGattCharacteristic>()
+        for (s: BluetoothGattService in g.services) {
+            if (s.uuid != serviceUuid) continue
+            for (ch: BluetoothGattCharacteristic in s.characteristics) {
+                val p = ch.properties
+                val notifiable =
+                    p and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ||
+                            p and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+                candidates.add(
+                    GattCharacteristicSelector.Candidate(
+                        uuid = ch.uuid.toString(),
+                        writable = isWritable(ch),
+                        notifiable = notifiable,
+                    )
+                )
+                byUuid[ch.uuid.toString()] = ch
+            }
+        }
+        val picked = GattCharacteristicSelector.pickNotify(
+            candidates,
+            preferredUuids.map { it.toString() },
+        ) ?: return fallback
+        return byUuid[picked.uuid] ?: fallback
+    }
+
     private fun findChar(
         g: BluetoothGatt, serviceUuid: UUID, charUuids: List<UUID>
     ): Pair<BluetoothGattCharacteristic, BluetoothGattService>? {
