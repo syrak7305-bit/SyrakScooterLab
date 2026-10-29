@@ -1,6 +1,5 @@
 package com.syrak.scooterlab.core.protocol
 
-import timber.log.Timber
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 
@@ -15,8 +14,15 @@ import javax.crypto.spec.SecretKeySpec
  *
  * The key-derivation algorithm is model/firmware specific. [KeyProvider] is
  * pluggable so a per-model strategy can be registered without touching the
- * transport. The default provider returns a documented placeholder key and MUST
- * be replaced with a verified derivation before use on real hardware.
+ * transport.
+ *
+ * FAIL-CLOSED (Sicherheits-Fix):
+ *   Es existiert KEINE verifizierte per-Serial-Schlüsselableitung. Der Default-
+ *   Provider liefert daher absichtlich keinen Schlüssel, sondern wirft. Zuvor
+ *   wurde ein Null-Schlüssel verwendet und im Fehlerfall sogar eine Null-Antwort
+ *   (`ByteArray(16)`) zurückgegeben — das konnte eine ungültige Auth-Antwort als
+ *   scheinbar "erfolgreich" verschleiern. Jetzt schlägt jede nicht belegte bzw.
+ *   fehlerhafte Auth laut fehl, statt still ein falsches Ergebnis zu liefern.
  */
 class NinebotAuth(
     private val keyProvider: KeyProvider = KeyProvider.Default,
@@ -26,27 +32,35 @@ class NinebotAuth(
         fun keyFor(serial: String): ByteArray
 
         companion object {
-            /** Placeholder — replace with the verified per-serial derivation. */
+            /**
+             * Fail-closed default: es gibt keinen belegten Schlüssel. Ein Aufruf
+             * wirft, damit niemals eine erfundene Auth-Antwort gesendet wird.
+             */
             val Default = KeyProvider { _ ->
-                byteArrayOf(
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                throw UnsupportedOperationException(
+                    "Ninebot-Auth-Schlüsselableitung ist nicht verifiziert. " +
+                        "Einen KeyProvider mit belegter Ableitung registrieren, " +
+                        "bevor Auth gegen echte Hardware genutzt wird.",
                 )
             }
         }
     }
 
+    /**
+     * Berechnet die AES-128-ECB-Antwort auf [challenge].
+     *
+     * @throws IllegalArgumentException bei falscher Challenge-/Schlüssellänge.
+     * @throws UnsupportedOperationException wenn kein verifizierter Schlüssel
+     *         verfügbar ist (Default-Provider).
+     * @throws java.security.GeneralSecurityException bei einem Krypto-Fehler —
+     *         bewusst NICHT abgefangen, damit der Aufrufer fail-closed bleibt.
+     */
     fun computeResponse(challenge: ByteArray, serial: String): ByteArray {
         require(challenge.size == 16) { "Challenge must be 16 bytes (got ${challenge.size})" }
         val key = keyProvider.keyFor(serial)
-        require(key.size == 16) { "AES-128 key must be 16 bytes" }
-        return try {
-            val cipher = Cipher.getInstance("AES/ECB/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"))
-            cipher.doFinal(challenge)
-        } catch (e: Exception) {
-            Timber.e(e, "Auth response computation failed")
-            ByteArray(16)
-        }
+        require(key.size == 16) { "AES-128 key must be 16 bytes (got ${key.size})" }
+        val cipher = Cipher.getInstance("AES/ECB/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"))
+        return cipher.doFinal(challenge)
     }
 }

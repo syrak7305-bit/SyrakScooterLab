@@ -61,6 +61,7 @@ fun DashboardRoute(viewModel: DashboardViewModel) {
         onDisconnect = viewModel::onDisconnect,
         onApplyManeuver = viewModel::onApplyManeuver,
         onToggleKillSwitch = viewModel::onToggleKillSwitch,
+        onEcoMode = viewModel::onEcoMode,
     )
 }
 
@@ -72,6 +73,7 @@ fun DashboardContent(
     onDisconnect: () -> Unit,
     onApplyManeuver: (Int) -> Unit,
     onToggleKillSwitch: () -> Unit,
+    onEcoMode: () -> Unit,
 ) {
     val spacing = SyrakTheme.spacing
 
@@ -101,7 +103,7 @@ fun DashboardContent(
         )
         Spacer(Modifier.height(spacing.xl))
 
-        SpeedPanel(state)
+        SpeedPanel(state, onToggleKillSwitch, onEcoMode)
         Spacer(Modifier.height(spacing.xl))
 
         SectionHeader("Power")
@@ -381,7 +383,11 @@ private fun DataRow(label: String, value: String) {
 /* Speed */
 
 @Composable
-private fun SpeedPanel(state: DashboardUiState) {
+private fun SpeedPanel(
+    state: DashboardUiState,
+    onToggleKillSwitch: () -> Unit,
+    onEcoMode: () -> Unit,
+) {
     val spacing = SyrakTheme.spacing
     val t = state.telemetry
 
@@ -413,8 +419,8 @@ private fun SpeedPanel(state: DashboardUiState) {
 
         Row(horizontalArrangement = Arrangement.spacedBy(spacing.md)) {
             SyrakButton(
-                text = "Panic",
-                onClick = { /* TODO */ },
+                text = if (state.killSwitchEngaged) "Release" else "Panic",
+                onClick = onToggleKillSwitch,
                 variant = SyrakButtonVariant.Danger,
                 modifier = Modifier.weight(1f),
             )
@@ -423,7 +429,7 @@ private fun SpeedPanel(state: DashboardUiState) {
 
             SyrakButton(
                 text = "Eco",
-                onClick = { /* TODO */ },
+                onClick = onEcoMode,
                 variant = SyrakButtonVariant.Secondary,
                 modifier = Modifier.weight(1f),
             )
