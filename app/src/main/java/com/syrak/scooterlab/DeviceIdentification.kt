@@ -137,3 +137,54 @@ object TuningSafetyGate {
         else -> null
     }
 }
+
+/* ============================================================================
+ *  AUTO-HANDSHAKE-POLICY  (Phase 8.1 — Sicherheitsaudit, Punkt 1)
+ *  ---------------------------------------------------------------------------
+ *  BELEGTER BEFUND: In `BleEngine.afterMtu()` wurde der Unlock-Handshake
+ *  (Brightway: `AA 55 01 01 01`, CMD 0x01 / Payload 0x01) AUTOMATISCH beim
+ *  Verbindungsaufbau gesendet, sobald der Adapter `requiresUnlock` meldet.
+ *  Der Adapter wird allein aus dem GATT-Layout (Service FFE0) gewaehlt — also
+ *  auch fuer ein voellig UNBEKANNTES Geraet, das zufaellig FFE0 exponiert.
+ *  Damit wurde ohne Modell- und ohne Hardware-Verifikation ein Schreibbefehl
+ *  an ein unbekanntes Geraet gesendet. Das widerspricht Regel 6
+ *  ("keine unbekannten BLE-Schreibbefehle").
+
+ *  FIX: Der EAGER-Handshake beim Verbindungsaufbau ist nur noch erlaubt, wenn
+ *  das Modell erkannt UND die Hardware-Kompatibilitaet vom Nutzer bestaetigt
+ *  wurde — also genau dann, wenn [TuningSafetyGate] Schreibbefehle freigibt.
+ *  Der LAZY-Handshake in `enqueueCommand()` bleibt unveraendert: er feuert nur
+ *  unmittelbar vor einem tatsaechlich erlaubten Befehl (Tuning nach Freigabe
+ *  oder Not-Aus). Not-Aus bleibt dadurch voll funktionsfaehig.
+ * ==========================================================================*/
+object AutoHandshakePolicy {
+
+    /**
+     * true, wenn der Unlock-Handshake bereits beim Verbindungsaufbau gesendet
+     * werden darf.
+     *
+     * @param requiresUnlock     Adapter verlangt einen Handshake (Brightway).
+     * @param modelKnown         Modell wurde erkannt (nicht UNKNOWN).
+     * @param hardwareVerified   Nutzer hat Hardware-Kompatibilitaet bestaetigt.
+     */
+    fun shouldSendEagerHandshake(
+        requiresUnlock: Boolean,
+        modelKnown: Boolean,
+        hardwareVerified: Boolean
+    ): Boolean = requiresUnlock && TuningSafetyGate.canSendTuning(hardwareVerified, modelKnown)
+
+    /** Begruendung, warum der Eager-Handshake unterdrueckt wird (fuer das Log). */
+    fun suppressionReason(
+        requiresUnlock: Boolean,
+        modelKnown: Boolean,
+        hardwareVerified: Boolean
+    ): String? = when {
+        !requiresUnlock -> null
+        shouldSendEagerHandshake(requiresUnlock, modelKnown, hardwareVerified) -> null
+        !modelKnown ->
+            "Unlock-Handshake beim Verbindungsaufbau unterdrueckt: Modell nicht erkannt."
+        else ->
+            "Unlock-Handshake beim Verbindungsaufbau unterdrueckt: " +
+                "Hardware-Kompatibilitaet nicht bestaetigt."
+    }
+}
