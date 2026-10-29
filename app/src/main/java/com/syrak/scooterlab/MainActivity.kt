@@ -249,6 +249,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         override fun onScanFailed(errorCode: Int) {
             runOnUiThread {
                 isScanning = false
+                // PHASE 5 FIX: Auch bei einem Fehlschlag das geplante Timeout
+                // entfernen, damit es nicht spaeter einen neuen Scan stoert.
+                cancelScanTimeout()
+                scanTimeoutGuard.end()
                 // Null-sicher: onScanFailed kann vor dem UI-Aufbau oder nach einem
                 // Recreate eintreffen.
                 if (::scanButton.isInitialized) scanButton.isEnabled = true
@@ -419,6 +423,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     ).apply { setMargins(0, 0, 0, dp(10)) }
 
     private fun safeStopBleScan() {
+        // PHASE 5 FIX: Ein noch geplantes Timeout-Runnable MUSS immer entfernt
+        // werden — auch wenn der Scan bereits (z. B. durch onScanFailed) beendet
+        // wurde. Sonst feuert es spaeter gegen einen NEU gestarteten Scan und
+        // beendet diesen vorzeitig. Die Generation entwertet zusaetzlich jeden
+        // bereits laufenden Timeout.
+        cancelScanTimeout()
+        scanTimeoutGuard.end()
         if (!isScanning) return
         try {
             bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback)
@@ -435,6 +446,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
     }
 
+    /** Entfernt ein evtl. noch geplantes Scan-Timeout-Runnable aus der Queue. */
+    private fun cancelScanTimeout() {
+        scanTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        scanTimeoutRunnable = null
+    }
+
     /* ================================================================== */
     /*  ZUSÄTZLICHER UI-ZUSTAND                                           */
     /* ================================================================== */
@@ -442,6 +459,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var flashStatusText: TextView? = null
     private var demoActive = false
     private var scanTimeoutRunnable: Runnable? = null
+    /** PHASE 5 FIX: entwertet veraltete Scan-Timeouts (siehe [ScanTimeoutGuard]). */
+    private val scanTimeoutGuard = ScanTimeoutGuard()
 
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -788,11 +807,20 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             toast("Scan-Berechtigung fehlt.")
             addLog(LogCategory.ERROR, "Scan verweigert: ${e.message}")
         }
+        val scanGeneration = scanTimeoutGuard.begin()
         scanTimeoutRunnable = Runnable {
+            // PHASE 5 FIX: Nur der Timeout des AKTUELLEN Scans darf wirken.
+            // Ein veraltetes Runnable (aus einem frueheren Scan) wird verworfen,
+            // statt einen neuen Scan vorzeitig zu beenden.
+            if (!scanTimeoutGuard.isCurrent(scanGeneration)) return@Runnable
             safeStopBleScan()
             addLog(LogCategory.INFO, "BLE-Scan beendet.")
         }
-        handler.postDelayed(scanTimeoutRunnable!!, 12_000L)
+        // Nur planen, wenn der Scan wirklich laeuft (z. B. kein Start nach
+        // verweigerter Berechtigung).
+        if (isScanning) {
+            handler.postDelayed(scanTimeoutRunnable!!, 12_000L)
+        }
     }
 
     private fun updateDeviceList() {
@@ -851,6 +879,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         // aufbau nicht ueberholen. Sonst feuert der alte Runnable spaeter gegen die
         // NEUE Engine und baut eine zweite, konkurrierende GATT-Verbindung auf.
         cancelReconnectRunnable()
+        // PHASE 5 FIX: Beim Wechsel auf ein ANDERES Geraet darf keine zweite
+        // BleEngine parallel existieren. Die bisherige Verbindung wird sauber
+        // abgebaut (sonst: zwei GATT-Clients, doppelte Telemetrie, Leak).
+        if (ConnectionSwitchPolicy.mustTearDownExisting(bleEngine != null)) {
+            teardownActiveConnection()
+        }
         val det = ScooterModel.detectDetailed(device.name, device.address)
         detectedModel = det.model
         detectedConfidence = det.confidence
@@ -1849,6 +1883,25 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun cancelReconnectRunnable() {
         reconnectRunnable?.let { handler.removeCallbacks(it) }
         reconnectRunnable = null
+    }
+
+    /**
+     * Baut eine bestehende Verbindung vollstaendig ab, BEVOR eine neue Engine
+     * erzeugt wird (Geraetewechsel).
+     *
+     * PHASE 5 FIX: Zuvor wurde [bleEngine] beim Wechsel einfach ueberschrieben,
+     * ohne die alte GATT zu trennen -> zwei parallele Verbindungen. Hier wird die
+     * alte Engine getrennt (ohne UI-Callback, da [connectToDevice] den Zustand
+     * direkt neu setzt) und der abgeleitete Zustand zurueckgesetzt.
+     */
+    private fun teardownActiveConnection() {
+        bleEngine?.disconnect(notifyListener = false)
+        bleEngine = null
+        engineReady = false
+        stopTelemetry()
+        stopBleSession()
+        connectedDevice = null
+        linkState = BleLinkState.IDLE
     }
 
     /**
