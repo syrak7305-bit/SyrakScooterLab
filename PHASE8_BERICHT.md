@@ -4,7 +4,8 @@
 **Projekt:** Syrak ScooterLab · `com.syrak.scooterlab`
 **Zielgerät:** NAVEE GT3 Max
 **Branch:** `feat/phase8-device-identification-and-tuning-safety`
-**Commit:** `bde80d966217e5ff36f0f174fad710427f8159c0`
+**Code-Commit:** `bde80d966217e5ff36f0f174fad710427f8159c0`
+**Branch-HEAD (inkl. Bericht):** `50c1d317f8ad3d634c383f051ee0e3232e832c1a`
 **Pull Request:** https://github.com/syrak7305-bit/SyrakScooterLab/pull/10
 
 > **Grundregel eingehalten:** Es wurden **keine** bestehenden Funktionen, Tabs, Buttons oder Einstellungen entfernt oder umbenannt. Ladebildschirm, Haftungstext, PIN, Profil, Dashboard, Diagnose, Flash und Tuning bleiben vollständig erhalten. Alle Änderungen sind backward-kompatibel.
