@@ -41,6 +41,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.syrak.scooterlab.core.ble.BleSessionService
+import com.syrak.scooterlab.core.ble.ScooterBrand
 import com.syrak.scooterlab.diagnostics.DataStatus
 import com.syrak.scooterlab.diagnostics.DiagnosticEventLog
 import com.syrak.scooterlab.diagnostics.DiagnosticSeverity
@@ -48,6 +49,12 @@ import com.syrak.scooterlab.diagnostics.DiagnosticValue
 import com.syrak.scooterlab.diagnostics.DiagnosticsBuilder
 import com.syrak.scooterlab.diagnostics.DiagnosticsInput
 import com.syrak.scooterlab.diagnostics.DiagnosticsReport
+import com.syrak.scooterlab.diagnostics.ConnectionRecord
+import com.syrak.scooterlab.diagnostics.FrameDirection
+import com.syrak.scooterlab.diagnostics.HardwareErrorKind
+import com.syrak.scooterlab.diagnostics.HardwareTestCollector
+import com.syrak.scooterlab.diagnostics.HardwareTestReport
+import com.syrak.scooterlab.diagnostics.ScanRecord
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -227,6 +234,39 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /** Ringpuffer der Diagnose-Ereignisse (thread-sicher, read-only Nutzung). */
     private val diagnosticLog = DiagnosticEventLog()
 
+    // ---- PHASE 11: Hardware-Test-Erfassung (exportierbar) ---------------
+    private val hardwareTest = HardwareTestCollector()
+    private var htConnectedAt = 0L
+    private var htReadyAt = 0L
+    private var htDisconnectedAt = 0L
+    private var htUnexpectedDisconnect = false
+    private var htLastGatt: List<com.syrak.scooterlab.diagnostics.GattServiceRecord> = emptyList()
+    private var pendingExportContent: String? = null
+    private var pendingExportMime: String = "application/json"
+
+    /** SAF-Export: Nutzer waehlt Zielort, wir schreiben den Bericht dorthin. */
+    private fun writeExport(uri: Uri?) {
+        val content = pendingExportContent
+        if (uri == null || content == null) return
+        try {
+            contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+            toast("Bericht gespeichert.")
+            addLog(LogCategory.INFO, "Hardware-Testbericht exportiert: $uri")
+        } catch (e: Exception) {
+            addLog(LogCategory.ERROR, "Export fehlgeschlagen: ${e.message}")
+        } finally {
+            pendingExportContent = null
+        }
+    }
+
+    private val jsonExporter = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? -> writeExport(uri) }
+
+    private val csvExporter = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri: Uri? -> writeExport(uri) }
+
     @Volatile private var lastTelemetry: Telemetry? = null
     private var motorGuardTripped = false
     // ---- FIX 4: Gesicherte Notaus-Rampe (Fahrersicherheit) --------------
@@ -287,6 +327,22 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             // WICHTIG: Callback laeuft auf Binder-Thread -> UI-Update auf Main-Thread
             runOnUiThread {
                 foundDevices[address] = ScooterDevice(device, name, address, result.rssi, candidate, false)
+                // PHASE 11: Scan-Treffer strukturiert fuer den Export erfassen.
+                val det = ScooterModel.detectDetailed(name, address)
+                val now = SystemClock.elapsedRealtime()
+                hardwareTest.recordScan(
+                    ScanRecord(
+                        name = name,
+                        address = address,
+                        rssi = result.rssi,
+                        brand = ScooterBrand.classify(name).displayName,
+                        detectedModel = if (det.model.isKnown) det.model.displayName else "unbekannt",
+                        confidence = det.confidence.label,
+                        firstSeenMs = now,
+                        lastSeenMs = now,
+                        seenCount = 1
+                    )
+                )
                 requestThrottledListUpdate()
             }
         }
@@ -525,19 +581,96 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         ProtocolAdapters.resolveForModel(detectedModel).exact
 
     /**
-     * PHASE 10: Erweiterte Sperrpruefung. Zusaetzlich zum bestehenden
-     * [TuningSafetyGate] muss ein schreibfaehiger, modellspezifischer Adapter
-     * existieren. Damit kann ein unbekanntes/andersartiges Modell nicht ueber
-     * einen Hersteller-Adapter getunt werden.
+     * PHASE 11: Zentrale Sperrpruefung ueber [WriteGuard]. Buendelt die
+     * bestehende [TuningSafetyGate] mit der Forderung nach einem
+     * modellspezifischen, schreibfaehigen Adapter. Unbekannte Modelle bleiben
+     * read-only; Lesen ist weiterhin immer erlaubt.
      */
-    private fun tuningBlockReason(): String? {
-        val base = TuningSafetyGate.blockReason(hardwareVerified, detectedModel.isKnown)
-        if (base != null) return base
-        if (!ProtocolAdapters.supportsTuning(detectedModel)) {
-            return "Für ${detectedModel.displayName} ist kein schreibfähiger, " +
-                "modellspezifischer Adapter hinterlegt. Tuning bleibt gesperrt."
-        }
-        return null
+    private fun tuningBlockReason(): String? =
+        WriteGuard.blockReason(detectedModel, hardwareVerified, adapter())
+
+    /* ================================================================== */
+    /*  PHASE 11: HARDWARE-TESTBERICHT (EXPORT)                           */
+    /* ================================================================== */
+
+    /** Baut den exportierbaren Bericht aus tatsaechlich beobachteten Daten. */
+    private fun buildHardwareReport(): HardwareTestReport {
+        val support = SupportMatrix.snapshot(
+            detectedModel,
+            adapter(),
+            SupportRuntime(
+                gattDiscovered = linkState == BleLinkState.READY,
+                telemetryReceived = lastTelemetryAtElapsed > 0L,
+                hardwareVerified = hardwareVerified,
+                tuningGateOpen = WriteGuard.evaluate(detectedModel, hardwareVerified, adapter()).allowed
+            ),
+            detectedManufacturer
+        )
+        val deviceName = connectedDevice?.name
+            ?: foundDevices.values.firstOrNull()?.name
+        val address = connectedDevice?.address
+            ?: foundDevices.values.firstOrNull()?.address
+            ?: "—"
+        val liveGatt = bleEngine?.gattSnapshot().orEmpty()
+        if (liveGatt.isNotEmpty()) htLastGatt = liveGatt
+        return HardwareTestReport(
+            generatedAtEpochMs = System.currentTimeMillis(),
+            appVersion = appVersionName(),
+            deviceName = deviceName,
+            address = address,
+            manufacturer = detectedManufacturer.displayName,
+            detectedModel = if (detectedModel.isKnown) detectedModel.displayName else "unbekannt",
+            confidence = detectedConfidence.label,
+            supportStatus = support.status.label,
+            readOnly = WriteGuard.isReadOnly(detectedModel, hardwareVerified, adapter()),
+            protocol = activeProtocol.displayName,
+            adapterId = adapter().id,
+            connection = ConnectionRecord(
+                connectedAtMs = htConnectedAt.takeIf { it > 0 },
+                readyAtMs = htReadyAt.takeIf { it > 0 },
+                disconnectedAtMs = htDisconnectedAt.takeIf { it > 0 },
+                mtu = bleEngine?.currentMtu() ?: 0,
+                protocol = activeProtocol.displayName,
+                adapterId = adapter().id,
+                disconnectUnexpected = htUnexpectedDisconnect
+            ),
+            scanResults = hardwareTest.scanResults(),
+            services = htLastGatt,
+            frames = hardwareTest.frames(),
+            errors = hardwareTest.errors(),
+            notes = buildList {
+                add("Reine Beobachtungsdaten. Keine erfundenen UUIDs, Kommandos oder Decoder-Offsets.")
+                if (!detectedModel.isKnown) {
+                    add("Modell nicht erkannt: Bericht ist read-only, es wurden keine Schreibbefehle gesendet.")
+                }
+                if (detectedModel == ScooterModel.NAVEE_GT3_MAX) {
+                    add("Telemetrie-Offsets fuer GT3 Max sind NICHT am realen Geraet verifiziert.")
+                }
+            }
+        )
+    }
+
+    private fun appVersionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (_: Exception) {
+        "?"
+    }
+
+    /** Startet den SAF-Export (JSON oder CSV). */
+    private fun exportHardwareReport(csv: Boolean) {
+        val report = buildHardwareReport()
+        pendingExportContent = if (csv) report.toCsv() else report.toJson()
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
+        val name = if (csv) "syrak-hardwaretest-$stamp.csv" else "syrak-hardwaretest-$stamp.json"
+        if (csv) csvExporter.launch(name) else jsonExporter.launch(name)
+    }
+
+    /** Kopiert die Kurzfassung in die Zwischenablage (schneller Blick). */
+    private fun copyHardwareSummary() {
+        val summary = buildHardwareReport().toSummary()
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        cm?.setPrimaryClip(ClipData.newPlainText("Syrak Hardware-Test", summary))
+        toast("Zusammenfassung kopiert.")
     }
 
     /* ================================================================== */
@@ -846,6 +979,28 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         diag.addView(dumpButton, LinearLayout.LayoutParams(WRAP, WRAP).apply {
             setMargins(0, dp(8), 0, 0)
         })
+        // PHASE 11: Schreib-/Read-only-Status ehrlich anzeigen.
+        diag.addView(makeText(
+            WriteGuard.statusLine(detectedModel, hardwareVerified, adapter()),
+            12f,
+            if (WriteGuard.evaluate(detectedModel, hardwareVerified, adapter()).allowed)
+                Palette.ACCENT_GREEN else Palette.ACCENT_ORANGE
+        ).apply { setPadding(0, dp(8), 0, 0) })
+        diag.addView(makeText(
+            "Hardware-Test: ${hardwareTest.frameCount()} Frames, " +
+                "${hardwareTest.errorCount()} Fehler, ${hardwareTest.scanResults().size} Scan-Treffer erfasst.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(4), 0, 0) })
+        // PHASE 11: Exportierbarer Hardware-Testbericht.
+        diag.addView(makePrimaryButton("TESTBERICHT ALS JSON EXPORTIEREN", Palette.ACCENT_BLUE) {
+            exportHardwareReport(csv = false)
+        }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
+        diag.addView(makePrimaryButton("TESTBERICHT ALS CSV EXPORTIEREN", Palette.ACCENT_BLUE) {
+            exportHardwareReport(csv = true)
+        }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
+        diag.addView(makePrimaryButton("ZUSAMMENFASSUNG KOPIEREN", Palette.TEXT_SECONDARY) {
+            copyHardwareSummary()
+        }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
         tabContent.addView(diag, cardParams())
 
         tabContent.addView(makeSectionLabel("LOG-TERMINAL"))
@@ -2410,6 +2565,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         runOnUiThread {
             linkState = linkState.transition(BleLinkEvent.GATT_CONNECTED)
             commErrorCount = 0
+            htConnectedAt = SystemClock.elapsedRealtime()
+            htReadyAt = 0L
+            htDisconnectedAt = 0L
+            htUnexpectedDisconnect = false
             diagnosticLog.add(
                 SystemClock.elapsedRealtime(), DiagnosticSeverity.INFO,
                 "GATT_CONNECTED", "GATT verbunden: $address"
@@ -2422,6 +2581,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onReady(address: String, protocol: BleProtocol, mtu: Int) {
         runOnUiThread {
             engineReady = true
+            htReadyAt = SystemClock.elapsedRealtime()
             activeProtocol = protocol
             linkState = linkState.transition(BleLinkEvent.READY)
             reconnectAttempts = 0
@@ -2440,6 +2600,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onDisconnected(unexpected: Boolean) {
         runOnUiThread {
             engineReady = false
+            htDisconnectedAt = SystemClock.elapsedRealtime()
+            htUnexpectedDisconnect = unexpected
+            hardwareTest.recordError(
+                HardwareErrorKind.DISCONNECT,
+                if (unexpected) "Verbindung unerwartet getrennt." else "Verbindung getrennt.",
+                htDisconnectedAt
+            )
             linkState = linkState.transition(BleLinkEvent.DISCONNECTED)
             // PHASE 8.1 FIX (Sicherheitsaudit, Punkt 2): Eine laufende Not-Aus-Rampe
             // muss beim Verbindungsabbruch sauber beendet werden. Bisher lief sie
@@ -2480,6 +2647,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     override fun onWriteResult(label: String, frame: ByteArray, success: Boolean, detail: String) {
         runOnUiThread {
+            val now = SystemClock.elapsedRealtime()
+            hardwareTest.recordFrame(FrameDirection.TX, ScooterFrames.toHex(frame), now, label)
+            if (!success) {
+                hardwareTest.recordError(HardwareErrorKind.WRITE_FAILED, "$label: $detail", now)
+            }
             if (success) {
                 addLog(LogCategory.RX, "$label bestätigt (${ScooterFrames.toHex(frame)})")
             } else {
@@ -2490,6 +2662,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 )
                 addLog(LogCategory.ERROR, "$label fehlgeschlagen: $detail")
             }
+        }
+    }
+
+    override fun onRawNotification(bytes: ByteArray) {
+        val hex = ScooterFrames.toHex(bytes)
+        runOnUiThread {
+            hardwareTest.recordFrame(
+                FrameDirection.RX, hex, SystemClock.elapsedRealtime(), "notification"
+            )
         }
     }
 

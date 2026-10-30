@@ -13,6 +13,9 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import com.syrak.scooterlab.diagnostics.GattCharacteristicRecord
+import com.syrak.scooterlab.diagnostics.GattProperty
+import com.syrak.scooterlab.diagnostics.GattServiceRecord
 import java.util.UUID
 
 /* ============================================================================
@@ -55,6 +58,14 @@ class BleEngine(
         fun onFlashProgress(written: Int, total: Int)
         fun onFlashFinished(success: Boolean, message: String)
         fun onRssi(rssi: Int)
+
+        /**
+         * PHASE 11: Roh-Frame einer eingehenden Notification, noch VOR der
+         * Dekodierung. Wird fuer den exportierbaren Hardware-Testbericht
+         * benoetigt. Default-Implementierung leer, damit bestehende
+         * Implementierungen unveraendert bleiben.
+         */
+        fun onRawNotification(bytes: ByteArray) {}
     }
 
     companion object {
@@ -847,6 +858,48 @@ class BleEngine(
         }
     }
 
+    /**
+     * PHASE 11: Strukturierter GATT-Snapshot fuer den exportierbaren
+     * Hardware-Testbericht. Liefert den real gecachten GATT-Baum (Services ->
+     * Characteristics -> Properties). Leere Liste, wenn keine Verbindung oder
+     * Discovery noch nicht abgeschlossen ist. Es werden KEINE UUIDs erfunden.
+     */
+    fun gattSnapshot(): List<GattServiceRecord> {
+        val g = synchronized(writeLock) { gatt } ?: return emptyList()
+        return try {
+            g.services.map { s ->
+                GattServiceRecord(
+                    uuid = s.uuid.toString(),
+                    label = serviceLabel(s.uuid),
+                    characteristics = s.characteristics.map { ch ->
+                        GattCharacteristicRecord(
+                            uuid = ch.uuid.toString(),
+                            properties = propertySet(ch)
+                        )
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            listener.onLog("> gatt-snapshot: Exception: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun propertySet(ch: BluetoothGattCharacteristic): Set<GattProperty> {
+        val p = ch.properties
+        val out = LinkedHashSet<GattProperty>()
+        if (p and BluetoothGattCharacteristic.PROPERTY_READ != 0) out.add(GattProperty.READ)
+        if (p and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) out.add(GattProperty.WRITE)
+        if (p and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0) out.add(GattProperty.WRITE_NO_RESPONSE)
+        if (p and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) out.add(GattProperty.NOTIFY)
+        if (p and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) out.add(GattProperty.INDICATE)
+        if (p and BluetoothGattCharacteristic.PROPERTY_BROADCAST != 0) out.add(GattProperty.BROADCAST)
+        if (p and BluetoothGattCharacteristic.PROPERTY_SIGNED_WRITE != 0) out.add(GattProperty.SIGNED_WRITE)
+        if (p and BluetoothGattCharacteristic.PROPERTY_EXTENDED_PROPS != 0) out.add(GattProperty.EXTENDED_PROPERTIES)
+        if (out.isEmpty()) out.add(GattProperty.UNKNOWN)
+        return out
+    }
+
     /* ------------------------------------------------------------------ */
     /*  SCHREIB-QUEUE                                                      */
     /* ------------------------------------------------------------------ */
@@ -1028,6 +1081,8 @@ class BleEngine(
     /* ------------------------------------------------------------------ */
     private fun handleNotification(value: ByteArray) {
         try {
+            // PHASE 11: Roh-Frame fuer den Hardware-Testbericht melden.
+            listener.onRawNotification(value)
             // Primaer ueber den aktiven Adapter dekodieren, danach Cross-Fallback,
             // damit auch abweichende/unvollstaendige Frames sicher greifen.
             var t = adapter.parseTelemetry(value)
