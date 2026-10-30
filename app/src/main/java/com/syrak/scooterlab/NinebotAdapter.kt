@@ -18,6 +18,59 @@ class NinebotAdapter : ScooterProtocolAdapter {
     override val id: String = "ninebot-generic"
     override val displayName: String = "Segway-Ninebot / Xiaomi"
     override val protocol: BleProtocol = BleProtocol.NINEBOT
+
+    /**
+     * PHASE 10: Ausdruecklich gefuehrte Modelle.
+     *
+     * SoFlow ist BEWUSST NICHT enthalten: fuer SoFlow existiert kein belegtes
+     * Protokoll. Der Transport-Fallback ueber [BleProtocol.NINEBOT] bleibt
+     * erhalten, aber es wird keine Tuning-Freigabe abgeleitet.
+     */
+    override val capabilities = AdapterCapabilities(
+        adapterId = "ninebot-generic",
+        displayName = "Segway-Ninebot / Xiaomi",
+        protocol = BleProtocol.NINEBOT,
+        supportedModels = setOf(
+            ScooterModel.NINEBOT_MAX_G2,
+            ScooterModel.NINEBOT_MAX_G30,
+            ScooterModel.NINEBOT_F2_PRO,
+            ScooterModel.NINEBOT_ES,
+            ScooterModel.XIAOMI_PRO_2,
+            ScooterModel.XIAOMI_M365
+        ),
+        gattServiceUuids = listOf("0000e003-0000-1000-8000-00805f9b34fb"),
+        gattWriteCharUuids = listOf(
+            "0000fff1-0000-1000-8000-00805f9b34fb",
+            "0000fff2-0000-1000-8000-00805f9b34fb"
+        ),
+        gattNotifyCharUuids = listOf(
+            "0000fff1-0000-1000-8000-00805f9b34fb",
+            "0000fff2-0000-1000-8000-00805f9b34fb"
+        ),
+        readOperations = setOf(
+            ReadOperation.STATUS_TELEMETRY,
+            ReadOperation.BATTERY_BMS
+        ),
+        writeOperations = setOf(
+            WriteOperation.SPEED_CEILING,
+            WriteOperation.ZERO_START,
+            WriteOperation.KERS,
+            WriteOperation.CRUISE,
+            WriteOperation.LOCK,
+            WriteOperation.REGION,
+            WriteOperation.POLICE_MODE,
+            WriteOperation.TEMP_GUARD,
+            WriteOperation.EMERGENCY_CUT,
+            WriteOperation.MAX_POWER,
+            WriteOperation.GERMAN_MANEUVER,
+            WriteOperation.OVERSPEED_MUTE,
+            WriteOperation.REBOOT
+        ),
+        telemetryDecoding = true,
+        diagnostics = true,
+        readOnlyByDefault = false
+    )
+
     override val requiresUnlock: Boolean = false
 
     @Volatile private var unlocked = true

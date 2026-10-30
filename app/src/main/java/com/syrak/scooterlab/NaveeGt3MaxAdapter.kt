@@ -32,6 +32,45 @@ class NaveeGt3MaxAdapter : ScooterProtocolAdapter {
     override val id: String = "navee-gt3max"
     override val displayName: String = "Navee GT3 Max (Brightway)"
     override val protocol: BleProtocol = BleProtocol.NAVEE_BRIGHTWAY
+
+    /**
+     * PHASE 10: Nur die GT3 Max ist hier ausdruecklich gefuehrt. Andere
+     * Navee-Modelle (ST3, N65, V40, S65, GT3 Pro) werden NICHT automatisch von
+     * diesem Adapter bedient — ihre Protokolle sind nicht belegt.
+     */
+    override val capabilities = AdapterCapabilities(
+        adapterId = "navee-gt3max",
+        displayName = "Navee GT3 Max (Brightway)",
+        protocol = BleProtocol.NAVEE_BRIGHTWAY,
+        supportedModels = setOf(ScooterModel.NAVEE_GT3_MAX),
+        gattServiceUuids = listOf(NaveeFrames.SERVICE_UUID),
+        gattWriteCharUuids = listOf(NaveeFrames.CHAR_UUID, NaveeFrames.CHAR_WRITE_UUID),
+        gattNotifyCharUuids = listOf(NaveeFrames.CHAR_UUID, NaveeFrames.CHAR_WRITE_UUID),
+        readOperations = setOf(
+            ReadOperation.STATUS_TELEMETRY,
+            ReadOperation.BATTERY_BMS,
+            ReadOperation.MOTOR_STATUS
+        ),
+        writeOperations = setOf(
+            WriteOperation.SPEED_CEILING,
+            WriteOperation.ZERO_START,
+            WriteOperation.KERS,
+            WriteOperation.CRUISE,
+            WriteOperation.LOCK,
+            WriteOperation.REGION,
+            WriteOperation.POLICE_MODE,
+            WriteOperation.TEMP_GUARD,
+            WriteOperation.EMERGENCY_CUT,
+            WriteOperation.MAX_POWER,
+            WriteOperation.GERMAN_MANEUVER,
+            WriteOperation.OVERSPEED_MUTE,
+            WriteOperation.REBOOT
+        ),
+        telemetryDecoding = true,
+        diagnostics = true,
+        readOnlyByDefault = false
+    )
+
     override val requiresUnlock: Boolean = true
 
     @Volatile private var unlocked = false

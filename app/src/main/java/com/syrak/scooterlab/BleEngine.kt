@@ -113,6 +113,12 @@ class BleEngine(
     /** Aktive Protokollfamilie (abgeleitet aus dem Adapter). */
     val protocol: BleProtocol get() = adapter.protocol
 
+    /**
+     * PHASE 10: Vom UI erkanntes Modell. Wird NUR fuer die modellspezifische
+     * Adapter-Auswahl benutzt. Bleibt UNKNOWN, wenn nichts erkannt wurde.
+     */
+    @Volatile private var modelHint: ScooterModel = ScooterModel.UNKNOWN
+
     @Volatile private var naveeHandshakeSent = false
 
     /**
@@ -203,6 +209,26 @@ class BleEngine(
 
     fun setProtocolHint(p: BleProtocol) {
         adapter = ProtocolAdapters.forProtocol(p)
+    }
+
+    /**
+     * PHASE 10: Setzt das erkannte Modell. Die Service-Discovery bevorzugt
+     * danach einen Adapter, der GENAU dieses Modell fuehrt. Gibt es keinen,
+     * bleibt der Protokoll-Adapter als reiner Transport-Fallback aktiv — ohne
+     * Tuning-Freigabe (die entscheidet [ProtocolAdapters.supportsTuning]).
+     */
+    fun setModelHint(model: ScooterModel) {
+        modelHint = model
+    }
+
+    /**
+     * Bevorzugt einen Adapter, der das erkannte Modell EXPLIZIT fuehrt und zur
+     * entdeckten Protokollfamilie passt. Sonst Transport-Fallback.
+     */
+    private fun adapterForDiscovered(protocol: BleProtocol): ScooterProtocolAdapter {
+        val exact = ProtocolAdapters.resolveForModel(modelHint).adapter
+        return if (exact != null && exact.protocol == protocol) exact
+        else ProtocolAdapters.forProtocol(protocol)
     }
 
     /** Effektive Nutzlast pro Write = MTU - 3 (ATT-Overhead), gedeckelt. */
@@ -417,7 +443,7 @@ class BleEngine(
                 // 1) Protokoll anhand vorhandener Services bestimmen + Adapter setzen
                 val naveeWrite = findChar(g, NAVEE_SERVICE, listOf(NAVEE_CHAR_WRITE, NAVEE_CHAR_WRITE_ALT))
                 if (naveeWrite != null) {
-                    adapter = ProtocolAdapters.forProtocol(BleProtocol.NAVEE_BRIGHTWAY)
+                    adapter = adapterForDiscovered(BleProtocol.NAVEE_BRIGHTWAY)
                     adapter.setUnlocked(false)
                     writeChar = naveeWrite.first
                     // FIX: Notify-Characteristic UNABHAENGIG vom Write-Characteristic waehlen.
