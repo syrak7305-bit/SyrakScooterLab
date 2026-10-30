@@ -72,7 +72,14 @@ data class FirmwarePackage(
      * geladene Firmware HART dagegen geprüft (echte Integritätsprüfung).
      * Ist er null, wird nur der Fingerprint angezeigt — dann KEINE Verifikation.
      */
-    val expectedSha256: String? = null
+    val expectedSha256: String? = null,
+    /**
+     * Echter Download-Link oder null. PHASE 15: Es werden KEINE Links
+     * erfunden. Ist der Wert null, bietet die UI "Download-Link kopieren"
+     * nicht als funktionierende Aktion an, sondern erklärt ehrlich, dass kein
+     * Endpunkt hinterlegt ist.
+     */
+    val downloadUrl: String? = null
 )
 
 /** Dekodierte Live-Telemetrie. Alle Felder null = noch kein echtes Frame empfangen. */

@@ -56,6 +56,7 @@ import com.syrak.scooterlab.diagnostics.ConnectionRecord
 import com.syrak.scooterlab.diagnostics.FrameDirection
 import com.syrak.scooterlab.diagnostics.HardwareErrorKind
 import com.syrak.scooterlab.diagnostics.HardwareTestCollector
+import com.syrak.scooterlab.diagnostics.GattProperty
 import com.syrak.scooterlab.diagnostics.HardwareTestReport
 import com.syrak.scooterlab.diagnostics.ScanRecord
 import java.io.ByteArrayOutputStream
@@ -228,6 +229,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var sysLinkView: TextView? = null
     private var linkState: BleLinkState = BleLinkState.IDLE
     private var lastRssi: Int = Int.MIN_VALUE
+    /** PHASE 15: echte RSSI-Messreihe fuer die Verbindungsqualitaet. */
+    private val rssiSamples = ArrayDeque<LinkSample>()
+    private val MAX_RSSI_SAMPLES = 60
     private var sysBarRunnable: Runnable? = null
 
     // ---- Fahrmodus (Eco-Saver / Sport-Plus) -----------------------------
@@ -244,8 +248,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var dashWh: TextView? = null
     private var cellGraphRow: LinearLayout? = null
 
-    // ---- Firmware-Quelle (Community-Plattformen) ------------------------
-    private var selectedSource: FirmwareSource = FirmwareSource.FACTORY
+    // ---- PHASE 15: ehrlicher Firmware-Lebenszyklus ----------------------
+    /** Wurde im FLASH-Bereich bewusst "Vorschlaege" gedrueckt? */
+    private var flashSuggestionsShown = false
+    /** Wurde ein Paket in den App-Speicher uebernommen (KEIN Flash)? */
+    private var flashPackageObtained = false
+    /** Wurde ein echter Flash vom Controller erfolgreich bestaetigt? */
+    private var flashFlashedOk = false
 
     // Live-Telemetrie-Views
     private var dashSpeed: TextView? = null
@@ -1282,6 +1291,23 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         })
         col.addView(makeText("${CountryNoticeTexts.dateLabel(lang)}: ${notice.sourceDate}", 11f, Palette.TEXT_MUTED))
 
+        // PHASE 15: veralteten Katalogstand ausdruecklich kennzeichnen.
+        val nowCal = java.util.Calendar.getInstance()
+        if (CountryNoticeTexts.catalogOutdated(
+                CountryLegalCatalog.CATALOG_DATE,
+                nowCal.get(java.util.Calendar.YEAR),
+                nowCal.get(java.util.Calendar.MONTH) + 1
+            )
+        ) {
+            col.addView(makeText(
+                CountryNoticeTexts.outdatedBanner(lang, CountryLegalCatalog.CATALOG_DATE),
+                11f, Palette.ACCENT_RED, true
+            ).apply {
+                setLineSpacing(dp(2).toFloat(), 1f)
+                setPadding(0, dp(8), 0, dp(0))
+            })
+        }
+
         // PHASE 13: transparente Kennzeichnung der Aktualitaet/Unsicherheit.
         // Es werden bewusst KEINE neuen Grenzwerte behauptet.
         col.addView(makeText(
@@ -1719,12 +1745,22 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         // Geraet erkannt != Protokoll unterstuetzt != Telemetrie validiert.
         tabContent.addView(makeSectionLabel("KOMPATIBILITAET"))
         val compatCard = makeCard()
+        // PHASE 15: Belege strenger fassen.
+        // - Eine gemeldete Read-Property ist KEIN erfolgreicher Lesevorgang.
+        //   Die BLE-Schicht hat keinen Read-Callback, daher bleibt diese Stufe
+        //   ehrlich offen, bis ein echter Lesevorgang bestaetigt ist.
+        // - Empfangene BLE-Daten sind nicht automatisch bestaetigte Telemetrie.
+        //   Es muessen plausible Kernwerte vorliegen und die Messung darf nicht
+        //   veraltet sein.
+        val telemetryFresh = Freshness.state(lastTelemetryAtElapsed, SystemClock.elapsedRealtime())
+            .let { it == FreshnessState.FRESH || it == FreshnessState.AGING }
+        val telemetryPlausible = telemetryFresh &&
+            lastTelemetry?.speedKmh != null && lastTelemetry?.voltageV != null
         val compatEvidence = CompatibilityEvidence(
             detected = connectedDevice != null || lastTelemetryAtElapsed > 0L,
             gattDiscovered = htLastGatt.isNotEmpty(),
-            readOnlyTested = htLastGatt.any { svc -> svc.characteristics.any { it.readable } } &&
-                hardwareTest.frameCount() > 0,
-            telemetryValidated = lastTelemetryAtElapsed > 0L,
+            readOnlyTested = false,
+            telemetryValidated = telemetryPlausible,
             writeProtocolValidated = hardwareVerified && detectedModel.isKnown,
             hardwareVerified = hardwareVerified && detectedModel.isKnown
         )
@@ -1903,8 +1939,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 setSingleLine()
             }
             AlertDialog.Builder(this)
-                .setTitle("Entwicklerbereich")
-                .setMessage("Dieser Bereich enthaelt technische Rohdaten (GATT, Logs, Historie). Bitte PIN eingeben.")
+                .setTitle("Entwicklerbereich \u00b7 PIN-geschuetzt")
+                .setMessage(
+                    "Dieser Bereich enthaelt technische Rohdaten (GATT, Logs, Historie). " +
+                        "Zugang ist durch die gesetzte PIN geschuetzt."
+                )
                 .setView(input)
                 .setPositiveButton("Oeffnen") { _, _ ->
                     if (repository.verifyPin(input.text.toString())) onGranted()
@@ -1914,13 +1953,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 .show()
         } else {
             AlertDialog.Builder(this)
-                .setTitle("Entwicklerbereich")
+                .setTitle("Entwicklerbereich \u00b7 KEIN PIN gesetzt")
                 .setMessage(
                     "Technische Rohdaten fuer Entwicklung und Hardware-Tests: " +
                         "GATT-Struktur, Verbindungsqualitaet, Diagnose-Historie und Log-Terminal.\n\n" +
-                        "Diese Ansichten sind fuer den normalen Betrieb nicht erforderlich."
+                        "WICHTIG: Es ist keine PIN gesetzt. Dieser Dialog ist nur eine " +
+                        "Bestaetigung und KEIN echter PIN-Schutz. Fuer echten Schutz bitte " +
+                        "in den Einstellungen eine PIN vergeben."
                 )
-                .setPositiveButton("Oeffnen") { _, _ -> onGranted() }
+                .setPositiveButton("Ohne PIN-Schutz oeffnen") { _, _ -> onGranted() }
                 .setNegativeButton("Abbrechen", null)
                 .show()
         }
@@ -1991,6 +2032,35 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 "wie sie das Geraet meldet - nichts wird ergaenzt.",
             11f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(8), 0, 0) })
+        // PHASE 15: echte GATT-Auswertung aus den tatsaechlich gelesenen Daten.
+        val gattAnalysis = GattAnalyzer.analyze(htLastGatt.map { svc ->
+            ServiceFacts(
+                uuid = svc.uuid,
+                label = svc.label,
+                characteristics = svc.characteristics.map { ch ->
+                    CharacteristicFacts(
+                        uuid = ch.uuid,
+                        readable = ch.readable,
+                        writable = ch.writable,
+                        notifying = GattProperty.NOTIFY in ch.properties,
+                        indicating = GattProperty.INDICATE in ch.properties
+                    )
+                }
+            )
+        })
+        gattCard.addView(makeText(
+            "Auswertung: ${gattAnalysis.services} Services, ${gattAnalysis.characteristics} Characteristics " +
+                "\u00b7 lesbar ${gattAnalysis.readable} \u00b7 schreibbar ${gattAnalysis.writable} " +
+                "\u00b7 notify ${gattAnalysis.notifying} \u00b7 indicate ${gattAnalysis.indicating}",
+            11f, Palette.TEXT_SECONDARY, true
+        ).apply { setPadding(0, dp(8), 0, 0) })
+        gattCard.addView(makeText(
+            "Vollstaendigkeit: ${gattAnalysis.completeness.label}",
+            11f, if (gattAnalysis.completeness == GattCompleteness.COMPLETE) Palette.SUCCESS else Palette.WARNING
+        ))
+        gattAnalysis.notes.forEach { note ->
+            gattCard.addView(makeText(note, 11f, Palette.TEXT_MUTED))
+        }
         // Ehrlicher Hinweis auf den bekannten UUID-Widerspruch.
         gattCard.addView(makeText(
             "Bekannter Widerspruch (nicht behoben, da nicht verifizierbar): BleConstants " +
@@ -2008,6 +2078,26 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         qualityCard.addView(makeText(
             "Signal: " + (sig?.let { "${it.accessibleLabel} (${lastRssi} dBm)" } ?: "Nicht verfuegbar"),
             12f, if (sig == null) Palette.TEXT_MUTED else Palette.TEXT_PRIMARY, true
+        ))
+        // PHASE 15: echte Messreihe statt Einzelwert.
+        val linkSummary = LinkQuality.summarize(
+            rssiSamples.toList(), SystemClock.elapsedRealtime()
+        )
+        qualityCard.addView(makeText(
+            if (linkSummary.available)
+                "Messreihe: ${linkSummary.samples} Werte \u00b7 " +
+                    "\u00d8 ${linkSummary.avgDbm} dBm \u00b7 min ${linkSummary.minDbm} / max ${linkSummary.maxDbm} dBm"
+            else "Messreihe: noch keine RSSI-Werte erfasst.",
+            11f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(4), 0, 0) })
+        qualityCard.addView(makeText(
+            "Qualitaet: ${linkSummary.label} \u00b7 Tendenz: ${linkSummary.trend.label}" +
+                if (linkSummary.stale) " \u00b7 Messung veraltet" else "",
+            11f, when {
+                !linkSummary.available -> Palette.TEXT_MUTED
+                linkSummary.stale -> Palette.WARNING
+                else -> Palette.TEXT_PRIMARY
+            }
         ))
         qualityCard.addView(makeText(
             "MTU: ${bleEngine?.currentMtu() ?: 0}  \u00b7  " +
@@ -3129,69 +3219,88 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /* ================================================================== */
 
     private fun renderFlash() {
-        tabContent.addView(makeSectionLabel("FIRMWARE-QUELLE"))
-        val sourceCard = makeCard()
-        for (source in FirmwareSource.values()) {
-            val selected = source == selectedSource
-            val button = makePrimaryButton(
-                source.displayName,
-                if (selected) Palette.ACCENT_GREEN else Palette.SURFACE
-            ) {
-                selectedSource = source
-                selectedFirmware = null
-                lastValidation = null
-                loadedFirmwareBytes = null
+        val language = AppLanguage.DE
+        val modelKnown = detectedModel.isKnown
+
+        // ---- 1. ERKANNTES MODELL ------------------------------------------
+        tabContent.addView(makeSectionLabel("FLASH"))
+        val modelCard = makeCard()
+        modelCard.addView(makeText(
+            if (modelKnown) "ERKANNTES MODELL" else "KEIN MODELL ERKANNT",
+            10f, Palette.TEXT_MUTED, true
+        ).apply { letterSpacing = 0.12f })
+        modelCard.addView(makeText(
+            if (modelKnown) detectedModel.displayName else "Unbekannt",
+            20f, Palette.TEXT_PRIMARY, true
+        ).apply { setPadding(0, dp(2), 0, dp(4)) })
+        modelCard.addView(makeText(
+            if (modelKnown)
+                "Protokoll: ${detectedModel.protocol.name}  \u00b7  " +
+                    "Verbindung: ${if (engineReady) "aktiv" else "getrennt"}"
+            else
+                "F\u00fcr Firmware-Vorschl\u00e4ge wird ein erkanntes Modell ben\u00f6tigt. " +
+                    "Bitte im INFO-Bereich verbinden und die Modellerkennung abwarten.",
+            11f, Palette.TEXT_SECONDARY
+        ))
+        if (!modelKnown) {
+            modelCard.addView(makeOutlineButton("ZUR VERBINDUNG / MODELLERKENNUNG", Palette.TEXT_SECONDARY) {
+                showTab(Tab.INFO)
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
+        }
+        tabContent.addView(modelCard, cardParams())
+
+        // ---- 2. ZENTRALER BUTTON "VORSCHLAEGE" ----------------------------
+        val suggestCard = makeCard()
+        suggestCard.addView(makePrimaryButton("VORSCHL\u00c4GE", Palette.ACCENT) {
+            if (!modelKnown) {
+                toast("Kein Modell erkannt \u2014 keine Vorschl\u00e4ge m\u00f6glich.")
+            } else {
+                flashSuggestionsShown = true
                 showTab(Tab.FLASH)
             }
-            sourceCard.addView(button, LinearLayout.LayoutParams(MATCH, WRAP).apply {
-                setMargins(0, 0, 0, dp(4))
-            })
-        }
-        sourceCard.addView(makeText(selectedSource.reference, 11f, Palette.TEXT_MUTED).apply {
-            setPadding(0, dp(6), 0, 0)
-        })
-        tabContent.addView(sourceCard, cardParams())
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+        suggestCard.addView(makeText(
+            if (flashSuggestionsShown && modelKnown)
+                "Vorschl\u00e4ge f\u00fcr ${detectedModel.displayName} werden unten angezeigt."
+            else
+                "Zeigt modellbezogene Firmware-Eintr\u00e4ge f\u00fcr das erkannte Modell.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(8), 0, 0) })
+        tabContent.addView(suggestCard, cardParams())
 
-        tabContent.addView(makeSectionLabel("KATALOG (${detectedModel.displayName})"))
-        val catalogCard = makeCard()
-        val packages = FirmwareCatalog.fromSource(selectedSource, detectedModel)
-        if (packages.isEmpty()) {
-            catalogCard.addView(makeText("Keine Pakete für dieses Modell.", 12f, Palette.TEXT_MUTED))
-        }
-        for (pkg in packages) {
-            val selected = pkg.id == selectedFirmware?.id
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                setBackgroundColor(if (selected) Palette.SURFACE_DEEP else Palette.SURFACE)
-                setOnClickListener {
-                    selectedFirmware = pkg
-                    lastValidation = null
-                    loadedFirmwareBytes = null
-                    showTab(Tab.FLASH)
-                }
+        // ---- 3. FIRMWARE-VORSCHLAEGE --------------------------------------
+        if (flashSuggestionsShown && modelKnown) {
+            tabContent.addView(makeSectionLabel("FIRMWARE-VORSCHL\u00c4GE"))
+            val listCard = makeCard()
+            listCard.addView(makeText(
+                "Alle Eintr\u00e4ge sind Referenzdaten. Es sind keine gepr\u00fcften Firmware-Dateien " +
+                    "oder Download-Endpunkte hinterlegt; der Verifikationsstatus wird je Paket angezeigt.",
+                11f, Palette.TEXT_MUTED
+            ).apply { setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, 0, 0, dp(8)) })
+
+            val suggestions = FirmwareSuggestions.build(
+                detectedModel,
+                FirmwareCatalog.forModel(detectedModel)
+            )
+            if (suggestions.isEmpty()) {
+                listCard.addView(makeText("Keine Vorschl\u00e4ge f\u00fcr dieses Modell.", 12f, Palette.TEXT_MUTED))
             }
-            row.addView(makeText("${pkg.name} · ${pkg.version}", 13f, Palette.TEXT_PRIMARY, true))
-            row.addView(makeText("${pkg.target} · empfohlen ${pkg.recommendedMaxKmh} km/h", 11f, Palette.TEXT_MUTED))
-            row.addView(makeText(pkg.notes, 11f, Palette.TEXT_SECONDARY))
-            row.addView(makeText(
-                if (pkg.expectedSha256 == null) "SHA-256: NICHT verifiziert" else "SHA-256: hinterlegt",
-                11f, if (pkg.expectedSha256 == null) Palette.ACCENT_ORANGE else Palette.ACCENT_GREEN
-            ))
-            catalogCard.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply {
-                setMargins(0, dp(4), 0, 0)
-            })
+            for (suggestion in suggestions) {
+                listCard.addView(buildSuggestionRow(suggestion, language),
+                    LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
+            }
+            tabContent.addView(listCard, cardParams())
         }
-        tabContent.addView(catalogCard, cardParams())
 
-        tabContent.addView(makeSectionLabel("LOKALE DATEI PRÜFEN"))
+        // ---- 4. LOKALE DATEI PRUEFEN --------------------------------------
+        tabContent.addView(makeSectionLabel("LOKALE DATEI PR\u00dcFEN"))
         val fileCard = makeCard()
         fileCard.addView(makeText(
             if (selectedFirmwareName == null) "Keine Datei geladen."
             else "Datei: $selectedFirmwareName",
             12f, Palette.TEXT_SECONDARY
         ))
-        fileCard.addView(makePrimaryButton("DATEI AUSWÄHLEN", Palette.SURFACE_HIGH) {
+        fileCard.addView(makePrimaryButton("DATEI AUSW\u00c4HLEN", Palette.SURFACE_HIGH) {
             firmwarePicker.launch(arrayOf("application/octet-stream", "application/zip", "*/*"))
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
         lastValidation?.let { validation ->
@@ -3201,32 +3310,52 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             ).apply { setPadding(0, dp(8), 0, 0) })
             fileCard.addView(makeText("SHA-256: ${validation.sha256}", 10f, Palette.TEXT_MUTED))
             fileCard.addView(makeText(
-                "Hash verifiziert: ${if (validation.hashVerified) "JA" else "NEIN"} · " +
+                "Hash verifiziert: ${if (validation.hashVerified) "JA" else "NEIN"} \u00b7 " +
                     "Modellkompatibel: ${if (validation.modelCompatible) "JA" else "NEIN"}",
                 11f, Palette.TEXT_MUTED
             ))
         }
         tabContent.addView(fileCard, cardParams())
 
-        tabContent.addView(makeSectionLabel("FLASH-MODUS"))
-        val modeCard = makeCard()
-        for (mode in FlashMode.values()) {
-            val selected = mode == flashMode
-            modeCard.addView(makePrimaryButton(
-                mode.displayName,
-                if (selected) Palette.ACCENT_ORANGE else Palette.SURFACE
-            ) {
-                flashMode = mode
-                showTab(Tab.FLASH)
-            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, 0, 0, dp(4)) })
-        }
-        modeCard.addView(makeText(flashMode.description, 12f, Palette.TEXT_MUTED))
-        tabContent.addView(modeCard, cardParams())
+        // ---- 5. FLASH-STATUS (ehrliche Zustandsleiter) --------------------
+        val evidence = FirmwareEvidence(
+            modelDetected = detectedModel.isKnown,
+            suggestionsShown = flashSuggestionsShown && detectedModel.isKnown,
+            packageObtained = flashPackageObtained,
+            integrityChecked = lastValidation?.valid == true,
+            modelVerified = lastValidation?.hashVerified == true &&
+                lastValidation?.modelCompatible == true,
+            flashed = flashFlashedOk
+        )
+        val stageReport = FirmwareLifecycle.evaluate(evidence, language)
 
+        tabContent.addView(makeSectionLabel("FLASH-STATUS"))
+        val statusCard = makeCard()
+        for (entry in stageReport.stages) {
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(3), 0, dp(3))
+            }
+            line.addView(makeText(
+                (if (entry.reached) "\u2713 " else "\u00b7 ") + entry.stage.label(language),
+                12f, if (entry.reached) Palette.SUCCESS else Palette.TEXT_MUTED, entry.reached
+            ), LinearLayout.LayoutParams(0, WRAP, 1f))
+            line.addView(makeText(entry.evidence, 11f,
+                if (entry.reached) Palette.SUCCESS else Palette.TEXT_MUTED))
+            statusCard.addView(line)
+        }
+        statusCard.addView(makeText(
+            FlashHonesty.statusLine(evidence, language),
+            11f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(8), 0, 0); setLineSpacing(dp(3).toFloat(), 1f) })
+        tabContent.addView(statusCard, cardParams())
+
+        // ---- 6. FLASH-AKTIONEN -------------------------------------------
         tabContent.addView(makeSectionLabel("FLASH"))
         val flashCard = makeCard()
         flashStatusText = makeText(
-            "Gesperrt, solange kein verifizierter SHA-256 und keine belegte Modellkompatibilität vorliegen.",
+            "Hard-Flash ist gesperrt, solange kein verifizierter SHA-256 und keine belegte " +
+                "Modellkompatibilit\u00e4t vorliegen.",
             12f, Palette.ACCENT_ORANGE
         )
         flashCard.addView(flashStatusText)
@@ -3240,17 +3369,141 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         flashCard.addView(makePrimaryButton("SOFT-PATCH SENDEN", Palette.ACCENT_GREEN) {
             applySoftPatch()
         }, LinearLayout.LayoutParams(MATCH, WRAP))
-        flashCard.addView(makePrimaryButton("HARD-FLASH STARTEN (GESPERRT)", Palette.SURFACE) {
+        val hardAllowed = FlashHonesty.hardFlashAllowed(lastValidation, detectedModel.isKnown, engineReady)
+        flashCard.addView(makePrimaryButton(
+            if (hardAllowed) "HARD-FLASH STARTEN" else "HARD-FLASH GESPERRT",
+            if (hardAllowed) Palette.ACCENT_RED else Palette.SURFACE
+        ) {
             startHardFlashIfVerified()
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
         tabContent.addView(flashCard, cardParams())
 
         tabContent.addView(makeText(
             "Sicherheit: Firmware wird nur geschrieben, wenn ein hinterlegter SHA-256 " +
-                "übereinstimmt und die Modellkompatibilität belegt ist. Der Katalog enthält " +
-                "bewusst keine erfundenen Download-URLs oder Prüfsummen.",
+                "\u00fcbereinstimmt und die Modellkompatibilit\u00e4t belegt ist. Ein \u00fcbernommenes " +
+                "Paket oder ein kopierter Link ist KEIN Flash. Der Katalog enth\u00e4lt bewusst " +
+                "keine erfundenen Download-URLs oder Pr\u00fcfsummen.",
             11f, Palette.TEXT_MUTED
         ).apply { setPadding(dp(4), dp(8), dp(4), 0) })
+    }
+
+    /** Eine Vorschlagszeile mit ehrlichem Status und zwei Aktionen. */
+    private fun buildSuggestionRow(suggestion: FirmwareSuggestion, language: AppLanguage): LinearLayout {
+        val selected = suggestion.packageId == selectedFirmware?.id
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setBackground(roundedBg(
+                if (selected) Palette.SURFACE_DEEP else Palette.SURFACE,
+                Palette.OUTLINE, 10
+            ))
+        }
+        row.addView(makeText("${suggestion.name} \u00b7 ${suggestion.version}", 13f, Palette.TEXT_PRIMARY, true))
+        row.addView(makeText("Modell: ${suggestion.targetModel}", 11f, Palette.TEXT_SECONDARY))
+        row.addView(makeText("Ziel / Controller: ${suggestion.controller}", 11f, Palette.TEXT_SECONDARY))
+        row.addView(makeText(
+            "Hardware-Kompatibilit\u00e4t: " +
+                if (suggestion.isVerified) "belegt" else "nicht belegt",
+            11f, if (suggestion.isVerified) Palette.SUCCESS else Palette.WARNING
+        ))
+        row.addView(makeText("Quelle: ${suggestion.sourceLabel}", 10f, Palette.TEXT_MUTED))
+        row.addView(makeText(
+            "Pr\u00fcfsumme (SHA-256): " + (suggestion.expectedSha256 ?: "nicht hinterlegt"),
+            10f, Palette.TEXT_MUTED
+        ))
+        row.addView(makeText(
+            "Status: ${suggestion.verification.label(language)}",
+            11f, when (suggestion.verification) {
+                PackageVerification.MODEL_VERIFIED -> Palette.SUCCESS
+                PackageVerification.HASH_VERIFIED -> Palette.SUCCESS
+                PackageVerification.HASH_PRESENT -> Palette.WARNING
+                PackageVerification.UNVERIFIED -> Palette.ACCENT_ORANGE
+            }, true
+        ))
+        row.addView(makeText(
+            "Referenz-Limit: ${suggestion.referenceMaxKmh} km/h (unbest\u00e4tigt)",
+            10f, Palette.TEXT_MUTED
+        ))
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        actions.addView(makePrimaryButton("PAKET \u00dcBERNEHMEN", Palette.SURFACE_HIGH) {
+            importSuggestion(suggestion)
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(0, 0, dp(4), 0) })
+        actions.addView(makePrimaryButton("DOWNLOAD-LINK KOPIEREN", Palette.SURFACE_HIGH) {
+            copySuggestionLink(suggestion)
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+        row.addView(actions)
+        return row
+    }
+
+    /**
+     * Uebernimmt ein Paket in den app-eigenen Speicher. Es wird NICHTS
+     * geflasht. Ohne geprueften Dateiinhalt und ohne Download-Endpunkt wird
+     * ehrlich erklaert, warum keine Uebernahme moeglich ist.
+     */
+    private fun importSuggestion(suggestion: FirmwareSuggestion) {
+        val validation = lastValidation
+        val bytes = validation?.extractedBinary ?: loadedFirmwareBytes
+        if (validation != null && validation.valid && bytes != null && selectedFirmwareName != null) {
+            AlertDialog.Builder(this)
+                .setTitle("Paket \u00fcbernehmen")
+                .setMessage(
+                    "Die gepr\u00fcfte Datei \u201e$selectedFirmwareName\u201c wird als Paket " +
+                        "\u201e${suggestion.name}\u201c in den App-Speicher kopiert.\n\n" +
+                        "Das ist KEIN Flash. Es wird nichts an den Controller geschrieben."
+                )
+                .setPositiveButton("\u00dcbernehmen") { _, _ ->
+                    val file = FirmwareStorage.save(filesDir, suggestion.packageId, bytes)
+                    if (file == null) {
+                        toast("Paket konnte nicht gespeichert werden.")
+                        addLog(LogCategory.ERROR, "Paket '${suggestion.name}' nicht gespeichert.")
+                    } else {
+                        selectedFirmware = FirmwareCatalog.forModel(detectedModel)
+                            .firstOrNull { it.id == suggestion.packageId }
+                        flashPackageObtained = true
+                        addLog(LogCategory.INFO,
+                            "Paket '${suggestion.name}' in App-Speicher \u00fcbernommen: ${file.name} (kein Flash)")
+                        toast("Paket \u00fcbernommen: ${file.name}. Das ist KEIN Flash.")
+                        showTab(Tab.FLASH)
+                    }
+                }
+                .setNegativeButton("Abbrechen", null)
+                .show()
+            return
+        }
+        if (suggestion.hasDownloadLink) {
+            AlertDialog.Builder(this)
+                .setTitle("Paket \u00fcbernehmen")
+                .setMessage(
+                    "F\u00fcr dieses Paket ist ein Download-Link hinterlegt. Ein automatischer " +
+                        "Download ist in dieser Version nicht implementiert.\n\n" +
+                        "Link jetzt kopieren?"
+                )
+                .setPositiveButton("Link kopieren") { _, _ -> copySuggestionLink(suggestion) }
+                .setNegativeButton("Abbrechen", null)
+                .show()
+            return
+        }
+        toast("Kein Download-Endpunkt und keine gepr\u00fcfte Datei vorhanden.")
+        addLog(LogCategory.INFO,
+            "Paket '${suggestion.name}': kein Download-Endpunkt hinterlegt, keine Datei gepr\u00fcft.")
+    }
+
+    /** Kopiert den echten Download-Link - oder erklaert, dass keiner hinterlegt ist. */
+    private fun copySuggestionLink(suggestion: FirmwareSuggestion) {
+        val url = suggestion.downloadUrl
+        if (url.isNullOrBlank()) {
+            toast("F\u00fcr dieses Paket ist kein Download-Link hinterlegt.")
+            addLog(LogCategory.INFO, "Paket '${suggestion.name}': kein Download-Link hinterlegt.")
+            return
+        }
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        cm?.setPrimaryClip(ClipData.newPlainText("Syrak Firmware-Link", url))
+        toast("Download-Link kopiert. Ein Link ist KEINE Firmware und KEIN Flash.")
+        addLog(LogCategory.INFO, "Download-Link f\u00fcr '${suggestion.name}' kopiert.")
     }
 
     private fun applySoftPatch() {
@@ -3291,6 +3544,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             addLog(LogCategory.ERROR, "Hard-Flash verweigert: kein verifizierter Hash.")
             return
         }
+        if (!validation.modelCompatible) {
+            toast("Hard-Flash gesperrt: Modellkompatibilität nicht belegt.")
+            addLog(LogCategory.ERROR, "Hard-Flash verweigert: Modell nicht belegt.")
+            return
+        }
         if (!detectedModel.isKnown) {
             toast("Hard-Flash gesperrt: Modell nicht erkannt.")
             return
@@ -3307,6 +3565,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     "Hardware-/Firmware-Kompatibilität und Recovery-Pfad fortfahren."
             )
             .setPositiveButton("FLASHEN") { _, _ ->
+                flashFlashedOk = false
                 addLog(LogCategory.FLASH, "Hard-Flash gestartet: ${bytes.size} Bytes")
                 bleEngine?.startFlash(bytes, adapter().buildUnlockFrame(), adapter().buildRebootFrame())
             }
@@ -4007,6 +4266,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onFlashFinished(success: Boolean, message: String) {
         runOnUiThread {
             addLog(if (success) LogCategory.FLASH else LogCategory.ERROR, "Flash: $message")
+            flashFlashedOk = success
             flashStatusText?.text = message
             AlertDialog.Builder(this)
                 .setTitle(if (success) "Flash abgeschlossen" else "Flash fehlgeschlagen")
@@ -4019,6 +4279,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onRssi(rssi: Int) {
         runOnUiThread {
             lastRssi = rssi
+            rssiSamples.addLast(LinkSample(rssi, SystemClock.elapsedRealtime()))
+            while (rssiSamples.size > MAX_RSSI_SAMPLES) rssiSamples.removeFirst()
             sysRssiView?.text = "RSSI $rssi"
         }
     }

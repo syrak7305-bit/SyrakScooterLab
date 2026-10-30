@@ -374,6 +374,26 @@ object CountryNoticeTexts {
                 "ausdruecklich KEINE Rechtsberatung und keine Zusicherung aktueller Grenzwerte. Pruefe die geltende Rechtslage bei der zustaendigen Behoerde."
     }
 
+    /**
+     * PHASE 15: Der Katalogstand ist aelter als 12 Monate -> deutlich als
+     * veraltet kennzeichnen. Es werden bewusst KEINE neuen Grenzwerte behauptet.
+     */
+    fun catalogOutdated(catalogDate: String, nowYear: Int, nowMonth: Int): Boolean {
+        val parts = catalogDate.split("-")
+        val year = parts.getOrNull(0)?.toIntOrNull() ?: return true
+        val month = parts.getOrNull(1)?.toIntOrNull() ?: return true
+        return (nowYear - year) * 12 + (nowMonth - month) > 12
+    }
+
+    fun outdatedBanner(language: AppLanguage, catalogDate: String): String = when (language) {
+        AppLanguage.EN ->
+            "WARNING: catalogue status $catalogDate is outdated (older than 12 months). " +
+                "The information has not been re-verified and must not be treated as current."
+        AppLanguage.DE ->
+            "WARNUNG: Katalogstand $catalogDate ist veraltet (aelter als 12 Monate). " +
+                "Die Angaben wurden nicht erneut geprueft und sind nicht als aktuell zu behandeln."
+    }
+
     fun languageLine(language: AppLanguage): String = when (language) {
         AppLanguage.EN -> "Notice language: English (system language not German)."
         AppLanguage.DE -> "Hinweis-Sprache: Deutsch (Systemsprache)."
