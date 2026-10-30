@@ -903,6 +903,13 @@ class BleEngine(
     /* ------------------------------------------------------------------ */
     /*  SCHREIB-QUEUE                                                      */
     /* ------------------------------------------------------------------ */
+    /**
+     * PHASE 12: true, wenn aktuell ein Write-Characteristic vorhanden ist.
+     * Damit kann die UI Telemetrie-Polling nur starten, wenn es tatsaechlich
+     * schreibbar ist — statt jede Sekunde einen Fehler zu protokollieren.
+     */
+    fun hasWriteCharacteristic(): Boolean = writeChar != null
+
     fun enqueueWrite(data: ByteArray, label: String, onResult: ((Boolean) -> Unit)?): Boolean {
         val c = writeChar
         if (c == null) {

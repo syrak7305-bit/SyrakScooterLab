@@ -39,6 +39,30 @@ class ScooterRepository(context: Context) {
         get() = prefs.getBoolean(KEY_AUTO_RECONNECT, true)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_RECONNECT, value).apply()
 
+    /** PHASE 12: Laender-Hinweis wurde bestaetigt (getrennt vom Haftungshinweis). */
+    var countryNoticeAccepted: Boolean
+        get() = prefs.getBoolean(KEY_COUNTRY_ACCEPTED, false)
+        set(value) = prefs.edit().putBoolean(KEY_COUNTRY_ACCEPTED, value).apply()
+
+    /** PHASE 12: Onboarding-Intro wurde gesehen (ersetzt NICHT den Haftungshinweis). */
+    var onboardingSeen: Boolean
+        get() = prefs.getBoolean(KEY_ONBOARDING_SEEN, false)
+        set(value) = prefs.edit().putBoolean(KEY_ONBOARDING_SEEN, value).apply()
+
+    /** PHASE 12: zuletzt verbundenes Geraet (Favorit/Schnellzugriff). */
+    var lastDeviceAddress: String
+        get() = prefs.getString(KEY_LAST_DEVICE, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LAST_DEVICE, value).apply()
+
+    var lastDeviceName: String
+        get() = prefs.getString(KEY_LAST_DEVICE_NAME, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LAST_DEVICE_NAME, value).apply()
+
+    /** PHASE 12: lokale Diagnose-Historie (zeilenkodiert). */
+    var diagnosticHistoryRaw: String
+        get() = prefs.getString(KEY_DIAG_HISTORY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_DIAG_HISTORY, value).apply()
+
     var region: Region
         get() = Region.fromCountry(prefs.getString(KEY_REGION, null) ?: Locale.getDefault().country)
         set(value) = prefs.edit().putString(KEY_REGION, value.code).apply()
@@ -185,6 +209,11 @@ class ScooterRepository(context: Context) {
         private const val KEY_PIN_HASH = "pin_hash"
         private const val KEY_PIN_ITER = "pin_iterations"
         private const val KEY_PROFILES = "profiles"
+        private const val KEY_COUNTRY_ACCEPTED = "country_notice_accepted"
+        private const val KEY_ONBOARDING_SEEN = "onboarding_seen"
+        private const val KEY_LAST_DEVICE = "last_device_address"
+        private const val KEY_LAST_DEVICE_NAME = "last_device_name"
+        private const val KEY_DIAG_HISTORY = "diagnostic_history"
 
         private const val ITERATIONS = 120_000
         private const val KEY_LENGTH_BYTES = 32
