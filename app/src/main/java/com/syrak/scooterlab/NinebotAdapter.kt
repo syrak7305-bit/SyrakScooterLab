@@ -38,14 +38,15 @@ class NinebotAdapter : ScooterProtocolAdapter {
             ScooterModel.XIAOMI_PRO_2,
             ScooterModel.XIAOMI_M365
         ),
-        gattServiceUuids = listOf("0000e003-0000-1000-8000-00805f9b34fb"),
+        // PHASE 16: Werte aus der zentralen Registry [BleUuids] (unveraendert).
+        gattServiceUuids = listOf(BleUuids.NINEBOT_SERVICE),
         gattWriteCharUuids = listOf(
-            "0000fff1-0000-1000-8000-00805f9b34fb",
-            "0000fff2-0000-1000-8000-00805f9b34fb"
+            BleUuids.NINEBOT_CHAR_WRITE,
+            BleUuids.NINEBOT_CHAR_WRITE_ALT
         ),
         gattNotifyCharUuids = listOf(
-            "0000fff1-0000-1000-8000-00805f9b34fb",
-            "0000fff2-0000-1000-8000-00805f9b34fb"
+            BleUuids.NINEBOT_CHAR_WRITE,
+            BleUuids.NINEBOT_CHAR_WRITE_ALT
         ),
         readOperations = setOf(
             ReadOperation.STATUS_TELEMETRY,

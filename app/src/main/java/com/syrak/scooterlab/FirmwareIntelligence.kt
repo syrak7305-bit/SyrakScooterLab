@@ -300,3 +300,67 @@ object FlashHonesty {
         modelKnown &&
         connected
 }
+
+/* ---------------------------------------------------------------------------
+ *  PHASE 16 – FIRMWARE-IDENTITAETSSICHERUNG
+ *  ---------------------------------------------------------------------------
+ *  Problem (Audit §5): Eine lokal ausgewaehlte Datei konnte unter dem Namen
+ *  eines FREMDEN Katalogpakets gespeichert werden, weil [FirmwareStorage.save]
+ *  nur die packageId als Dateinamen nutzt. Damit waere die Zuordnung
+ *  "Paketname -> Datei" nicht mehr nachvollziehbar.
+ *
+ *  Regel: Ein Paket darf nur uebernommen werden, wenn
+ *    - die Datei gueltig geprueft ist,
+ *    - das aktuell ausgewaehlte Katalogpaket GENAU dem Vorschlag entspricht,
+ *    - der SHA-256 gegen einen hinterlegten Wert verifiziert ist und
+ *    - der Modellbezug belegt ist.
+ *  Reine Logik, ohne Android-Abhaengigkeit.
+ * -------------------------------------------------------------------------*/
+enum class FirmwareImportDecision {
+    ALLOWED,
+    NO_VALIDATION,
+    PACKAGE_MISMATCH,
+    HASH_NOT_VERIFIED,
+    MODEL_MISMATCH
+}
+
+object FirmwareImportGuard {
+
+    fun evaluate(
+        suggestionPackageId: String,
+        selectedPackageId: String?,
+        validationValid: Boolean,
+        hashVerified: Boolean,
+        modelCompatible: Boolean
+    ): FirmwareImportDecision {
+        if (!validationValid) return FirmwareImportDecision.NO_VALIDATION
+        if (selectedPackageId == null || selectedPackageId != suggestionPackageId) {
+            return FirmwareImportDecision.PACKAGE_MISMATCH
+        }
+        if (!hashVerified) return FirmwareImportDecision.HASH_NOT_VERIFIED
+        if (!modelCompatible) return FirmwareImportDecision.MODEL_MISMATCH
+        return FirmwareImportDecision.ALLOWED
+    }
+
+    fun reason(decision: FirmwareImportDecision, language: AppLanguage = AppLanguage.DE): String =
+        when (decision) {
+            FirmwareImportDecision.ALLOWED ->
+                if (language == AppLanguage.DE) "Datei, Hash und Paket-Zuordnung stimmen ueberein."
+                else "File, hash and package assignment match."
+            FirmwareImportDecision.NO_VALIDATION ->
+                if (language == AppLanguage.DE) "Die Datei ist nicht gueltig geprueft."
+                else "The file is not validly verified."
+            FirmwareImportDecision.PACKAGE_MISMATCH ->
+                if (language == AppLanguage.DE)
+                    "Die gepruefte Datei gehoert zu einem anderen Paket. Uebernahme abgelehnt."
+                else "The verified file belongs to a different package. Import refused."
+            FirmwareImportDecision.HASH_NOT_VERIFIED ->
+                if (language == AppLanguage.DE)
+                    "Kein verifizierter SHA-256 fuer dieses Paket. Uebernahme abgelehnt."
+                else "No verified SHA-256 for this package. Import refused."
+            FirmwareImportDecision.MODEL_MISMATCH ->
+                if (language == AppLanguage.DE)
+                    "Modellbezug der Datei ist nicht belegt. Uebernahme abgelehnt."
+                else "Model assignment of the file is not proven. Import refused."
+        }
+}
