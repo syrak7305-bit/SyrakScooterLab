@@ -413,7 +413,7 @@ Geraeten verifiziert); Diagnose-Export auf echtem SAF-Ziel; Firmware-Flash.
 
 * **Branch:** `feat/phase12-professional-ui`
 * **Commit:** `ba4ad71`
-* **Pull Request:** __PR__
+* **Pull Request:** https://github.com/syrak7305-bit/SyrakScooterLab/pull/17
 * **Unit-Tests:** 268 / 268 gruen (0 Fehler, 0 uebersprungen)
 * **Build:** `assembleDebug` erfolgreich
 * **APK:** 18.679.505 Bytes (≈ 18,7 MB)
