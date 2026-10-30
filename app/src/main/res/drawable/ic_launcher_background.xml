@@ -1,3 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<color xmlns:android="http://schemas.android.com/apk/res/android"
-    android:color="#0E1116" />
+<!-- Adaptive Icon Hintergrund: tiefes Anthrazit mit technischer Diagonale. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0 L108,0 L108,108 L0,108 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:startColor="#171B21"
+                android:centerColor="#0E1116"
+                android:endColor="#080A0D" />
+        </aapt:attr>
+    </path>
+
+    <!-- Dezente technische Linien -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M-10,86 L86,-10"
+        android:strokeColor="#1AFFFFFF"
+        android:strokeWidth="10" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M6,112 L112,6"
+        android:strokeColor="#14C1121F"
+        android:strokeWidth="3" />
+</vector>
