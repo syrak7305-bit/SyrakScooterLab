@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SYRAK SCOOTERLAB — Brand Mark (Phase 13)
+  Geometrisches Emblem: hexagonales Tech-Gehäuse, kantiges "S" (Speed /
+  Scooter / System), rote Diagonalkanten als Energierichtung und ein roter
+  Diagnose-Knoten im Zentrum. Dark-Red / Anthrazit / Weiß, ohne Emojis,
+  bei 16 dp noch als Silhouette lesbar.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Hexagon-Gehäuse -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,7 L95,30.5 L95,77.5 L54,101 L13,77.5 L13,30.5 Z"
+        android:strokeColor="#45ECEFF4"
+        android:strokeWidth="2.4"
+        android:strokeLineJoin="miter" />
+
+    <!-- Rote Energiekanten (unten links / oben rechts) -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M13,77.5 L54,101"
+        android:strokeColor="#C1121F"
+        android:strokeWidth="5"
+        android:strokeLineCap="butt" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M95,30.5 L54,7"
+        android:strokeColor="#C1121F"
+        android:strokeWidth="5"
+        android:strokeLineCap="butt" />
+
+    <!-- Kantiges S -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M74,30 L38,30 L38,50 L70,50 L70,74 L34,74"
+        android:strokeColor="#ECEFF4"
+        android:strokeWidth="9.5"
+        android:strokeLineCap="square"
+        android:strokeLineJoin="miter" />
+
+    <!-- Diagnose-Knoten -->
+    <path
+        android:fillColor="#C1121F"
+        android:pathData="M54,41 L63,50 L54,59 L45,50 Z" />
+</vector>

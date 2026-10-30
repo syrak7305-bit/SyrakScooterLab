@@ -12,9 +12,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -30,6 +32,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -82,7 +85,34 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private lateinit var rootContainer: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
     private var activeTimer: CountDownTimer? = null
-    private var loadingRunnable: Runnable? = null
+
+    /* ------------------------------------------------------------------ */
+    /*  PHASE 13: SPLASH + NICHT UMGEHBARE COUNTDOWN-GATES                */
+    /* ------------------------------------------------------------------ */
+    private var splashView: SplashScreenView? = null
+    private var splashCancelled = false
+
+    private enum class GateScreen { NONE, DISCLAIMER, COUNTRY }
+
+    private var gateScreen = GateScreen.NONE
+    private var gateStartElapsed = 0L
+    private var gateRequiredMs = 0L
+    private var gateRequiresScroll = false
+    private var gateScrollOk = true
+    private var gateAcceptLabel = "HINWEIS AKZEPTIEREN"
+    private var gateButton: Button? = null
+    private var gateStatusView: TextView? = null
+    private var gateScroll: ScrollView? = null
+    private var gateAction: (() -> Unit)? = null
+
+    /** Startzeitpunkte (monoton) der beiden Pflicht-Countdowns. */
+    private var disclaimerStartElapsed = 0L
+    private var countryStartElapsed = 0L
+
+    private val DISCLAIMER_COUNTDOWN_MS = 10_000L
+    private val COUNTRY_COUNTDOWN_MS = 8_000L
+    private val KEY_DISCLAIMER_START = "phase13_disclaimer_start"
+    private val KEY_COUNTRY_START = "phase13_country_start"
 
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
@@ -430,11 +460,47 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             )
         }
         setContentView(rootContainer)
+
+        // PHASE 13: Ein laufender Countdown wird nach Prozess-Tod korrekt
+        // fortgesetzt (monotone Zeitbasis). Bei frischem Start bleibt der
+        // Startwert 0 und die Wartezeit beginnt erst beim Anzeigen.
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val savedDisclaimer = savedInstanceState?.getLong(KEY_DISCLAIMER_START, 0L) ?: 0L
+        val savedCountry = savedInstanceState?.getLong(KEY_COUNTRY_START, 0L) ?: 0L
+        disclaimerStartElapsed = if (savedDisclaimer > 0L) CountdownGate.restore(savedDisclaimer, nowElapsed) else 0L
+        countryStartElapsed = if (savedCountry > 0L) CountdownGate.restore(savedCountry, nowElapsed) else 0L
+
         showLoadingScreen()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putLong(KEY_DISCLAIMER_START, disclaimerStartElapsed)
+        outState.putLong(KEY_COUNTRY_START, countryStartElapsed)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // PHASE 13: Nach einer Unterbrechung wird der sichtbare Countdown-Zustand
+        // sofort neu berechnet — es entsteht kein "haengender" Freigabe-Zustand.
+        if (gateScreen != GateScreen.NONE) {
+            renderGate()
+            startGateTicker()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Timer anhalten; die Wartezeit selbst laeuft monoton weiter und wird
+        // beim naechsten onResume neu aus der Startzeit berechnet.
+        activeTimer?.cancel()
+        activeTimer = null
+    }
+
     override fun onDestroy() {
-        loadingRunnable?.let { handler.removeCallbacks(it) }
+        splashCancelled = true
+        splashView = null
+        disarmGate()
         cancelReconnectRunnable()
         endSafeStopRamp()
         activeTimer?.cancel()
@@ -473,23 +539,30 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun makeCard(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(Palette.SPACE_MD), dp(Palette.SPACE_MD), dp(Palette.SPACE_MD), dp(Palette.SPACE_MD))
-        background = roundedBg(Palette.SURFACE_ALT, Palette.OUTLINE)
+        background = roundedBg(Palette.SURFACE_ALT, Palette.OUTLINE, 14)
+        elevation = dp(1).toFloat()
     }
 
+    /** PHASE 13: Sektionslabel mit technischer Kontur. */
     private fun makeSectionLabel(value: String): TextView =
-        makeText(value.uppercase(), 11f, Palette.ACCENT, true).apply {
-            letterSpacing = 0.18f
-            setPadding(dp(4), dp(14), 0, dp(6))
+        makeText(value.uppercase(), 10.5f, Palette.ACCENT, true).apply {
+            letterSpacing = 0.22f
+            setPadding(dp(2), dp(18), 0, dp(8))
         }
 
     private fun makePrimaryButton(label: String, color: Int = Palette.ACCENT, onClick: () -> Unit) =
         Button(this).apply {
             text = label; isAllCaps = true
-            background = roundedBg(color, color, 10)
+            // PHASE 13: Ripple statt flacher Flaeche (praezises Motorsport-Feedback).
+            background = RippleDrawable(
+                ColorStateList.valueOf(0x33FFFFFF),
+                roundedBg(color, color, 10),
+                null
+            )
             stateListAnimator = null
             setTextColor(Color.WHITE)
             textSize = 12f
-            letterSpacing = 0.06f
+            letterSpacing = 0.08f
             minHeight = dp(Palette.BUTTON_HEIGHT_DP)
             minimumHeight = dp(Palette.BUTTON_HEIGHT_DP)
             setPadding(dp(12), 0, dp(12), 0)
@@ -500,10 +573,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun makeOutlineButton(label: String, color: Int = Palette.ACCENT, onClick: () -> Unit) =
         Button(this).apply {
             text = label; isAllCaps = true
-            background = roundedBg(Color.TRANSPARENT, color, 10)
+            background = RippleDrawable(
+                ColorStateList.valueOf(0x22FFFFFF),
+                roundedBg(Color.TRANSPARENT, color, 10),
+                null
+            )
             stateListAnimator = null
             setTextColor(color)
             textSize = 12f
+            letterSpacing = 0.06f
             minHeight = dp(Palette.BUTTON_HEIGHT_DP)
             minimumHeight = dp(Palette.BUTTON_HEIGHT_DP)
             setOnClickListener { onClick() }
@@ -781,28 +859,74 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private fun showLoadingScreen() {
         rootContainer.removeAllViews()
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Palette.BG)
-            setPadding(dp(28), dp(28), dp(28), dp(28))
-        }
-        box.addView(makeText("SYRAK", 42f, Palette.ACCENT_RED, true).apply { gravity = Gravity.CENTER })
-        box.addView(makeText("SCOOTERLAB", 15f, Palette.TEXT_SECONDARY, true).apply {
-            gravity = Gravity.CENTER
-            letterSpacing = 0.35f
-        })
-        box.addView(makeText("v7 · Modular Protocol Engine", 12f, Palette.TEXT_MUTED).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, dp(30))
-        })
-        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            isIndeterminate = true
-        }
-        box.addView(bar, LinearLayout.LayoutParams(dp(190), WRAP))
-        rootContainer.addView(box, LinearLayout.LayoutParams(MATCH, MATCH))
+        splashCancelled = false
+        val splash = SplashScreenView(this)
+        splashView = splash
+        rootContainer.addView(splash, LinearLayout.LayoutParams(MATCH, MATCH))
+        splash.setStage(SplashSequence.initializing(), 0f, 0)
+        runSplashSteps(splash)
+    }
 
-        loadingRunnable = Runnable {
+    /**
+     * PHASE 13: Premium-Splash mit AUSSCHLIESSLICH echten Startschritten.
+     *
+     * Jeder Schritt liest einen bereits vorhandenen Zustand (Konfiguration,
+     * Adapter-Registry, Bluetooth-Adapter, Tab-Registry). Es werden KEINE
+     * Hardwarepruefungen, Verbindungen oder Firmware-Checks vorgetaeuscht.
+     * Die Navigation haengt an diesen Schritten — keine kuenstliche Wartezeit,
+     * keine doppelte Initialisierung und kein Blockieren des BLE-Starts
+     * (BLE wird weiterhin erst beim Verbinden initialisiert).
+     */
+    private fun runSplashSteps(splash: SplashScreenView) {
+        val steps: List<Pair<SplashStage, () -> String>> = listOf(
+            SplashSequence.initializing() to {
+                "Konfiguration geladen · Region ${currentRegion.code} · " +
+                    (if (repository.hasPin) "PIN-Schutz aktiv" else "kein PIN gesetzt")
+            },
+            SplashSequence.modules() to {
+                "Protokoll-Adapter: ${ProtocolAdapters.all.size} · " +
+                    ProtocolAdapters.all.joinToString(" / ") { it.displayName }
+            },
+            SplashSequence.bluetooth() to {
+                val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+                when {
+                    adapter == null -> "Kein Bluetooth-Adapter auf diesem Geraet"
+                    !adapter.isEnabled -> "Bluetooth-Adapter vorhanden · deaktiviert"
+                    else -> {
+                        val open = missingPermissions().size
+                        "Bluetooth-Adapter bereit · $open Berechtigung(en) offen"
+                    }
+                }
+            },
+            SplashSequence.dashboard() to {
+                "Bereiche registriert: ${Tab.values().size} · " +
+                    Tab.values().joinToString(" / ") { it.name }
+            }
+        )
+
+        fun step(index: Int) {
+            if (splashCancelled || splashView !== splash) return
+            if (index >= steps.size) {
+                finishSplash(splash)
+                return
+            }
+            val (stage, detail) = steps[index]
+            splash.setStage(
+                stage.copy(detail = detail()),
+                SplashSequence.progress(index),
+                SplashSequence.percent(index)
+            )
+            handler.postDelayed({ step(index + 1) }, 170L)
+        }
+        step(0)
+    }
+
+    private fun finishSplash(splash: SplashScreenView) {
+        splash.setReady()
+        handler.postDelayed({
+            if (splashCancelled || splashView !== splash) return@postDelayed
+            splashCancelled = true
+            splashView = null
             when {
                 !repository.disclaimersAccepted -> showDisclaimer()
                 !repository.countryNoticeAccepted -> showCountryDisclaimer()
@@ -810,18 +934,167 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 repository.hasPin -> showPinDialog()
                 else -> enterMain()
             }
+        }, 240L)
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  PHASE 13: COUNTDOWN-GATE (Disclaimer + Laenderhinweis)            */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Aktiviert ein Gate: Der Button bleibt deaktiviert, bis die Wartezeit
+     * vollstaendig abgelaufen ist UND (optional) bis zum Ende gescrollt wurde.
+     * Der Klick-Handler prueft den Zustand zusaetzlich selbst — schnelles
+     * Tippen oder ein alter Listener kann das Gate nicht umgehen.
+     */
+    private fun armGate(
+        screen: GateScreen,
+        requiredMs: Long,
+        startElapsed: Long,
+        requireScroll: Boolean,
+        scroll: ScrollView,
+        status: TextView,
+        button: Button,
+        acceptLabel: String,
+        onAccept: () -> Unit
+    ) {
+        activeTimer?.cancel()
+        gateScreen = screen
+        gateRequiredMs = requiredMs
+        gateStartElapsed = startElapsed
+        gateRequiresScroll = requireScroll
+        gateScrollOk = !requireScroll
+        gateAcceptLabel = acceptLabel
+        gateScroll = scroll
+        gateStatusView = status
+        gateButton = button
+        gateAction = onAccept
+
+        button.isEnabled = false
+        button.alpha = 0.45f
+        scroll.setOnScrollChangeListener { _, _, _, _, _ -> updateGateScroll() }
+        scroll.post { updateGateScroll() }
+        button.setOnClickListener {
+            if (!gateReady()) {
+                // Defense-in-depth: kein Fortfahren ohne erfuellte Bedingungen.
+                renderGate()
+                return@setOnClickListener
+            }
+            val action = gateAction
+            disarmGate()
+            action?.invoke()
         }
-        handler.postDelayed(loadingRunnable!!, 900L)
+        renderGate()
+        startGateTicker()
+    }
+
+    private fun disarmGate() {
+        activeTimer?.cancel()
+        activeTimer = null
+        gateScroll?.setOnScrollChangeListener(null)
+        gateScreen = GateScreen.NONE
+        gateButton = null
+        gateStatusView = null
+        gateScroll = null
+        gateAction = null
+        gateRequiresScroll = false
+        gateScrollOk = true
+    }
+
+    private fun updateGateScroll() {
+        val s = gateScroll ?: return
+        val child = s.getChildAt(0)
+        if (child == null) {
+            gateScrollOk = true
+            renderGate()
+            return
+        }
+        val viewport = s.height - s.paddingTop - s.paddingBottom
+        gateScrollOk = ScrollGate.isAtBottom(s.scrollY, child.height, viewport, dp(28))
+        renderGate()
+    }
+
+    private fun gateReady(): Boolean {
+        val state = CountdownGate.state(gateRequiredMs, gateStartElapsed, SystemClock.elapsedRealtime())
+        return state.finished && (!gateRequiresScroll || gateScrollOk)
+    }
+
+    private fun startGateTicker() {
+        if (gateScreen == GateScreen.NONE) return
+        activeTimer?.cancel()
+        val remaining = CountdownGate.state(
+            gateRequiredMs, gateStartElapsed, SystemClock.elapsedRealtime()
+        ).remainingMs
+        // Kurzer Nachlauf, damit der letzte Tick sicher den Endzustand rendert.
+        activeTimer = object : CountDownTimer(remaining + 1_200L, 200L) {
+            override fun onTick(millisUntilFinished: Long) = renderGate()
+            override fun onFinish() = renderGate()
+        }.start()
+    }
+
+    private fun renderGate() {
+        val button = gateButton ?: return
+        val status = gateStatusView
+        val state = CountdownGate.state(gateRequiredMs, gateStartElapsed, SystemClock.elapsedRealtime())
+        val scrollOk = !gateRequiresScroll || gateScrollOk
+        val enabled = state.finished && scrollOk
+
+        button.isEnabled = enabled
+        button.alpha = if (enabled) 1f else 0.45f
+        button.text = when {
+            !state.finished -> "GESPERRT · ${state.remainingSeconds}s"
+            !scrollOk -> "BITTE BIS ZUM ENDE SCROLLEN"
+            else -> gateAcceptLabel
+        }
+        status?.text = when {
+            !state.finished -> "Bitte warte noch ${state.remainingSeconds} Sekunden …"
+            !scrollOk -> "Bitte lies den Hinweis bis zum Ende (scrollen)."
+            else -> "Bestätigung freigeschaltet — du kannst jetzt fortfahren."
+        }
+        status?.setTextColor(
+            when {
+                !state.finished -> Palette.WARNING
+                !scrollOk -> Palette.WARNING
+                else -> Palette.SUCCESS
+            }
+        )
     }
 
     private fun showDisclaimer() {
+        splashCancelled = true
+        splashView = null
+        disarmGate()
         rootContainer.removeAllViews()
         val scroll = ScrollView(this)
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Palette.BG)
-            setPadding(dp(20), dp(24), dp(20), dp(24))
+            setPadding(dp(20), dp(20), dp(20), dp(24))
         }
+
+        // PHASE 13: Branding-Kopf mit neuem Logo
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(14))
+        }
+        header.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_syrak_mark)
+            contentDescription = "Syrak ScooterLab Logo"
+        }, LinearLayout.LayoutParams(dp(46), dp(46)))
+        val headerText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        headerText.addView(makeText("SYRAK SCOOTERLAB", 15f, Palette.TEXT_PRIMARY, true).apply {
+            letterSpacing = 0.08f
+        })
+        headerText.addView(makeText("DIAGNOSTIC CORE · PHASE 13", 9.5f, Palette.TEXT_MUTED, true).apply {
+            letterSpacing = 0.16f
+        })
+        header.addView(headerText, LinearLayout.LayoutParams(0, WRAP, 1f))
+        col.addView(header)
+
         col.addView(makeText("SICHERHEITS- & HAFTUNGSHINWEIS", 18f, Palette.DANGER, true))
         col.addView(makeText(
             "Bitte vollstaendig lesen. Dieser Hinweis muss vor der ersten Nutzung bestaetigt werden.",
@@ -858,27 +1131,39 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             12f, Palette.WARNING
         ).apply { setPadding(0, dp(14), 0, dp(20)) })
 
-        // PHASE 12.1: kurze, erzwungene Lesephase wie in der frueheren Fassung.
-        val accept = makePrimaryButton("GELESEN (6)", Palette.ACCENT) {}
-        accept.isEnabled = false
+        // PHASE 13: sichtbarer Countdown + Scroll-Pflicht (10 s).
+        if (disclaimerStartElapsed <= 0L) {
+            disclaimerStartElapsed = CountdownGate.start(SystemClock.elapsedRealtime())
+        }
+        val gateHint = makeText(
+            "Pflicht-Lesephase: mindestens 10 Sekunden und bis zum Ende scrollen.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setLineSpacing(dp(2).toFloat(), 1f); setPadding(0, 0, 0, dp(8)) }
+        col.addView(gateHint)
+        val gateStatus = makeText("", 12.5f, Palette.WARNING, true).apply {
+            setPadding(0, 0, 0, dp(8))
+        }
+        col.addView(gateStatus)
+        val accept = makePrimaryButton("GESPERRT · 10s", Palette.ACCENT) {}
         col.addView(accept, LinearLayout.LayoutParams(MATCH, WRAP))
+
         scroll.addView(col)
         rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
 
-        activeTimer?.cancel()
-        activeTimer = object : CountDownTimer(6000L, 1000L) {
-            override fun onTick(millisUntilFinished: Long) {
-                accept.text = "GELESEN (${millisUntilFinished / 1000})"
-            }
-            override fun onFinish() {
-                accept.text = "HINWEIS AKZEPTIEREN"
-                accept.isEnabled = true
-                accept.setOnClickListener {
-                    repository.disclaimersAccepted = true
-                    continueAfterDisclaimer()
-                }
-            }
-        }.start()
+        armGate(
+            GateScreen.DISCLAIMER,
+            DISCLAIMER_COUNTDOWN_MS,
+            disclaimerStartElapsed,
+            requireScroll = true,
+            scroll = scroll,
+            status = gateStatus,
+            button = accept,
+            acceptLabel = "HINWEIS AKZEPTIEREN"
+        ) {
+            repository.disclaimersAccepted = true
+            disclaimerStartElapsed = 0L
+            continueAfterDisclaimer()
+        }
     }
 
     /** Nach dem Haftungshinweis: Laender-Hinweis (falls noetig), dann Onboarding/PIN. */
@@ -894,18 +1179,40 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     /**
-     * PHASE 12.1: Laender-Hinweis mit belegbaren Quellen und Stand.
+     * PHASE 12.1 / PHASE 13: Laender-Hinweis mit belegbaren Quellen und Stand.
      * Es werden KEINE Geschwindigkeitsgrenzen erfunden; unbekannte Laender
      * erhalten einen neutralen Hinweis. Das Land kann manuell gewaehlt werden.
+     *
+     * PHASE 13: eigener, nicht umgehbarer Countdown (8 s) + Scroll-Pflicht.
+     * Die bestehende Auswahl, Speicherung und Quellenangabe bleiben erhalten.
      */
     private fun showCountryDisclaimer() {
+        splashCancelled = true
+        splashView = null
+        disarmGate()
         rootContainer.removeAllViews()
         val scroll = ScrollView(this)
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Palette.BG)
-            setPadding(dp(20), dp(24), dp(20), dp(24))
+            setPadding(dp(20), dp(20), dp(20), dp(24))
         }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        header.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_syrak_mark)
+            contentDescription = "Syrak ScooterLab Logo"
+        }, LinearLayout.LayoutParams(dp(40), dp(40)))
+        header.addView(makeText("SYRAK SCOOTERLAB", 13f, Palette.TEXT_PRIMARY, true).apply {
+            letterSpacing = 0.08f
+            setPadding(dp(12), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        col.addView(header)
+
         val notice = CountryLegalCatalog.forRegion(repository.region)
         col.addView(makeText("REGIONALE RECHTLICHE HINWEISE", 18f, Palette.ACCENT, true))
         col.addView(makeText(notice.displayName, 13f, Palette.TEXT_MUTED).apply {
@@ -929,17 +1236,55 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         })
         col.addView(makeText("Stand: ${notice.sourceDate}", 11f, Palette.TEXT_MUTED))
 
+        // PHASE 13: transparente Kennzeichnung der Aktualitaet/Unsicherheit.
+        // Es werden bewusst KEINE neuen Grenzwerte behauptet.
+        col.addView(makeText(
+            "Aktualitaet: Die hinterlegten Angaben (Katalogstand ${CountryLegalCatalog.CATALOG_DATE}) " +
+                "koennen veraltet sein und sind ausdruecklich KEINE Rechtsberatung und keine Zusicherung " +
+                "aktueller Grenzwerte. Pruefe die geltende Rechtslage bei der zustaendigen Behoerde.",
+            11f, Palette.WARNING
+        ).apply {
+            setLineSpacing(dp(2).toFloat(), 1f)
+            setPadding(0, dp(10), 0, dp(4))
+        })
+
         val change = makeOutlineButton("LAND MANUELL WAEHLEN", Palette.ACCENT) {
             showCountryPicker()
         }
         col.addView(change, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, dp(8)) })
-        val accept = makePrimaryButton("VERSTANDEN & WEITER", Palette.ACCENT) {
-            repository.countryNoticeAccepted = true
-            continueAfterCountry()
+
+        val gateHint = makeText(
+            "Pflicht-Lesephase: mindestens 8 Sekunden und bis zum Ende scrollen.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setLineSpacing(dp(2).toFloat(), 1f); setPadding(0, 0, 0, dp(8)) }
+        col.addView(gateHint)
+        val gateStatus = makeText("", 12.5f, Palette.WARNING, true).apply {
+            setPadding(0, 0, 0, dp(8))
         }
+        col.addView(gateStatus)
+        val accept = makePrimaryButton("GESPERRT · 8s", Palette.ACCENT) {}
         col.addView(accept, LinearLayout.LayoutParams(MATCH, WRAP))
+
         scroll.addView(col)
         rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
+
+        if (countryStartElapsed <= 0L) {
+            countryStartElapsed = CountdownGate.start(SystemClock.elapsedRealtime())
+        }
+        armGate(
+            GateScreen.COUNTRY,
+            COUNTRY_COUNTDOWN_MS,
+            countryStartElapsed,
+            requireScroll = true,
+            scroll = scroll,
+            status = gateStatus,
+            button = accept,
+            acceptLabel = "VERSTANDEN & WEITER"
+        ) {
+            repository.countryNoticeAccepted = true
+            countryStartElapsed = 0L
+            continueAfterCountry()
+        }
     }
 
     private fun showCountryPicker() {
@@ -950,6 +1295,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             .setItems(labels) { _, which ->
                 repository.region = regions[which]
                 currentRegion = regions[which]
+                // PHASE 13: Nach einem Laenderwechsel beginnt die Lesephase neu —
+                // ein Wechsel darf den Countdown nicht verkuerzen.
+                countryStartElapsed = 0L
                 showCountryDisclaimer()
             }
             .setNegativeButton("Abbrechen", null)
@@ -1022,6 +1370,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         rootContainer.removeAllViews()
         startTripClock()
 
+        // PHASE 13: feine rote Signaturkante als Motorsport-Akzent.
+        rootContainer.addView(View(this).apply {
+            setBackgroundColor(Palette.DANGER)
+        }, LinearLayout.LayoutParams(MATCH, dp(2)))
+
         val sysBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1068,14 +1421,21 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         bottomNav.removeAllViews()
         for (tab in Tab.values()) {
             val selected = tab == currentTab
-            val item = makeText(
-                if (selected) "● ${tab.name}" else tab.name, 11f,
-                if (selected) Palette.ACCENT else Palette.TEXT_MUTED, true
-            ).apply {
+            // PHASE 13: aktiver Tab mit praeziser Unterkante statt Textpunkt.
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(0, dp(13), 0, dp(13))
+                setPadding(0, dp(10), 0, dp(8))
                 setOnClickListener { showTab(tab) }
             }
+            item.addView(makeText(tab.name, 10.5f,
+                if (selected) Palette.ACCENT else Palette.TEXT_MUTED, true).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.08f
+            })
+            item.addView(View(this).apply {
+                setBackgroundColor(if (selected) Palette.ACCENT else Color.TRANSPARENT)
+            }, LinearLayout.LayoutParams(dp(20), dp(2)).apply { topMargin = dp(5) })
             bottomNav.addView(item, LinearLayout.LayoutParams(0, WRAP, 1f))
         }
     }
@@ -1100,6 +1460,30 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /* ================================================================== */
 
     private fun renderInfo() {
+        // PHASE 13: Branding-Kopf mit neuem Logo (INFO-Bereich).
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(2), dp(2), dp(4))
+        }
+        brand.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_syrak_mark)
+            contentDescription = "Syrak ScooterLab Logo"
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        val brandText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        brandText.addView(makeText("SYRAK SCOOTERLAB", 16f, Palette.TEXT_PRIMARY, true).apply {
+            letterSpacing = 0.06f
+        })
+        brandText.addView(makeText(
+            "DIAGNOSTIC CORE \u00b7 ${appVersionName()} \u00b7 PHASE 13",
+            9.5f, Palette.TEXT_MUTED, true
+        ).apply { letterSpacing = 0.14f })
+        brand.addView(brandText, LinearLayout.LayoutParams(0, WRAP, 1f))
+        tabContent.addView(brand)
+
         tabContent.addView(makeSectionLabel("VERBINDUNG"))
         val card = makeCard()
         statusText = makeText(
