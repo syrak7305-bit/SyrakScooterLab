@@ -412,7 +412,7 @@ Geraeten verifiziert); Diagnose-Export auf echtem SAF-Ziel; Firmware-Flash.
 ## 12. Abschluss
 
 * **Branch:** `feat/phase12-professional-ui`
-* **Commit:** `__COMMIT__`
+* **Commit:** `ba4ad71`
 * **Pull Request:** __PR__
 * **Unit-Tests:** 268 / 268 gruen (0 Fehler, 0 uebersprungen)
 * **Build:** `assembleDebug` erfolgreich
