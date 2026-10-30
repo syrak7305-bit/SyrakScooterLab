@@ -28,6 +28,16 @@ interface ScooterProtocolAdapter {
     val protocol: BleProtocol
 
     /**
+     * PHASE 10: Selbsterklaerende Faehigkeiten dieses Adapters.
+     *
+     * Der Adapter fuehrt hier AUSDRUECKLICH die Modelle, die er wirklich
+     * bedient, sowie seine Lese-/Schreiboperationen. Die Registry benutzt das,
+     * um zu verhindern, dass ein Hersteller-Adapter automatisch fuer ALLE
+     * Modelle dieses Herstellers verwendet wird.
+     */
+    val capabilities: AdapterCapabilities
+
+    /**
      * true, wenn vor Tuning-Befehlen zwingend ein Unlock-/Auth-Handshake
      * gesendet werden muss (Brightway verlangt das, Ninebot nicht).
      */
@@ -214,8 +224,55 @@ object ProtocolAdapters {
         BleProtocol.NINEBOT -> ninebot
     }
 
-    /** Liefert den Adapter fuer ein erkanntes Modell. */
+    /**
+     * Liefert den TRANSPORT-Adapter fuer ein erkanntes Modell.
+     *
+     * ACHTUNG (Phase 10): Das ist bewusst nur der Transport-Fallback ueber die
+     * Protokollfamilie. Ob der Adapter das Modell wirklich unterstuetzt, sagt
+     * ausschliesslich [resolveForModel]. Fuer Tuning-Freigaben MUSS
+     * [supportsTuning] verwendet werden.
+     */
     fun forModel(model: ScooterModel): ScooterProtocolAdapter = forProtocol(model.protocol)
+
+    /**
+     * PHASE 10: Modellspezifische Aufloesung.
+     *
+     * Liefert nur dann einen Adapter mit `exact = true`, wenn der Adapter das
+     * Modell ausdruecklich in seinen [AdapterCapabilities.supportedModels]
+     * fuehrt. Sonst ist `adapter == null` — es wird KEINE Kompatibilitaet
+     * vorgetaeuscht.
+     */
+    fun resolveForModel(model: ScooterModel): AdapterResolution {
+        if (model == ScooterModel.UNKNOWN) {
+            return AdapterResolution(null, false, "Modell unbekannt — kein Adapter")
+        }
+        val exact = all.firstOrNull { it.capabilities.supportsModel(model) }
+        if (exact != null) {
+            return AdapterResolution(exact, true, "modellspezifischer Adapter '${exact.id}'")
+        }
+        return AdapterResolution(
+            null, false,
+            "kein modellspezifischer Adapter für ${model.displayName} — nur Transport-Fallback"
+        )
+    }
+
+    /**
+     * true NUR, wenn ein Adapter das Modell explizit fuehrt UND Schreibbefehle
+     * deklariert UND nicht read-only ist. Das ist die einzige legitime Quelle
+     * fuer eine Tuning-Freigabe auf Architektur-Ebene.
+     */
+    fun supportsTuning(model: ScooterModel): Boolean {
+        val adapter = all.firstOrNull { it.capabilities.supportsModel(model) } ?: return false
+        return adapter.capabilities.supportsAnyWrite()
+    }
+
+    /** Alle Modelle, die irgendein Adapter ausdruecklich fuehrt. */
+    fun supportedModels(): Set<ScooterModel> =
+        all.flatMap { it.capabilities.supportedModels }.toSet()
+
+    /** Faehigkeiten fuer ein Modell (null, wenn kein Adapter es explizit fuehrt). */
+    fun capabilitiesFor(model: ScooterModel): AdapterCapabilities? =
+        all.firstOrNull { it.capabilities.supportsModel(model) }?.capabilities
 
     /** Liefert den Adapter anhand seiner ID (null, wenn unbekannt). */
     fun byId(id: String): ScooterProtocolAdapter? = all.firstOrNull { it.id == id }

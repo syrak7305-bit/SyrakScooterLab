@@ -517,6 +517,29 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun adapter(): ScooterProtocolAdapter =
         bleEngine?.adapter ?: ProtocolAdapters.forProtocol(activeProtocol)
 
+    /**
+     * PHASE 10: true nur, wenn ein Adapter das erkannte Modell EXPLIZIT fuehrt.
+     * Ein Hersteller-Treffer allein reicht nicht.
+     */
+    private fun modelAdapterExact(): Boolean =
+        ProtocolAdapters.resolveForModel(detectedModel).exact
+
+    /**
+     * PHASE 10: Erweiterte Sperrpruefung. Zusaetzlich zum bestehenden
+     * [TuningSafetyGate] muss ein schreibfaehiger, modellspezifischer Adapter
+     * existieren. Damit kann ein unbekanntes/andersartiges Modell nicht ueber
+     * einen Hersteller-Adapter getunt werden.
+     */
+    private fun tuningBlockReason(): String? {
+        val base = TuningSafetyGate.blockReason(hardwareVerified, detectedModel.isKnown)
+        if (base != null) return base
+        if (!ProtocolAdapters.supportsTuning(detectedModel)) {
+            return "Für ${detectedModel.displayName} ist kein schreibfähiger, " +
+                "modellspezifischer Adapter hinterlegt. Tuning bleibt gesperrt."
+        }
+        return null
+    }
+
     /* ================================================================== */
     /*  START: LADEN / HAFTUNG / PIN                                      */
     /* ================================================================== */
@@ -752,6 +775,42 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         modelCard.addView(makeText("Protokoll: ${activeProtocol.displayName}", 12f, Palette.TEXT_SECONDARY).apply {
             setPadding(0, dp(6), 0, 0)
         })
+        // PHASE 10: Ehrlicher Support-Status — getrennt von Hersteller/Modell.
+        val support = SupportMatrix.snapshot(
+            detectedModel,
+            adapter(),
+            SupportRuntime(
+                gattDiscovered = linkState == BleLinkState.READY,
+                telemetryReceived = lastTelemetryAtElapsed > 0L,
+                hardwareVerified = hardwareVerified,
+                tuningGateOpen = hardwareVerified && detectedModel.isKnown &&
+                    ProtocolAdapters.supportsTuning(detectedModel)
+            ),
+            detectedManufacturer
+        )
+        modelCard.addView(makeText(
+            "Support-Status: ${support.status.label}",
+            12f,
+            when {
+                support.status.atLeast(SupportStatus.DIAGNOSTICS_SUPPORTED) -> Palette.ACCENT_GREEN
+                support.status.atLeast(SupportStatus.DISCOVERED) -> Palette.ACCENT_YELLOW
+                else -> Palette.ACCENT_ORANGE
+            }
+        ).apply { setPadding(0, dp(6), 0, 0) })
+        modelCard.addView(makeText(
+            "Diagnose: ${if (support.diagnosticsSupported) "unterstützt" else "nicht verfügbar"}  ·  " +
+                "Tuning: ${if (support.tuningSupported) "freigegeben" else "gesperrt"}",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(4), 0, 0) })
+        if (support.unavailable.isNotEmpty()) {
+            modelCard.addView(makeText(
+                "Nicht verfügbar: ${support.unavailable.joinToString(", ")}",
+                11f, Palette.TEXT_MUTED
+            ).apply { setPadding(0, dp(4), 0, 0) })
+        }
+        modelCard.addView(makeText(support.note, 11f, Palette.TEXT_MUTED).apply {
+            setPadding(0, dp(4), 0, 0)
+        })
         if (detectedModel.isKnown) {
             modelCard.addView(makeText(
                 "eKFV-Hinweis: ${currentRegion.legalSpeedKmh} km/h in ${currentRegion.displayName}. " +
@@ -963,11 +1022,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val engine = BleEngine(this, this)
         bleEngine = engine
         engine.setProtocolHint(activeProtocol)
-        // PHASE 8.1 (Punkt 1): Eager-Unlock-Handshake nur bei erkanntem Modell UND
-        // bestaetigter Hardware. Sonst geht beim Verbindungsaufbau kein Schreibbefehl
-        // an ein unbekanntes Geraet. Not-Aus/Tuning holen den Handshake lazy nach.
+        // PHASE 10: Modell-Hinweis fuer die modellspezifische Adapter-Auswahl.
+        engine.setModelHint(detectedModel)
+        // PHASE 8.1 (Punkt 1) + PHASE 10: Eager-Unlock-Handshake nur bei
+        // erkanntem Modell, vorhandenem MODELLSPEZIFISCHEM Adapter UND
+        // bestaetigter Hardware. Sonst geht beim Verbindungsaufbau kein
+        // Schreibbefehl an ein unbekanntes/fremdes Geraet.
         engine.setAutoHandshakeAllowed(
-            modelKnown = detectedModel.isKnown,
+            modelKnown = detectedModel.isKnown && modelAdapterExact(),
             hardwareVerified = hardwareVerified
         )
         linkState = linkState.transition(BleLinkEvent.CONNECT_REQUESTED)
@@ -1186,7 +1248,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      * Not-Aus, Unlock, Reboot und Lese-Befehle laufen weiter ueber [sendCommand].
      */
     private fun sendTuning(frame: ByteArray, label: String): Boolean {
-        val reason = TuningSafetyGate.blockReason(hardwareVerified, detectedModel.isKnown)
+        val reason = tuningBlockReason()
         if (reason != null) {
             toast("Tuning gesperrt: $reason")
             addLog(LogCategory.ERROR, "Tuning-Befehl '$label' blockiert: $reason")
@@ -1907,7 +1969,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             // PHASE 8.1 (Punkt 1): Freigabe des Eager-Handshakes an den neuen
             // Zustand anpassen. Bei unbekanntem Modell bleibt er gesperrt.
             bleEngine?.setAutoHandshakeAllowed(
-                modelKnown = detectedModel.isKnown,
+                modelKnown = detectedModel.isKnown && modelAdapterExact(),
                 hardwareVerified = value
             )
             addLog(

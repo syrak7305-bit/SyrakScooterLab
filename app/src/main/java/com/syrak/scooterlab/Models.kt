@@ -206,7 +206,7 @@ enum class ScooterModel(
         "Bremshebel 2× + Power-Taste", "Power-Taste 3× kurz drücken"),
     NINEBOT_ES("Segway-Ninebot ES-Serie", listOf("es1", "es2", "es3", "es4", "ninebot es"), 25, 32, 36.0f, 10,
         "Bremshebel + Power-Taste 2 s", "Power-Taste 3× kurz drücken"),
-    XIAOMI_PRO_2("Xiaomi Pro 2", listOf("pro 2", "pro2", "mi pro 2"), 30, 35, 36.0f, 10,
+    XIAOMI_PRO_2("Xiaomi Pro 2", listOf("mi scooter pro 2", "xiaomi pro 2", "pro 2", "pro2", "mi pro 2"), 30, 35, 36.0f, 10,
         "Bremshebel ziehen + Power-Taste 3 s halten", "Power-Taste 3× kurz drücken"),
     XIAOMI_M365("Xiaomi M365 / 1S", listOf("m365", "mi scooter", "mi 1s", "mi essential"), 28, 32, 36.0f, 10,
         "Bremshebel ziehen + Power-Taste 3 s halten", "Power-Taste 3× kurz drücken"),
@@ -252,6 +252,29 @@ enum class ScooterModel(
         }
 
     companion object {
+        /**
+         * Mindestlaenge eines Modell-Keywords. Verhindert, dass ein einzelnes
+         * generisches Token wie "g2" ein Modell zuordnet.
+         */
+        private const val MIN_MATCH_KEYWORD_LENGTH = 3
+
+        /**
+         * true, wenn [keyword] in [haystack] auf einer Token-Grenze vorkommt.
+         * "mi scooter" matcht damit NICHT innerhalb von "xiaomi scooter".
+         */
+        private fun containsToken(haystack: String, keyword: String): Boolean {
+            var idx = haystack.indexOf(keyword)
+            while (idx >= 0) {
+                val beforeOk = idx == 0 || !haystack[idx - 1].isLetterOrDigit()
+                val afterIdx = idx + keyword.length
+                val afterOk = afterIdx >= haystack.length ||
+                    !haystack[afterIdx].isLetterOrDigit()
+                if (beforeOk && afterOk) return true
+                idx = haystack.indexOf(keyword, idx + 1)
+            }
+            return false
+        }
+
         /**
          * Erkennt das Modell aus dem BLE-Namen (Keyword-Scoring). [address] ist
          * Teil der Erkennungs-API (z. B. fuer spaetere MAC-/OUI-Zuordnung) und
@@ -299,7 +322,13 @@ enum class ScooterModel(
                 var score = 0
                 var longest = ""
                 for (kw in m.matchKeywords) {
-                    if (n.contains(kw)) {
+                    // PHASE 10: Zwei Haerten gegen falsche Modellzuordnung:
+                    //  1) Generische 2-Zeichen-Tokens ("g2") duerfen allein kein
+                    //     Modell bestimmen. Erst "max g2"/"g2 pro" sind belegt.
+                    //  2) Keyword muss auf einer Token-Grenze liegen. Sonst
+                    //     matcht "mi scooter" faelschlich in "xiaomi scooter".
+                    if (kw.length < MIN_MATCH_KEYWORD_LENGTH) continue
+                    if (containsToken(n, kw)) {
                         score += kw.length
                         if (kw.length > longest.length) longest = kw
                     }
