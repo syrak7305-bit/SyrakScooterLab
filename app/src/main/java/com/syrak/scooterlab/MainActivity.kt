@@ -41,6 +41,13 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.syrak.scooterlab.core.ble.BleSessionService
+import com.syrak.scooterlab.diagnostics.DataStatus
+import com.syrak.scooterlab.diagnostics.DiagnosticEventLog
+import com.syrak.scooterlab.diagnostics.DiagnosticSeverity
+import com.syrak.scooterlab.diagnostics.DiagnosticValue
+import com.syrak.scooterlab.diagnostics.DiagnosticsBuilder
+import com.syrak.scooterlab.diagnostics.DiagnosticsInput
+import com.syrak.scooterlab.diagnostics.DiagnosticsReport
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -193,6 +200,33 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var dashCellDelta: TextView? = null
     private var dashTempGuardState: TextView? = null
     private var dashFeedState: TextView? = null
+
+    // ---- PHASE 9: Diagnose ----
+    private var diagOverall: TextView? = null
+    private var diagConnection: TextView? = null
+    private var diagProtocol: TextView? = null
+    private var diagDataAge: TextView? = null
+    private var diagCommErrors: TextView? = null
+    private var diagBatteryState: TextView? = null
+    private var diagBatteryVoltage: TextView? = null
+    private var diagBatteryDelta: TextView? = null
+    private var diagBatteryTemp: TextView? = null
+    private var diagBatterySoh: TextView? = null
+    private var diagChargeState: TextView? = null
+    private var diagMotorRpm: TextView? = null
+    private var diagMotorTemp: TextView? = null
+    private var diagEcuStatus: TextView? = null
+    private var diagFirmware: TextView? = null
+    private var diagWarnings: TextView? = null
+    private var diagLogButton: Button? = null
+
+    /** Monotone Empfangszeit der letzten Telemetrie (SystemClock.elapsedRealtime). */
+    @Volatile private var lastTelemetryAtElapsed = 0L
+    /** Zaehlt BLE-/Protokoll-Kommunikationsfehler seit dem letzten Verbindungsaufbau. */
+    @Volatile private var commErrorCount = 0
+    /** Ringpuffer der Diagnose-Ereignisse (thread-sicher, read-only Nutzung). */
+    private val diagnosticLog = DiagnosticEventLog()
+
     @Volatile private var lastTelemetry: Telemetry? = null
     private var motorGuardTripped = false
     // ---- FIX 4: Gesicherte Notaus-Rampe (Fahrersicherheit) --------------
@@ -1197,6 +1231,71 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         return value
     }
 
+    /* ------------------------------------------------------------------ */
+    /*  PHASE 9 — Diagnose-Helfer                                          */
+    /* ------------------------------------------------------------------ */
+
+    /** Baut den Diagnosebericht aus den tatsaechlich vorhandenen Daten. */
+    private fun buildDiagnosticsReport(): DiagnosticsReport {
+        val live = engineReady || demoActive
+        return DiagnosticsBuilder.build(
+            DiagnosticsInput(
+                telemetry = lastTelemetry,
+                model = detectedModel,
+                protocol = if (live) activeProtocol else null,
+                connected = live,
+                lastTelemetryAtMillis = lastTelemetryAtElapsed.takeIf { it > 0L },
+                nowMillis = SystemClock.elapsedRealtime(),
+                commErrorCount = commErrorCount,
+                isDemo = demoActive
+            )
+        )
+    }
+
+    /**
+     * Formatiert einen diagnostischen Wert inklusive ehrlichem Status.
+     * Nicht verfuegbare Werte werden NIE durch Platzhalter-Zahlen ersetzt.
+     */
+    private fun formatDiag(v: DiagnosticValue<*>, unit: String = "", decimals: Int = 1): String {
+        val raw = v.value ?: return v.status.label
+        val num = when (raw) {
+            is Float -> String.format(Locale.US, "%.${decimals}f", raw)
+            is Double -> String.format(Locale.US, "%.${decimals}f", raw)
+            else -> raw.toString()
+        }
+        val text = if (unit.isEmpty()) num else "$num $unit"
+        return when (v.status) {
+            DataStatus.OK -> text
+            DataStatus.STALE -> "$text (veraltet)"
+            DataStatus.INVALID -> "$text (ungültig)"
+            DataStatus.UNKNOWN_PROTOCOL -> "${v.status.label}: $text"
+            DataStatus.NOT_AVAILABLE -> v.status.label
+        }
+    }
+
+    /** Zeigt das Diagnose-Ereignisprotokoll (read-only) in einem Dialog. */
+    private fun showDiagnosticLogDialog() {
+        val events = diagnosticLog.snapshot()
+        val message = if (events.isEmpty()) {
+            "Noch keine Diagnose-Ereignisse aufgezeichnet."
+        } else {
+            val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
+            events.takeLast(100).joinToString("\n") { e ->
+                "${fmt.format(Date(e.timestampMillis))} [${e.severity.label}] ${e.code}: ${e.message}"
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Diagnose-Log (${events.size})")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .setNeutralButton("LEEREN") { _, _ ->
+                diagnosticLog.clear()
+                commErrorCount = 0
+                updateDashboardUi()
+            }
+            .show()
+    }
+
     private fun renderDashboard() {
         tabContent.addView(makeSectionLabel("LIVE-TELEMETRIE"))
         val live = makeCard()
@@ -1223,6 +1322,47 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         dashSoh = metricRow(tripCard, "SoH")
         dashCycles = metricRow(tripCard, "Zyklen")
         tabContent.addView(tripCard, cardParams())
+
+        // ---- PHASE 9: PROFESSIONELLE DIAGNOSE -------------------------------
+        // Alle Werte stammen ausschliesslich aus tatsaechlich empfangenen Daten.
+        // Nicht belegte Felder (Drehzahl, Firmware, Controller-Status) werden
+        // ausdruecklich als "Nicht verfuegbar" angezeigt — nichts wird erfunden.
+        tabContent.addView(makeSectionLabel("DIAGNOSE"))
+
+        val diagSystem = makeCard()
+        diagOverall = metricRow(diagSystem, "Gesamtstatus")
+        diagConnection = metricRow(diagSystem, "Verbindung")
+        diagProtocol = metricRow(diagSystem, "Protokoll")
+        diagDataAge = metricRow(diagSystem, "Datenalter")
+        diagCommErrors = metricRow(diagSystem, "Kommunikationsfehler")
+        tabContent.addView(diagSystem, cardParams())
+
+        val diagBattery = makeCard()
+        diagBatteryState = metricRow(diagBattery, "Akkustand")
+        diagBatteryVoltage = metricRow(diagBattery, "Packspannung")
+        diagBatteryDelta = metricRow(diagBattery, "Zell-Delta")
+        diagBatteryTemp = metricRow(diagBattery, "Akku-Temperatur")
+        diagBatterySoh = metricRow(diagBattery, "SoH")
+        diagChargeState = metricRow(diagBattery, "Ladezustand")
+        tabContent.addView(diagBattery, cardParams())
+
+        val diagMotor = makeCard()
+        diagMotorRpm = metricRow(diagMotor, "Drehzahl")
+        diagMotorTemp = metricRow(diagMotor, "Motor-Temperatur")
+        diagEcuStatus = metricRow(diagMotor, "Controller-Status")
+        diagFirmware = metricRow(diagMotor, "Firmware")
+        tabContent.addView(diagMotor, cardParams())
+
+        val diagWarnCard = makeCard()
+        diagWarnings = makeText("Keine Warnungen.", 12f, Palette.TEXT_MUTED)
+        diagWarnCard.addView(diagWarnings, LinearLayout.LayoutParams(MATCH, WRAP))
+        diagLogButton = makePrimaryButton("DIAGNOSE-LOG (0)", Palette.ACCENT_BLUE) {
+            showDiagnosticLogDialog()
+        }
+        diagWarnCard.addView(diagLogButton, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(0, dp(8), 0, 0)
+        })
+        tabContent.addView(diagWarnCard, cardParams())
 
         tabContent.addView(makeSectionLabel("ZELLSPANNUNGEN"))
         val cells = makeCard()
@@ -1386,6 +1526,51 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         // frueher implizite 36-V-Default war fuer 48-V-Geraete (NAVEE) falsch.
         dashRange?.text = RangeEstimator.estimateKm(detectedModel, t?.batteryPercent)
             ?.let { String.format(Locale.US, "%.1f km", it) } ?: "—"
+
+        // ---- PHASE 9: Diagnose-Anzeige -------------------------------------
+        // EIN Bericht pro Refresh. Kein zusaetzlicher UI-Reload: dies laeuft im
+        // bereits gedrosselten scheduleTelemetryApply()-Pfad.
+        val report = buildDiagnosticsReport()
+        diagOverall?.text = when (report.overall) {
+            DataStatus.OK -> "OK"
+            DataStatus.STALE -> "VERALTET"
+            DataStatus.INVALID -> "UNPLAUSIBEL"
+            DataStatus.UNKNOWN_PROTOCOL -> "Protokoll unbekannt"
+            DataStatus.NOT_AVAILABLE -> "Nicht verfügbar"
+        }
+        diagConnection?.text = if (engineReady) "verbunden" else "nicht verbunden"
+        diagProtocol?.text = when {
+            demoActive -> "DEMO (simuliert)"
+            engineReady -> activeProtocol.displayName
+            else -> "—"
+        }
+        diagDataAge?.text = report.live.updateAgeMillis?.let { age ->
+            if (report.live.freshness == DataStatus.STALE) "$age ms (veraltet)" else "$age ms"
+        } ?: "—"
+        diagCommErrors?.text = commErrorCount.toString()
+        diagBatteryState?.text = formatDiag(report.battery.percent, "%", 0)
+        diagBatteryVoltage?.text = formatDiag(report.battery.voltage, "V", 2)
+        diagBatteryDelta?.text = formatDiag(report.battery.cellDeltaMv, "mV", 0)
+        diagBatteryTemp?.text = formatDiag(report.battery.temperature, "°C", 1)
+        diagBatterySoh?.text = formatDiag(report.battery.sohPercent, "%", 1)
+        diagChargeState?.text = if (report.battery.chargeStateNote.isEmpty()) {
+            report.battery.chargeState.label
+        } else {
+            "${report.battery.chargeState.label} (${report.battery.chargeStateNote})"
+        }
+        diagMotorRpm?.text = formatDiag(report.motor.rpm, "U/min", 0)
+        diagMotorTemp?.text = formatDiag(report.motor.temperature, "°C", 1)
+        diagEcuStatus?.text = report.motor.controllerStatus.status.label
+        diagFirmware?.text = report.electronics.firmwareVersion.status.label
+        diagWarnings?.text = if (report.warnings.isEmpty()) {
+            "Keine Warnungen."
+        } else {
+            report.warnings.joinToString("\n") { "• $it" }
+        }
+        diagWarnings?.setTextColor(
+            if (report.warnings.isEmpty()) Palette.TEXT_MUTED else Palette.ACCENT_ORANGE
+        )
+        diagLogButton?.text = "DIAGNOSE-LOG (${diagnosticLog.size()})"
 
         cellGraphRow?.let { row ->
             row.removeAllViews()
@@ -2143,12 +2328,30 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     override fun onLog(line: String) {
-        runOnUiThread { addLog(LogCategory.INFO, line) }
+        runOnUiThread {
+            // PHASE 9: Fehlerhafte BLE-/Protokoll-Zeilen zusaetzlich im
+            // Diagnose-Log mit Zeitstempel erfassen (tracebares Fehlerlog).
+            val lower = line.lowercase(Locale.ROOT)
+            if (lower.contains("exception") || lower.contains("fehlgeschlagen") ||
+                lower.contains("timeout") || lower.contains("fehler")
+            ) {
+                commErrorCount++
+                diagnosticLog.add(
+                    SystemClock.elapsedRealtime(), DiagnosticSeverity.ERROR, "BLE", line
+                )
+            }
+            addLog(LogCategory.INFO, line)
+        }
     }
 
     override fun onConnected(address: String) {
         runOnUiThread {
             linkState = linkState.transition(BleLinkEvent.GATT_CONNECTED)
+            commErrorCount = 0
+            diagnosticLog.add(
+                SystemClock.elapsedRealtime(), DiagnosticSeverity.INFO,
+                "GATT_CONNECTED", "GATT verbunden: $address"
+            )
             addLog(LogCategory.INFO, "GATT verbunden: $address")
             if (::statusText.isInitialized) statusText.text = "Verbunden. Service-Discovery läuft…"
         }
@@ -2207,6 +2410,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onTelemetry(t: Telemetry) {
         runOnUiThread {
             lastTelemetry = t
+            lastTelemetryAtElapsed = SystemClock.elapsedRealtime()
             updateTrip(t)
             scheduleTelemetryApply()
         }
@@ -2217,6 +2421,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             if (success) {
                 addLog(LogCategory.RX, "$label bestätigt (${ScooterFrames.toHex(frame)})")
             } else {
+                commErrorCount++
+                diagnosticLog.add(
+                    SystemClock.elapsedRealtime(), DiagnosticSeverity.ERROR,
+                    "WRITE_FAILED", "$label fehlgeschlagen: $detail"
+                )
                 addLog(LogCategory.ERROR, "$label fehlgeschlagen: $detail")
             }
         }
