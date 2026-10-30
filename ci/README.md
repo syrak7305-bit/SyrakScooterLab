@@ -65,3 +65,49 @@ durch `if: always()` trotzdem hochgeladen, sofern er erzeugt wurde
 
 Diese Zahlen stammen aus einem lokalen Lauf auf dem Branch
 `fix/phase5-ble-scan-and-connection-switch`, **nicht** aus GitHub Actions.
+
+---
+
+## Update nach Build #157 (HTTP 403) — Branch `fix/ci-maven-central-403-resilience`
+
+Build #157 (`main`, Commit `6c0066f`) brach in der Konfigurationsphase ab. Die
+Auswertung des Logs zeigt:
+
+- **Alle** 403-Antworten kamen von `repo.maven.apache.org` (Maven Central).
+- `dl.google.com` (Google Maven) lieferte im selben Lauf normal aus.
+- Derselbe Commit war wenige Minuten vorher auf dem PR-Branch gruen
+  (Runs `40974802688` / `40974823913`) und lud dieselben Artefakte von
+  Maven Central.
+- Ein lokaler Build aus leerem Cache mit `--refresh-dependencies` ist
+  erfolgreich; Maven Central antwortet aktuell mit HTTP 200.
+
+Damit ist die Ursache ein **fluechtiges CDN-/IP-Blocking von Maven Central
+gegenueber dem jeweiligen Runner**, keine Fehlkonfiguration des Projekts.
+Die Repository-Reihenfolge (`google()` -> `mavenCentral()` ->
+`gradlePluginPortal()`) war korrekt.
+
+`ci/build.yml.proposed` enthaelt deshalb zusaetzlich zu den Unit-Tests einen
+**einmaligen Retry** des `assembleDebug`-Schritts. Der Retry aendert keine
+Abhaengigkeiten und keine Versionen; er gibt einem nachweislich fluechtigen
+Infrastrukturfehler eine zweite Chance und laesst den Job danach hart
+fehlschlagen.
+
+Der Push dieser Workflow-Aenderung wurde erneut vom Server abgelehnt:
+
+```
+! [remote rejected] ... (refusing to allow a GitHub App to create or update
+  workflow `.github/workflows/build.yml` without `workflows` permission)
+```
+
+Es wird weiterhin **nicht** versucht, diese Grenze zu umgehen. Zum
+Uebernehmen ist ein Token mit `workflows`-Recht noetig (oder der
+GitHub-Web-Editor):
+
+```bash
+cp ci/build.yml.proposed .github/workflows/build.yml
+git add .github/workflows/build.yml
+git commit -m "ci: unit tests + one retry for transient Maven Central 403"
+git push
+```
+
+Solange das nicht erfolgt, laufen in der CI **weiterhin keine Unit-Tests**.
