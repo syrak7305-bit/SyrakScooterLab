@@ -53,8 +53,8 @@ Herkunftsklassen (`UuidProvenance`):
 | `navee.char.main` | `0000ffe1-0000-1000-8000-00805f9b34fb` | Notify-Char | Navee/Brightway | PROJECT_CONSTANT | BleEngine, NaveeGt3MaxAdapter |
 | `navee.char.alt` | `0000ffe2-0000-1000-8000-00805f9b34fb` | Write-Char | Navee/Brightway | PROJECT_CONSTANT | BleEngine, NaveeGt3MaxAdapter |
 | `ninebot.service` | `0000e003-0000-1000-8000-00805f9b34fb` | GATT-Service | Ninebot/Xiaomi | PROJECT_CONSTANT | BleEngine, NinebotAdapter |
-| `ninebot.char.write` | `0000fff1-0000-1000-8000-00805f9b34fb` | Write-Char | Ninebot/Xiaomi | PROJECT_CONSTANT | BleEngine, NinebotAdapter |
-| `ninebot.char.write.alt` | `0000fff2-0000-1000-8000-00805f9b34fb` | Write-Char (alt) | Ninebot/Xiaomi | PROJECT_CONSTANT | BleEngine, NinebotAdapter |
+| `ninebot.char.write` | `0000fff1-0000-1000-8000-00805f9b34fb` | Write-Char, **Kandidat auch Notify** (Rolle unbelegt) | Ninebot/Xiaomi | PROJECT_CONSTANT | BleEngine, NinebotAdapter |
+| `ninebot.char.write.alt` | `0000fff2-0000-1000-8000-00805f9b34fb` | Write-Char (alt), **Kandidat auch Notify** (Rolle unbelegt) | Ninebot/Xiaomi | PROJECT_CONSTANT | BleEngine, NinebotAdapter |
 | `legacy.uart.service` | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | GATT-Service | Nordic UART | LEGACY_UNCONFIRMED | BleConstants (Legacy) |
 | `legacy.uart.write` | `6e400002-b5a3-f393-e0a9-e50e24dcca9e` | Write-Char | Nordic UART | LEGACY_UNCONFIRMED | BleConstants (Legacy) |
 | `legacy.uart.notify` | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` | Notify-Char | Nordic UART | LEGACY_UNCONFIRMED | BleConstants (Legacy) |
@@ -64,9 +64,31 @@ Herkunftsklassen (`UuidProvenance`):
 
 | Adapter | Protokoll | Service-UUIDs | Write-Char | Notify-Char | Hardware bestätigt |
 |---------|-----------|---------------|------------|-------------|--------------------|
-| `NinebotAdapter` (`ninebot-generic`) | NINEBOT | `0000e003` | `0000fff1` / `0000fff2` | `0000fff1` / `0000fff2` | **nein** |
+| `NinebotAdapter` (`ninebot-generic`) | NINEBOT | `0000e003` | `0000fff1` / `0000fff2` | `0000fff1` / `0000fff2` (Kandidaten, Rolle unbelegt) | **nein** |
 | `NaveeGt3MaxAdapter` (`navee-gt3max`) | NAVEE_BRIGHTWAY | `0000ffe0` | `0000ffe2` | `0000ffe1` | **nein** |
 | Legacy `BleManager` | – | `6e400001` / `fe95` | `6e400002` | `6e400003` | **nein** |
+
+### 2.3 Phase-16.1-Korrektur: Rollen statt Doppelbehauptung
+
+Vor Phase 16.1 fuehrten `NinebotAdapter` und `NaveeGt3MaxAdapter` **dieselben
+UUIDs gleichzeitig als Write- und als Notify-Characteristic**. Beim Navee war
+das nachweislich falsch (Brightway: FFE1 = Notify, FFE2 = Write). Beim Ninebot
+liess sich die reale Rolle von FFF1/FFF2 ohne GATT-Mitschnitt nicht entscheiden.
+
+Die Korrektur erfindet **keine** Rolle:
+
+- `UuidDefinition` traegt jetzt `candidateRoles`. FFF1/FFF2 sind dort als
+  Kandidaten fuer **Write UND Notify** registriert (`roleAmbiguous = true`),
+  weil die Rolle unbelegt ist.
+- `NaveeGt3MaxAdapter` leitet Write/Notify jetzt aus der Registry ab:
+  Write = FFE2, Notify = FFE1 (eindeutig, wie im Brightway-Layout dokumentiert).
+- `NinebotAdapter` leitet Write/Notify ebenfalls aus der Registry ab. Beide
+  Listen enthalten FFF1/FFF2, aber nur weil die Registry diese Rollen
+  ausdruecklich als **mehrdeutig** markiert – nicht als bewiesen.
+- `confirmedOnHardware` bleibt fuer alle Scooter-UUIDs `false`.
+
+Damit stimmen Registry und Adapter ueberein, und die offene Hardware-Frage ist
+sichtbar statt versteckt.
 
 ---
 

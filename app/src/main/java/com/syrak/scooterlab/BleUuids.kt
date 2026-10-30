@@ -90,8 +90,18 @@ data class UuidDefinition(
     val provenance: UuidProvenance,
     val sourceNote: String,
     val usedBy: List<String>,
-    val confirmedOnHardware: Boolean = false
+    val confirmedOnHardware: Boolean = false,
+    /**
+     * Alle Rollen, fuer die diese UUID im Projekt als Kandidat gefuehrt wird.
+     * Enthaelt [role]. Mehr als eine Rolle bedeutet: die tatsaechliche
+     * Hardware-Rolle ist NICHT belegt (z. B. Ninebot FFF1/FFF2). Dadurch kann
+     * ein Adapter keine Rolle behaupten, die die Registry nicht kennt.
+     */
+    val candidateRoles: Set<UuidRole> = setOf(role)
 ) {
+    /** true, wenn die Rolle ohne echten GATT-Mitschnitt nicht entscheidbar ist. */
+    val roleAmbiguous: Boolean get() = candidateRoles.size > 1
+
     /** Kurzzeile fuer die Entwickleransicht. */
     fun summary(): String =
         "$uuid · $family · ${role.name} · ${provenance.name}" +
@@ -181,8 +191,14 @@ object BleUuids {
             role = UuidRole.WRITE_CHARACTERISTIC,
             family = "Ninebot / Xiaomi",
             provenance = UuidProvenance.PROJECT_CONSTANT,
-            sourceNote = "Projektkonstante in BleEngine/NinebotAdapter (Write-Kandidat 1).",
-            usedBy = listOf("BleEngine", "NinebotAdapter")
+            sourceNote = "Projektkonstante in BleEngine/NinebotAdapter (Write-Kandidat 1). " +
+                "Ob FFF1 zusaetzlich Notify/Indicate traegt, ist ohne GATT-Mitschnitt " +
+                "NICHT entschieden; daher als Kandidat fuer beide Rollen gefuehrt.",
+            usedBy = listOf("BleEngine", "NinebotAdapter"),
+            candidateRoles = setOf(
+                UuidRole.WRITE_CHARACTERISTIC,
+                UuidRole.NOTIFY_CHARACTERISTIC
+            )
         ),
         UuidDefinition(
             key = "ninebot.char.write.alt",
@@ -190,8 +206,14 @@ object BleUuids {
             role = UuidRole.WRITE_CHARACTERISTIC,
             family = "Ninebot / Xiaomi",
             provenance = UuidProvenance.PROJECT_CONSTANT,
-            sourceNote = "Projektkonstante in BleEngine/NinebotAdapter (Write-Kandidat 2).",
-            usedBy = listOf("BleEngine", "NinebotAdapter")
+            sourceNote = "Projektkonstante in BleEngine/NinebotAdapter (Write-Kandidat 2). " +
+                "Ob FFF2 zusaetzlich Notify/Indicate traegt, ist ohne GATT-Mitschnitt " +
+                "NICHT entschieden; daher als Kandidat fuer beide Rollen gefuehrt.",
+            usedBy = listOf("BleEngine", "NinebotAdapter"),
+            candidateRoles = setOf(
+                UuidRole.WRITE_CHARACTERISTIC,
+                UuidRole.NOTIFY_CHARACTERISTIC
+            )
         ),
         UuidDefinition(
             key = "legacy.uart.service",
@@ -241,6 +263,24 @@ object BleUuids {
 
     /** true, wenn die UUID im Projekt ueberhaupt bekannt ist. */
     fun isKnown(uuid: String): Boolean = definitionOf(uuid) != null
+
+    /**
+     * Alle UUID-Texte einer Familie, die fuer [role] als Kandidat gefuehrt
+     * werden. Adapter leiten ihre Write-/Notify-Listen hieraus ab, damit
+     * Registry und Adapter nie auseinanderlaufen koennen.
+     */
+    fun candidateUuids(family: String, role: UuidRole): List<String> =
+        definitions
+            .filter { it.family == family && role in it.candidateRoles }
+            .map { it.uuid }
+
+    /** Kandidatenrollen einer UUID (leer, wenn unbekannt). */
+    fun rolesOf(uuid: String): Set<UuidRole> =
+        definitionOf(uuid)?.candidateRoles ?: emptySet()
+
+    /** true, wenn die Rolle einer bekannten UUID nicht eindeutig belegt ist. */
+    fun isRoleAmbiguous(uuid: String): Boolean =
+        definitionOf(uuid)?.roleAmbiguous == true
 
     /** Belegstatus einer UUID; unbekannte UUIDs gelten als PLACEHOLDER. */
     fun provenanceOf(uuid: String): UuidProvenance =
