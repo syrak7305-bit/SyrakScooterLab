@@ -111,3 +111,36 @@ git push
 ```
 
 Solange das nicht erfolgt, laufen in der CI **weiterhin keine Unit-Tests**.
+
+---
+
+## Fehlendes Download-Symbol beim APK-Artifact (Stand 2026-10-30)
+
+In der mobilen GitHub-Ansicht fehlt neben dem Kopier-Symbol der Download-Button
+fuer das Artifact `SyrakScooterLab-debug-apk`.
+
+**Untersuchungsergebnis:** Build, Upload und API-Auslieferung sind korrekt.
+
+- Artifacts-API: alle Artifacts `expired=false`, `expires_at=2027-01-28` (90-Tage-Default).
+- Authentifizierter ZIP-Download (`/actions/artifacts/{id}/zip`): HTTP 200, valides ZIP,
+  enthaelt `app-debug.apk`.
+- Serverseitig gerenderte Run-Seite enthaelt die Artifact-Zeile, aber eine **leere
+  Action-Zelle** (kein Download-Anker); `octicon-download` kommt 0x vor — auch auf
+  aelteren Runs (keine Regression).
+- `/actions/runs/{id}/artifacts_partial` -> HTTP 404.
+- Legacy `/actions/runs/{id}/artifacts/{id}` -> 307 -> `/suites/{suiteId}/artifacts/{id}` -> HTTP 404.
+
+**Fazit:** Das fehlende Symbol wird von GitHubs Frontend erzeugt und ist vom
+Repository aus **nicht beeinflussbar**. Es wurde deshalb **keine** Aenderung an
+`.github/workflows/build.yml` vorgenommen.
+
+**Workaround (funktioniert unabhaengig vom UI):**
+
+```bash
+gh run download <RUN_ID> -n SyrakScooterLab-debug-apk
+# oder
+gh api repos/syrak7305-bit/SyrakScooterLab/actions/artifacts/<ARTIFACT_ID>/zip > apk.zip
+```
+
+Vollstaendige Analyse: `SYRAK_ARTIFACT_DOWNLOAD_ANALYSE.md` (im Repo-Root der
+Doku-Ablage).
