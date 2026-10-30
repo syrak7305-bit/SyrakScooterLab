@@ -1,46 +1,73 @@
-# Syrak ScooterLab — Build Roadmap (todo.md)
+# PHASE 12 — TODO (Stand: abgeschlossen)
 
-## Sprint 0 — Foundation & Design System
-- [x] Scaffold Gradle project (Kotlin DSL, version catalog, AGP/Kotlin/Compose)
-- [x] AndroidManifest with full BLE permission matrix (API 26–35)
-- [x] Cyberpunk design tokens (colors, dimens, type, shapes) — Compose + XML
-- [x] Custom vector drawables (scooter, battery, bolt, speed, shield, chip, etc.)
-- [x] Material3 dark theme wiring (SyrakTheme)
-- [x] Adaptive launcher icon
+## 0. Vorarbeiten
+- [x] Repository-Stand geprueft (PR #16 war noch OFFEN, CI gruen, gemerged -> main 5f82f5c)
+- [x] Branch `feat/phase12-professional-ui` erstellt
+- [x] Bestandsaufnahme: echte UI ist klassisches Android-View-Layout in `MainActivity`, nicht Compose
+- [x] Git-Historie nach verschwundenen Funktionen durchsucht (75 Commits, `git log -S`)
 
-## Sprint 1 — BLE Core Engine
-- [x] BleConstants (service/characteristic UUIDs, MTU, timeouts)
-- [x] BleModels (DiscoveredScooter, ConnectionState, GattEvent)
-- [x] BlePermissions runtime gate (31+ vs legacy)
-- [x] BleManager (scan filters, connect, GATT queue, notify flow, MTU)
-- [x] BleSessionService (foreground service for long operations)
+## 12.1 Wiederherstellung
+- [x] Vollstaendiger Haftungsausschluss (7 Abschnitte) aus Commit `2d7638e` wiederhergestellt
+- [x] Haftungsausschluss scrollbar, 6-s-Bestaetigungssperre, Persistenz (`disclaimersAccepted`)
+- [x] Trip-Timer wiederhergestellt (Live-Anzeige "Fahrtzeit", `TripClock`)
+- [x] Servo-Start: in der gesamten Historie NICHT vorhanden -> dokumentiert, nicht erfunden
+- [x] Laender-Hinweise mit Quelle + Stand (`CountryLegalCatalog`)
+- [x] Manuelle Landauswahl + neutraler Hinweis fuer unbekannte Laender
+- [x] Keine erfundenen Gesetze/Geschwindigkeitsgrenzen
 
-## Sprint 2 — Protocol & Packet Crafting
-- [x] Crc16 (CCITT/XMODEM, verified vs 0x31C3)
-- [x] NinebotFrame (encode/decode, length, addressing, CRC validation)
-- [x] NinebotProtocol (read/write register, LE decoders)
-- [x] RegisterMap (documented, firmware-verifiable constants + write allow-list)
-- [x] NinebotAuth (AES-128-ECB challenge/response scaffold)
-- [x] NinebotSession (request/response correlator)
+## 12.2 Redesign
+- [x] Palette: Anthrazit + Cyan, Rot nur Gefahr, Gruen bestaetigt, Orange Warnung
+- [x] Buttons 44 dp, einheitliche Radien, Abstaende 8/16/24
+- [x] Monospace/tabellarische Messwerte
+- [x] Fuenf Tabs mit aktivem Label
 
-## Sprint 3 — Features
-- [x] German Maneuver (RAM patch sequence + commit + verify + revert)
-- [x] Telemetry poller (speed, voltage, cells, temp, odometer) + simulator
-- [x] Emergency safety killswitch
-- [ ] Firmware manager (DFU/OTA pipeline) — Phase 2
+## 12.3 Bluetooth
+- [x] Klassifikation bekannter/wahrscheinlicher Scooter, unbekannte getrennt
+- [x] Hersteller + Modell + Erkennungsguete, Signalstaerke als Balken + Text
+- [x] "Alle Geraete"-Umschalter, Herstellerfilter, Scan-Abbruch, Scan-Status
+- [x] Unbekanntes Geraet wird nicht als Scooter behandelt ("Mi Band 7"-Fix)
+- [x] Granulare Verbindungsstufen (`connectionStage()`)
 
-## Sprint 4 — UI
-- [x] Dashboard (live telemetry gauge + panels)
-- [x] Component library (NeonCard, GaugeRing, StatTile, StatusChip, SyrakButton)
-- [ ] Scan/Connect dedicated screen — Phase 2
-- [ ] Register inspector / hex console — Phase 2
+## 12.4 BLE-Fehler
+- [x] Poll-Fehlerflut behoben (`PollGate`, `hasWriteCharacteristic()`, stille Polls)
+- [x] Polling stoppt bei fehlenden Voraussetzungen und bei Disconnect
+- [x] GATT-Struktur mit Properties (R/W/N/I) in der UI
+- [x] RSSI/MTU/Dauer/Abbrueche/Fehler angezeigt
+- [x] Systemstatus-Kategorien (7 Zeilen mit OK/OFFEN)
+- [x] UUID-Widerspruch `BleConstants` vs. `BleEngine` dokumentiert (nicht geraten)
+- [x] JSON/CSV-Export erhalten
 
-## Deliverables This Turn
-- [x] Full project scaffold (57 files)
-- [x] Design system + 14 vector drawables
-- [x] BLE + protocol core
-- [x] Dashboard Compose UI
-- [x] High-fidelity HTML design preview + rendered PNG
-- [x] Architecture & roadmap document
-- [x] Protocol unit tests
-- [x] Packaged project archive
+## 12.5 Cockpit
+- [x] Halbkreis-Tacho (`CockpitGaugeView`)
+- [x] Verlaufsgraphen (`SparklineView`), Min/Max
+- [x] "Nicht verfuegbar" statt Platzhalter, DEMO-Kennzeichnung
+
+## 12.6 Tools
+- [x] Alle Slider/Schalter erhalten, Min/Max-Zeile, Einheit in einer Zeile
+- [x] Fahrprofile als kompaktes Segmented Control
+- [x] Erweiterte Einstellungen ein-/ausklappbar
+- [x] Gefahr-Kennzeichnung
+- [x] Polizei-Modus: ein Tap, Voraussetzungen geprueft, kein Erfolgston ohne Freigabe
+
+## 12.7 Verbesserungen
+- [x] A: Schnellzugriff auf zuletzt verwendeten Scooter (kein Auto-Connect)
+- [x] B: Diagnose-Historie lokal + Vergleich zweier Berichte
+- [x] C: Verbindungsqualitaet (Signal, MTU, Dauer, Abbrueche, Instabilitaetshinweis)
+- [x] D: Systemstatus-Uebersicht
+- [x] E: Onboarding beim ersten Start (ersetzt den Haftungsausschluss nicht)
+- [x] F: Barrierefreiheit (Statuswort statt nur Farbe, grosse Touch-Ziele)
+
+## 12.8 Sicherheit
+- [x] `TuningSafetyGate`, `WriteGuard`, `AutoHandshakePolicy` unveraendert aktiv
+- [x] Read-only-Default fuer unbekannte Geraete erhalten
+
+## 12.9 Tests
+- [x] Unit-Tests fuer alle neuen Logikbausteine (`Phase12SupportTest`)
+- [x] Alle Unit-Tests: 268 Tests, 0 Fehler
+- [x] `assembleDebug` erfolgreich
+- [x] Regressionspruefung (bestehende Tests unveraendert gruen)
+
+## Abschluss
+- [x] `PHASE12_BERICHT.md` geschrieben
+- [x] Commit + Push auf `feat/phase12-professional-ui`
+- [x] PR erstellt

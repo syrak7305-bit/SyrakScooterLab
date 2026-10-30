@@ -86,6 +86,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
+    // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
+    // Geraete bleiben optional sichtbar (nicht verstecken).
+    private var showAllDevices = false
+    private var manufacturerFilter: String? = null
+    private var scanStatusView: TextView? = null
+    // PHASE 12.6: erweiterte Tools einklappbar.
+    private var showAdvancedTools = false
 
     // Scan-UI-Throttle: Scan-Callbacks kommen teils mehrfach pro Sekunde und pro
     // Geraet. Ein vollstaendiger Listen-Rebuild je Callback fuehrt zu Ruckeln und
@@ -201,12 +208,24 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var dashBattery: TextView? = null
     private var dashMotorTemp: TextView? = null
     private var dashTrip: TextView? = null
+    // PHASE 12.1: wiederhergestellte Fahrtzeit-Anzeige (Trip-Timer).
+    private var dashTripTime: TextView? = null
+    private var tripClockRunnable: Runnable? = null
     private var dashRange: TextView? = null
     private var dashCellMin: TextView? = null
     private var dashCellMax: TextView? = null
     private var dashCellDelta: TextView? = null
     private var dashTempGuardState: TextView? = null
     private var dashFeedState: TextView? = null
+
+    // ---- PHASE 12.5: Cockpit (Tacho + Verlaufsgraphen) ----
+    private var dashGauge: CockpitGaugeView? = null
+    private var speedSpark: SparklineView? = null
+    private var powerSpark: SparklineView? = null
+    private var dashHistoryMinMax: TextView? = null
+    private val speedHistory = ArrayDeque<Float>()
+    private val powerHistory = ArrayDeque<Float>()
+    private val HISTORY_MAX = 60
 
     // ---- PHASE 9: Diagnose ----
     private var diagOverall: TextView? = null
@@ -240,6 +259,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var htReadyAt = 0L
     private var htDisconnectedAt = 0L
     private var htUnexpectedDisconnect = false
+    // PHASE 12.7: Verbindungsqualitaet (Abbrueche zaehlen)
+    private var disconnectCount = 0
+    // PHASE 12.3: granularer Verbindungsstatus
+    private var lastConnectFailed = false
+    private var connStageView: TextView? = null
     private var htLastGatt: List<com.syrak.scooterlab.diagnostics.GattServiceRecord> = emptyList()
     private var pendingExportContent: String? = null
     private var pendingExportMime: String = "application/json"
@@ -415,6 +439,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         endSafeStopRamp()
         activeTimer?.cancel()
         stopTelemetry()
+        stopTripClock()
         stopSystemBar()
         stopBleSession()
         // notifyListener = false: die Activity wird gerade zerstoert, ein
@@ -436,19 +461,52 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             if (bold) setTypeface(null, Typeface.BOLD)
         }
 
+    /** PHASE 12: einheitlicher, abgerundeter Hintergrund mit dezenter Kontur. */
+    private fun roundedBg(fill: Int, stroke: Int, radiusDp: Int = Palette.RADIUS_DP): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radiusDp).toFloat()
+            setColor(fill)
+            setStroke(dp(1).coerceAtLeast(1), stroke)
+        }
+
     private fun makeCard(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(16), dp(16), dp(16))
-        setBackgroundColor(Palette.SURFACE_ALT)
+        setPadding(dp(Palette.SPACE_MD), dp(Palette.SPACE_MD), dp(Palette.SPACE_MD), dp(Palette.SPACE_MD))
+        background = roundedBg(Palette.SURFACE_ALT, Palette.OUTLINE)
     }
 
     private fun makeSectionLabel(value: String): TextView =
-        makeText("  $value", 11f, Palette.ACCENT_RED, true).apply { setPadding(0, dp(14), 0, dp(6)) }
+        makeText(value.uppercase(), 11f, Palette.ACCENT, true).apply {
+            letterSpacing = 0.18f
+            setPadding(dp(4), dp(14), 0, dp(6))
+        }
 
-    private fun makePrimaryButton(label: String, color: Int = Palette.ACCENT_RED, onClick: () -> Unit) =
+    private fun makePrimaryButton(label: String, color: Int = Palette.ACCENT, onClick: () -> Unit) =
         Button(this).apply {
-            text = label; isAllCaps = true; setBackgroundColor(color)
-            setTextColor(Color.WHITE); setOnClickListener { onClick() }
+            text = label; isAllCaps = true
+            background = roundedBg(color, color, 10)
+            stateListAnimator = null
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            letterSpacing = 0.06f
+            minHeight = dp(Palette.BUTTON_HEIGHT_DP)
+            minimumHeight = dp(Palette.BUTTON_HEIGHT_DP)
+            setPadding(dp(12), 0, dp(12), 0)
+            setOnClickListener { onClick() }
+        }
+
+    /** PHASE 12: kompakter Sekundaer-Button (nur Kontur, kein Vollflaechen-Farbtopf). */
+    private fun makeOutlineButton(label: String, color: Int = Palette.ACCENT, onClick: () -> Unit) =
+        Button(this).apply {
+            text = label; isAllCaps = true
+            background = roundedBg(Color.TRANSPARENT, color, 10)
+            stateListAnimator = null
+            setTextColor(color)
+            textSize = 12f
+            minHeight = dp(Palette.BUTTON_HEIGHT_DP)
+            minimumHeight = dp(Palette.BUTTON_HEIGHT_DP)
+            setOnClickListener { onClick() }
         }
 
     private fun makeToggleRow(label: String, desc: String, initial: Boolean, onToggle: (Boolean) -> Unit) =
@@ -516,7 +574,24 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         card.addView(bar, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
+        // PHASE 12.6: Min/Max in einer Zeile, damit der Wertebereich klar ist.
+        val rangeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        rangeRow.addView(makeText("Min: $min $unit", 10f, Palette.TEXT_MUTED),
+            LinearLayout.LayoutParams(0, WRAP, 1f))
+        val maxView = makeText("Max: $max $unit", 10f, Palette.TEXT_MUTED)
+        maxView.gravity = Gravity.END
+        rangeRow.addView(maxView, LinearLayout.LayoutParams(0, WRAP, 1f))
+        card.addView(rangeRow)
         return card
+    }
+
+    /** PHASE 12.6: kennzeichnet gefaehrliche Funktionen sichtbar (Text + Farbe). */
+    private fun addDangerBadge(parent: LinearLayout, text: String) {
+        parent.addView(makeText("⚠ GEF\u00c4HRLICH \u00b7 $text", 10f, Palette.DANGER, true).apply {
+            setPadding(0, dp(2), 0, dp(6))
+        })
     }
 
     private fun cardParams() = LinearLayout.LayoutParams(
@@ -579,6 +654,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      */
     private fun modelAdapterExact(): Boolean =
         ProtocolAdapters.resolveForModel(detectedModel).exact
+
+    /** PHASE 12: belegt, ob der aktive Adapter Status-Telemetrie lesen kann. */
+    private fun adapterSupportsRead(): Boolean =
+        adapter().capabilities.supportsRead(ReadOperation.STATUS_TELEMETRY)
 
     /**
      * PHASE 11: Zentrale Sperrpruefung ueber [WriteGuard]. Buendelt die
@@ -650,6 +729,29 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         )
     }
 
+    /**
+     * PHASE 12.7 B: Speichert den aktuellen Diagnosestand lokal (SharedPreferences).
+     * Es werden ausschliesslich bereits vorhandene Beobachtungsdaten abgelegt.
+     */
+    private fun saveDiagnosticHistory() {
+        val report = buildHardwareReport()
+        val entry = DiagnosticHistoryEntry(
+            timestampMs = report.generatedAtEpochMs,
+            model = report.detectedModel,
+            supportStatus = report.supportStatus,
+            errors = report.errors.size,
+            warnings = report.notes.size,
+            summary = "Frames ${report.frames.size} \u00b7 MTU ${report.connection.mtu}"
+        )
+        val existing = DiagnosticHistoryCodec.decode(repository.diagnosticHistoryRaw).toMutableList()
+        existing.add(entry)
+        // Begrenzung: nur die letzten 20 Berichte behalten.
+        val trimmed = if (existing.size > 20) existing.takeLast(20) else existing
+        repository.diagnosticHistoryRaw = DiagnosticHistoryCodec.encode(trimmed)
+        addLog(LogCategory.INFO, "Diagnosebericht gespeichert (${trimmed.size} Eintraege).")
+        showTab(Tab.INFO)
+    }
+
     private fun appVersionName(): String = try {
         packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
     } catch (_: Exception) {
@@ -701,12 +803,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         rootContainer.addView(box, LinearLayout.LayoutParams(MATCH, MATCH))
 
         loadingRunnable = Runnable {
-            if (!repository.disclaimersAccepted) {
-                showDisclaimer()
-            } else if (repository.hasPin) {
-                showPinDialog()
-            } else {
-                enterMain()
+            when {
+                !repository.disclaimersAccepted -> showDisclaimer()
+                !repository.countryNoticeAccepted -> showCountryDisclaimer()
+                !repository.onboardingSeen -> showOnboarding()
+                repository.hasPin -> showPinDialog()
+                else -> enterMain()
             }
         }
         handler.postDelayed(loadingRunnable!!, 900L)
@@ -718,31 +820,176 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Palette.BG)
-            setPadding(dp(22), dp(26), dp(22), dp(26))
+            setPadding(dp(20), dp(24), dp(20), dp(24))
         }
-        col.addView(makeText("SICHERHEITS- & HAFTUNGSHINWEIS", 18f, Palette.ACCENT_RED, true))
+        col.addView(makeText("SICHERHEITS- & HAFTUNGSHINWEIS", 18f, Palette.DANGER, true))
         col.addView(makeText(
-            "Syrak ScooterLab ist ein Diagnose- und Analysewerkzeug für E-Scooter. " +
-                "Es werden KEINE offiziellen Firmware-Downloads, keine geprüften Prüfsummen und " +
-                "keine Hardware-Kompatibilitätsgarantien bereitgestellt.\n\n" +
-                "Tuning-Eingriffe (Geschwindigkeit, Zero-Start, KERS, Cruise, German Maneuver, " +
-                "Polizei-Modus, Notaus) können die Betriebserlaubnis erlöschen lassen, die " +
-                "Gewährleistung aufheben und Personen gefährden. In Deutschland gilt für " +
-                "E-Scooter die eKFV mit 20 km/h. Das Überschreiten ist im öffentlichen " +
-                "Straßenverkehr unzulässig.\n\n" +
-                "Firmware-Flashen ist in dieser Version gesperrt, solange kein verifizierter " +
-                "SHA-256 und keine belegte Modell-/Hardware-Kompatibilität vorliegen. " +
-                "Der Notaus ist eine elektronische Unterstützung und ersetzt NICHT die " +
-                "mechanische Bremse.\n\n" +
-                "Die Nutzung erfolgt ausschließlich auf eigene Verantwortung. Führe riskante " +
-                "Schreibzugriffe nur auf einem eigenen Testgerät und nie im öffentlichen " +
-                "Verkehr durch.",
-            13f, Palette.TEXT_SECONDARY
-        ).apply { setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, dp(16), 0, dp(24)) })
-        col.addView(makePrimaryButton("HINWEIS AKZEPTIEREN") {
-            repository.disclaimersAccepted = true
+            "Bitte vollstaendig lesen. Dieser Hinweis muss vor der ersten Nutzung bestaetigt werden.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(6), 0, dp(18)) })
+
+        // PHASE 12.1: Die vollstaendige, mehrteilige Fassung wurde aus der
+        // frueheren Implementierung wiederhergestellt. Keine Warnung entfernt.
+        val sections = listOf(
+            "Altersbeschraenkung & Sachkunde" to
+                "Diese App und ihre Firmware-Werkzeuge richten sich ausschliesslich an volljaehrige Nutzer. Minderjaehrige duerfen das Fahrzeug nur unter direkter Aufsicht und voller Verantwortung einer erziehungsberechtigten Person nutzen.",
+            "Persoenliche Sicherheit & Schutzausruestung" to
+                "Trage immer zertifizierte Schutzausruestung (Helm, Protektoren) und pruefe vor jeder Fahrt Bremsen, Reifendruck, Faltmechanismus und Lenkung. Fahre niemals abgelenkt, muede oder unter Einfluss von Alkohol, Medikamenten oder Drogen.",
+            "Hardware-Risiken & Bauteilschaeden" to
+                "Low-Level-Diagnosebefehle, das Aendern von Firmware-Registern, das Verstellen von Geschwindigkeitsbegrenzern oder das Flashen eigener MCU-Pakete bergen technische Risiken. Fehlerhafte Parameter koennen den Motorcontroller dauerhaft beschaedigen, zu Thermal-Durchgehen in Lithium-Ionen-Akkus, blockierenden Bremsen oder schweren elektronischen Fehlfunktionen fuehren.",
+            "Rechtliche Konformitaet & Strassenverkehr" to
+                "Das Veraendern werkseitiger Geschwindigkeitsgrenzen, Leistungsgrenzen oder Softwareprofile kann gegen lokales Verkehrsrecht, regionale Typgenehmigungen (z. B. eKFV in Deutschland) und oeffentliche Verkehrsregeln verstossen. Fahrzeuge, die ueber die zulaessigen Grenzen hinaus modifiziert wurden, duerfen im oeffentlichen Verkehr, auf Radwegen oder Gehwegen nicht betrieben werden.",
+            "Versicherung & Gewaehrleistungsverlust" to
+                "Das Modifizieren von Firmware oder das Umgehen werkseitiger Hardware-Beschraenkungen laesst die Herstellergarantie sofort erloeschen. Aenderungen an Hoechstgeschwindigkeit oder Ausgangsleistung lassen in der Regel die gesetzliche Haftpflichtversicherung entfallen und setzen den Betreiber im Schadensfall einem erheblichen finanziellen und rechtlichen Risiko aus.",
+            "Unabhaengiges Drittanbieter-Projekt" to
+                "Syrak ScooterLab ist ein unabhaengiges Entwickler-Werkzeug. Es besteht keine Verbindung, Unterstuetzung, Sponsoring oder offizielle Zusammenarbeit mit Segway-Ninebot, Xiaomi, Navee oder anderen Micro-Mobility-Herstellern.",
+            "Gewaehrleistungsausschluss & Eigenverantwortung" to
+                "Die Software wird ohne jegliche ausdrueckliche oder stillschweigende Gewaehrleistung bereitgestellt. Mit dem Fortfahren uebernimmst du die vollstaendige persoenliche Haftung fuer Sachschaeden, Koerperverletzungen, rechtliche Sanktionen oder Bussgelder, die aus der Nutzung entstehen."
+        )
+        sections.forEach { (heading, body) ->
+            col.addView(makeText(heading, 13f, Palette.TEXT_PRIMARY, true).apply { setPadding(0, dp(12), 0, dp(4)) })
+            col.addView(makeText(body, 12.5f, Palette.TEXT_SECONDARY).apply {
+                setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, 0, 0, dp(6))
+            })
+        }
+        col.addView(makeText(
+            "Der Notaus ist eine elektronische Unterstuetzung und ersetzt NICHT die mechanische Bremse. " +
+                "Firmware-Flashen bleibt gesperrt, solange kein verifizierter SHA-256 und keine belegte Modell-/Hardware-Kompatibilitaet vorliegen.",
+            12f, Palette.WARNING
+        ).apply { setPadding(0, dp(14), 0, dp(20)) })
+
+        // PHASE 12.1: kurze, erzwungene Lesephase wie in der frueheren Fassung.
+        val accept = makePrimaryButton("GELESEN (6)", Palette.ACCENT) {}
+        accept.isEnabled = false
+        col.addView(accept, LinearLayout.LayoutParams(MATCH, WRAP))
+        scroll.addView(col)
+        rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
+
+        activeTimer?.cancel()
+        activeTimer = object : CountDownTimer(6000L, 1000L) {
+            override fun onTick(millisUntilFinished: Long) {
+                accept.text = "GELESEN (${millisUntilFinished / 1000})"
+            }
+            override fun onFinish() {
+                accept.text = "HINWEIS AKZEPTIEREN"
+                accept.isEnabled = true
+                accept.setOnClickListener {
+                    repository.disclaimersAccepted = true
+                    continueAfterDisclaimer()
+                }
+            }
+        }.start()
+    }
+
+    /** Nach dem Haftungshinweis: Laender-Hinweis (falls noetig), dann Onboarding/PIN. */
+    private fun continueAfterDisclaimer() {
+        activeTimer?.cancel()
+        if (!repository.countryNoticeAccepted) showCountryDisclaimer() else continueAfterCountry()
+    }
+
+    private fun continueAfterCountry() {
+        if (!repository.onboardingSeen) showOnboarding() else {
             if (repository.hasPin) showPinDialog() else enterMain()
-        }, LinearLayout.LayoutParams(MATCH, WRAP))
+        }
+    }
+
+    /**
+     * PHASE 12.1: Laender-Hinweis mit belegbaren Quellen und Stand.
+     * Es werden KEINE Geschwindigkeitsgrenzen erfunden; unbekannte Laender
+     * erhalten einen neutralen Hinweis. Das Land kann manuell gewaehlt werden.
+     */
+    private fun showCountryDisclaimer() {
+        rootContainer.removeAllViews()
+        val scroll = ScrollView(this)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Palette.BG)
+            setPadding(dp(20), dp(24), dp(20), dp(24))
+        }
+        val notice = CountryLegalCatalog.forRegion(repository.region)
+        col.addView(makeText("REGIONALE RECHTLICHE HINWEISE", 18f, Palette.ACCENT, true))
+        col.addView(makeText(notice.displayName, 13f, Palette.TEXT_MUTED).apply {
+            setPadding(0, dp(4), 0, dp(14))
+        })
+        val speedLine = notice.legalSpeedKmh?.let { "Bauartbedingte Hoechstgeschwindigkeit: $it km/h" }
+            ?: "Keine belegbare Geschwindigkeitsgrenze hinterlegt"
+        col.addView(makeText(speedLine, 14f, if (notice.verified) Palette.SUCCESS else Palette.WARNING, true))
+        col.addView(makeText(
+            if (notice.verified) "Belegt durch benannte Rechtsquelle."
+            else "Nicht abschliessend belegt — allgemeiner Hinweis.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(4), 0, dp(12)) })
+        notice.points.forEach { p ->
+            col.addView(makeText("•  $p", 12.5f, Palette.TEXT_SECONDARY).apply {
+                setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, 0, 0, dp(8))
+            })
+        }
+        col.addView(makeText("Quelle: ${notice.source}", 11f, Palette.TEXT_MUTED).apply {
+            setPadding(0, dp(8), 0, dp(2))
+        })
+        col.addView(makeText("Stand: ${notice.sourceDate}", 11f, Palette.TEXT_MUTED))
+
+        val change = makeOutlineButton("LAND MANUELL WAEHLEN", Palette.ACCENT) {
+            showCountryPicker()
+        }
+        col.addView(change, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, dp(8)) })
+        val accept = makePrimaryButton("VERSTANDEN & WEITER", Palette.ACCENT) {
+            repository.countryNoticeAccepted = true
+            continueAfterCountry()
+        }
+        col.addView(accept, LinearLayout.LayoutParams(MATCH, WRAP))
+        scroll.addView(col)
+        rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
+    }
+
+    private fun showCountryPicker() {
+        val regions = Region.values()
+        val labels = regions.map { "${it.displayName} (${it.code})" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Land waehlen")
+            .setItems(labels) { _, which ->
+                repository.region = regions[which]
+                currentRegion = regions[which]
+                showCountryDisclaimer()
+            }
+            .setNegativeButton("Abbrechen", null)
+            .show()
+    }
+
+    /**
+     * PHASE 12.7 E: kurzes Onboarding beim ersten Start. Ersetzt NICHT den
+     * Haftungshinweis, sondern erklaert danach Funktionen und Grenzen.
+     */
+    private fun showOnboarding() {
+        rootContainer.removeAllViews()
+        val scroll = ScrollView(this)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Palette.BG)
+            setPadding(dp(20), dp(24), dp(20), dp(24))
+        }
+        col.addView(makeText("WILLKOMMEN BEI SYRAK SCOOTERLAB", 18f, Palette.ACCENT, true))
+        val items = listOf(
+            "Was die App kann" to
+                "Diagnose, Telemetrie und Werkstatt-Funktionen fuer E-Scooter: Live-Werte, Trip-Computer, BLE-Diagnose und exportierbare Hardware-Testberichte.",
+            "Welche Scooter erkannt werden" to
+                "Bekannte Hersteller: NAVEE, Xiaomi, Ninebot/Segway, KuKirin, SoFlow. Unbekannte Geraete werden NICHT automatisch als Scooter behandelt, bleiben aber in der Liste sichtbar.",
+            "Was 'Read-Only' bedeutet" to
+                "Bei unbekanntem Modell oder nicht bestaetigter Hardware werden KEINE Schreibbefehle gesendet. Die App liest und diagnostiziert nur.",
+            "Noch nicht hardware-validiert" to
+                "Viele Protokolle, UUIDs und Decoder-Offsets sind dokumentiert, aber noch nicht an echter Hardware verifiziert. Erfolgsmeldungen bedeuten daher nicht automatisch, dass ein Befehl am Roller gewirkt hat."
+        )
+        items.forEach { (h, b) ->
+            col.addView(makeText(h, 13f, Palette.TEXT_PRIMARY, true).apply { setPadding(0, dp(12), 0, dp(4)) })
+            col.addView(makeText(b, 12.5f, Palette.TEXT_SECONDARY).apply {
+                setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, 0, 0, dp(6))
+            })
+        }
+        val go = makePrimaryButton("VERSTANDEN", Palette.ACCENT) {
+            repository.onboardingSeen = true
+            if (repository.hasPin) showPinDialog() else enterMain()
+        }
+        col.addView(go, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, 0) })
         scroll.addView(col)
         rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
     }
@@ -773,6 +1020,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private fun enterMain() {
         rootContainer.removeAllViews()
+        startTripClock()
 
         val sysBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -820,8 +1068,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         bottomNav.removeAllViews()
         for (tab in Tab.values()) {
             val selected = tab == currentTab
-            val item = makeText(tab.name, 11f,
-                if (selected) Palette.ACCENT_RED else Palette.TEXT_MUTED, true).apply {
+            val item = makeText(
+                if (selected) "● ${tab.name}" else tab.name, 11f,
+                if (selected) Palette.ACCENT else Palette.TEXT_MUTED, true
+            ).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(13), 0, dp(13))
                 setOnClickListener { showTab(tab) }
@@ -857,11 +1107,16 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             13f, Palette.TEXT_SECONDARY
         )
         card.addView(statusText)
+        // PHASE 12.3: feiner aufgeloester Verbindungsstatus.
+        connStageView = makeText("", 13f, Palette.TEXT_PRIMARY, true).apply {
+            setPadding(0, dp(6), 0, 0)
+        }
+        card.addView(connStageView)
         scanButton = makePrimaryButton(
-            if (isScanning) "SCAN LÄUFT…" else "BLE-SCAN STARTEN",
-            Palette.ACCENT_RED
+            if (isScanning) "SCAN ABBRECHEN" else "BLE-SCAN STARTEN",
+            if (isScanning) Palette.WARNING else Palette.ACCENT
         ) { if (isScanning) safeStopBleScan() else startBleScan() }
-        scanButton.isEnabled = !isScanning
+        // PHASE 12.3: Scan muss sich jederzeit abbrechen lassen -> immer aktiv.
         card.addView(scanButton, LinearLayout.LayoutParams(MATCH, WRAP).apply {
             setMargins(0, dp(10), 0, dp(8))
         })
@@ -876,10 +1131,80 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 setMargins(0, 0, 0, dp(8))
             })
         }
+        // PHASE 12.3: Filter-/Statuszeile fuer den Scan.
+        scanStatusView = makeText("", 11f, Palette.TEXT_MUTED).apply { setPadding(0, dp(2), 0, dp(6)) }
+        card.addView(scanStatusView)
+        val filterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        filterRow.addView(makeOutlineButton(
+            if (showAllDevices) "NUR SCOOTER" else "ALLE GER\u00c4TE",
+            Palette.ACCENT
+        ) {
+            showAllDevices = !showAllDevices
+            showTab(Tab.INFO)
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(0, 0, dp(4), 0) })
+        filterRow.addView(makeOutlineButton(
+            manufacturerFilter?.let { "FILTER: $it" } ?: "HERSTELLER-FILTER",
+            if (manufacturerFilter != null) Palette.SUCCESS else Palette.ACCENT
+        ) {
+            showManufacturerFilter()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+        card.addView(filterRow)
         deviceListContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         card.addView(deviceListContainer)
         tabContent.addView(card, cardParams())
         updateDeviceList()
+
+        // ---- PHASE 12.7 A: SCHNELLZUGRIFF AUF ZULETZT VERWENDETEN SCOOTER ----
+        // Bewusst KEIN automatischer Verbindungsaufbau: der Nutzer tippt, und
+        // es laufen dieselben Sicherheitspruefungen wie bei jedem anderen Geraet.
+        val lastAddr = repository.lastDeviceAddress
+        if (lastAddr.isNotBlank()) {
+            tabContent.addView(makeSectionLabel("ZULETZT VERWENDET"))
+            val lastCard = makeCard()
+            lastCard.addView(makeText(
+                repository.lastDeviceName.ifBlank { lastAddr },
+                15f, Palette.TEXT_PRIMARY, true
+            ))
+            lastCard.addView(makeText(lastAddr, 11f, Palette.TEXT_MUTED, true).apply {
+                setPadding(0, dp(2), 0, 0)
+            })
+            lastCard.addView(makePrimaryButton("SCHNELLZUGRIFF: VERBINDEN", Palette.ACCENT) {
+                val known = foundDevices[lastAddr]
+                if (known != null) {
+                    connectToDevice(known)
+                } else {
+                    val btAdapter = getSystemService(BluetoothManager::class.java)?.adapter
+                    val remote = try {
+                        btAdapter?.getRemoteDevice(lastAddr)
+                    } catch (e: IllegalArgumentException) {
+                        null
+                    }
+                    if (remote == null) {
+                        toast("Gespeicherte Adresse ist ungueltig \u2014 bitte neu scannen.")
+                    } else {
+                        connectToDevice(
+                            ScooterDevice(
+                                remote,
+                                repository.lastDeviceName.ifBlank { lastAddr },
+                                lastAddr,
+                                Int.MIN_VALUE,
+                                false,
+                                false
+                            )
+                        )
+                    }
+                }
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
+            lastCard.addView(makeText(
+                "Es wird keine Verbindung ohne dein Tippen aufgebaut. Modell- und " +
+                    "Hardware-Pruefungen laufen unveraendert.",
+                11f, Palette.TEXT_MUTED
+            ).apply { setPadding(0, dp(6), 0, 0) })
+            tabContent.addView(lastCard, cardParams())
+        }
 
         tabContent.addView(makeSectionLabel("ERKANNTES MODELL"))
         val modelCard = makeCard()
@@ -1003,8 +1328,191 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
         tabContent.addView(diag, cardParams())
 
+        // ---- PHASE 12.7 D: SYSTEM-STATUS UEBERSICHT -------------------------
+        // Sieben Zeilen, jeweils mit Statuswort (OK/OFFEN) - die Information
+        // haengt damit nicht allein an der Farbe (Barrierefreiheit).
+        tabContent.addView(makeSectionLabel("SYSTEM-STATUS"))
+        val sysCard = makeCard()
+        val btAdapter = getSystemService(BluetoothManager::class.java)?.adapter
+        val gattKnown = htLastGatt.any { svc ->
+            adapter().capabilities.gattServiceUuids.any { it.equals(svc.uuid, ignoreCase = true) }
+        }
+        val protocolVerified = hardwareVerified && detectedModel.isKnown
+        val statusRows = SystemStatus.build(
+            SystemStatusInput(
+                bluetoothAvailable = btAdapter?.isEnabled == true,
+                permissionsGranted = missingPermissions().isEmpty(),
+                connected = engineReady,
+                gattServiceKnown = gattKnown,
+                protocolVerified = protocolVerified,
+                telemetryAvailable = lastTelemetryAtElapsed > 0L,
+                diagnosticsPossible = engineReady && gattKnown
+            )
+        )
+        statusRows.forEach { row ->
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            line.addView(makeText(row.label, 12f, Palette.TEXT_SECONDARY),
+                LinearLayout.LayoutParams(0, WRAP, 1f))
+            line.addView(makeText("${row.stateWord} \u00b7 ${row.detail}", 12f,
+                if (row.ok) Palette.SUCCESS else Palette.WARNING, true))
+            sysCard.addView(line)
+        }
+        tabContent.addView(sysCard, cardParams())
+
+        // ---- PHASE 12.4: GATT-STRUKTUR --------------------------------------
+        tabContent.addView(makeSectionLabel("GATT-STRUKTUR"))
+        val gattCard = makeCard()
+        if (htLastGatt.isEmpty()) {
+            gattCard.addView(makeText(
+                "Noch kein GATT-Baum gelesen. Struktur erscheint nach erfolgreicher Service-Discovery.",
+                12f, Palette.TEXT_MUTED
+            ))
+        } else {
+            htLastGatt.take(12).forEach { svc ->
+                gattCard.addView(makeText(
+                    "Service ${svc.uuid}" + if (svc.label.isNotBlank()) " (${svc.label})" else "",
+                    12f, Palette.ACCENT, true
+                ).apply { setPadding(0, dp(6), 0, 0) })
+                svc.characteristics.take(10).forEach { ch ->
+                    gattCard.addView(makeText(
+                        "  [${ch.shortFlags()}] ${ch.uuid}",
+                        11f, Palette.TEXT_SECONDARY, true
+                    ))
+                }
+                if (svc.characteristics.size > 10) {
+                    gattCard.addView(makeText(
+                        "  ... ${svc.characteristics.size - 10} weitere Characteristics",
+                        11f, Palette.TEXT_MUTED
+                    ))
+                }
+            }
+            if (htLastGatt.size > 12) {
+                gattCard.addView(makeText(
+                    "... ${htLastGatt.size - 12} weitere Services", 11f, Palette.TEXT_MUTED
+                ))
+            }
+        }
+        gattCard.addView(makeText(
+            "Legende: R=Read, W=Write, N=Notify, I=Indicate. Properties werden so angezeigt, " +
+                "wie sie das Geraet meldet - nichts wird ergaenzt.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(8), 0, 0) })
+        // Ehrlicher Hinweis auf den bekannten UUID-Widerspruch.
+        gattCard.addView(makeText(
+            "Bekannter Widerspruch (nicht behoben, da nicht verifizierbar): BleConstants " +
+                "verwendet die UART-UUIDs 6e400001/6e400002/6e400003 bzw. fe95, waehrend " +
+                "BleEngine und die Adapter 0000e003/0000fff1/0000fff2 nutzen. Welche Variante " +
+                "am GT3 Max tatsaechlich aktiv ist, ist ohne Hardware-Test offen.",
+            11f, Palette.WARNING
+        ).apply { setPadding(0, dp(8), 0, 0) })
+        tabContent.addView(gattCard, cardParams())
+
+        // ---- PHASE 12.7 C: VERBINDUNGSQUALITAET ------------------------------
+        tabContent.addView(makeSectionLabel("VERBINDUNGSQUALITAET"))
+        val qualityCard = makeCard()
+        val sig = if (lastRssi == Int.MIN_VALUE) null else SignalQualityScale.fromRssi(lastRssi)
+        qualityCard.addView(makeText(
+            "Signal: " + (sig?.let { "${it.accessibleLabel} (${lastRssi} dBm)" } ?: "Nicht verfuegbar"),
+            12f, if (sig == null) Palette.TEXT_MUTED else Palette.TEXT_PRIMARY, true
+        ))
+        qualityCard.addView(makeText(
+            "MTU: ${bleEngine?.currentMtu() ?: 0}  \u00b7  " +
+                "Verbunden seit: " + (htConnectedAt.takeIf { it > 0 && engineReady }?.let {
+                    TripClock.format(SystemClock.elapsedRealtime() - it)
+                } ?: "\u2014"),
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(5), 0, 0) })
+        qualityCard.addView(makeText(
+            "Abbrueche in dieser Sitzung: $disconnectCount  \u00b7  " +
+                "Kommunikationsfehler: $commErrorCount",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(5), 0, 0) })
+        val unstable = disconnectCount > 0 || commErrorCount > 5
+        qualityCard.addView(makeText(
+            if (unstable) "Hinweis: Verbindung war in dieser Sitzung instabil."
+            else "Hinweis: Keine Instabilitaet beobachtet.",
+            11f, if (unstable) Palette.WARNING else Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(6), 0, 0) })
+        tabContent.addView(qualityCard, cardParams())
+
+        // ---- PHASE 12.7 B: DIAGNOSE-HISTORIE --------------------------------
+        tabContent.addView(makeSectionLabel("DIAGNOSE-HISTORIE"))
+        val histCard = makeCard()
+        val history = DiagnosticHistoryCodec.decode(repository.diagnosticHistoryRaw)
+        if (history.isEmpty()) {
+            histCard.addView(makeText("Noch keine gespeicherten Berichte.", 12f, Palette.TEXT_MUTED))
+        } else {
+            history.takeLast(5).reversed().forEach { e ->
+                val date = java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMANY)
+                    .format(java.util.Date(e.timestampMs))
+                histCard.addView(makeText(
+                    "$date  \u00b7  ${e.model}  \u00b7  ${e.supportStatus}",
+                    12f, Palette.TEXT_PRIMARY, true
+                ))
+                histCard.addView(makeText(
+                    "Fehler ${e.errors}  \u00b7  Warnungen ${e.warnings}  \u00b7  ${e.summary}",
+                    11f, Palette.TEXT_MUTED
+                ).apply { setPadding(0, 0, 0, dp(6)) })
+            }
+        }
+        histCard.addView(makePrimaryButton("AKTUELLEN BERICHT SPEICHERN", Palette.ACCENT) {
+            saveDiagnosticHistory()
+        }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
+        if (history.size >= 2) {
+            histCard.addView(makePrimaryButton("LETZTE ZWEI BERICHTE VERGLEICHEN", Palette.ACCENT_BLUE) {
+                val old = history[history.size - 2]
+                val new = history[history.size - 1]
+                AlertDialog.Builder(this)
+                    .setTitle("Berichtsvergleich")
+                    .setMessage(DiagnosticHistoryCodec.compare(old, new))
+                    .setPositiveButton("OK", null)
+                    .show()
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
+        }
+        if (history.isNotEmpty()) {
+            histCard.addView(makeOutlineButton("HISTORIE LOESCHEN", Palette.WARNING) {
+                repository.diagnosticHistoryRaw = ""
+                showTab(Tab.INFO)
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
+        }
+        tabContent.addView(histCard, cardParams())
+
         tabContent.addView(makeSectionLabel("LOG-TERMINAL"))
         tabContent.addView(buildLogCard(), cardParams())
+    }
+
+    /**
+     * PHASE 12.3: Verbindungszustand in klar getrennten Stufen.
+     * Wichtig: "Verbunden" und "Diagnose bereit" sind NICHT dasselbe.
+     */
+    private fun connectionStage(): Pair<String, Int> = when {
+        engineReady && detectedModel.isKnown && hardwareVerified ->
+            "Diagnose bereit" to Palette.SUCCESS
+        engineReady && !detectedModel.isKnown ->
+            "Diagnose bereit \u00b7 Modell unbekannt" to Palette.WARNING
+        engineReady ->
+            "Diagnose bereit \u00b7 Protokoll nicht verifiziert" to Palette.WARNING
+        linkState == BleLinkState.CONNECTED ->
+            "Services werden untersucht" to Palette.ACCENT
+        linkState == BleLinkState.CONNECTING ->
+            "Verbindung wird hergestellt" to Palette.ACCENT
+        lastConnectFailed ->
+            "Verbindung fehlgeschlagen" to Palette.DANGER
+        isScanning ->
+            "Suche l\u00e4uft" to Palette.ACCENT
+        connectedDevice != null ->
+            "Ger\u00e4t erkannt" to Palette.ACCENT
+        else ->
+            "Nicht verbunden" to Palette.TEXT_MUTED
+    }
+
+    private fun refreshConnectionStage() {
+        val (label, color) = connectionStage()
+        connStageView?.text = label
+        connStageView?.setTextColor(color)
     }
 
     private fun modelEvidence(): String {
@@ -1092,49 +1600,119 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun updateDeviceList() {
         if (!::deviceListContainer.isInitialized) return
         deviceListContainer.removeAllViews()
-        if (foundDevices.isEmpty()) {
+
+        val all = foundDevices.values.toList()
+        val classified = all.map { it to ScanClassifier.classify(it.name, it.address) }
+        val scooterLike = classified.filter { it.second.isScooterLike }
+        val unknown = classified.filter { !it.second.isScooterLike }
+
+        scanStatusView?.text = when {
+            isScanning -> "Suche laeuft\u2026 ${all.size} Geraet(e), davon ${scooterLike.size} Scooter-Kandidat(en)."
+            all.isEmpty() -> "Noch keine Geraete gefunden."
+            else -> "${all.size} Geraet(e): ${scooterLike.size} Scooter-Kandidat(en), ${unknown.size} sonstige."
+        }
+
+        val visible = if (showAllDevices) classified else scooterLike
+        val filtered = manufacturerFilter?.let { f ->
+            visible.filter { it.second.brandLabel.equals(f, ignoreCase = true) }
+        } ?: visible
+
+        if (filtered.isEmpty()) {
             deviceListContainer.addView(makeText(
-                if (isScanning) "Suche läuft…" else "Noch keine Geräte gefunden.",
+                when {
+                    all.isEmpty() && isScanning -> "Suche laeuft\u2026"
+                    all.isEmpty() -> "Noch keine Geraete gefunden."
+                    else -> "Keine Treffer fuer die aktuelle Filterung. 'ALLE GERAETE' zeigt auch Unbekanntes."
+                },
                 12f, Palette.TEXT_MUTED
             ).apply { setPadding(0, dp(8), 0, 0) })
             return
         }
-        val sorted = foundDevices.values.sortedWith(
-            compareByDescending<ScooterDevice> { it.isScooterCandidate }
-                .thenByDescending { it.rssi }
+
+        // Scooter-Kandidaten zuerst, danach (optional) unbekannte Geraete.
+        val ordered = filtered.sortedWith(
+            compareByDescending<Pair<ScooterDevice, ScanClassification>> { it.second.category == ScanCategory.KNOWN_SCOOTER }
+                .thenByDescending { it.second.isScooterLike }
+                .thenByDescending { it.first.rssi }
         )
-        for (device in sorted) {
+        var unknownHeaderShown = false
+        for ((device, cls) in ordered) {
+            if (!cls.isScooterLike && !unknownHeaderShown) {
+                unknownHeaderShown = true
+                deviceListContainer.addView(makeText(
+                    "SONSTIGE BLUETOOTH-GERAETE (nicht als Scooter behandelt)",
+                    10f, Palette.WARNING, true
+                ).apply { setPadding(0, dp(12), 0, dp(4)) })
+            }
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-                setBackgroundColor(Palette.SURFACE)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                background = roundedBg(Palette.SURFACE, Palette.OUTLINE, 10)
             }
-            val det = ScooterModel.detectDetailed(device.name, device.address)
-            row.addView(makeText(device.name, 14f, Palette.TEXT_PRIMARY, true))
-            val modelLine = if (det.model.isKnown)
-                "${det.model.displayName} (${det.confidence.label})"
-            else "Modell unklar (${det.confidence.label})"
-            // PHASE 8: Hersteller getrennt vom Modell anzeigen. Bei unbekanntem
-            // Modell kann der Hersteller trotzdem belegt sein (z. B. KuKirin).
-            val brandLine = if (det.manufacturer.isKnown)
-                " · Hersteller: ${det.manufacturer.displayName}" else ""
+            val titleRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            }
+            titleRow.addView(makeText(device.name, 14f, Palette.TEXT_PRIMARY, true),
+                LinearLayout.LayoutParams(0, WRAP, 1f))
+            val sig = SignalQualityScale.fromRssi(device.rssi)
+            val sigColor = when (sig.bars) {
+                4, 3 -> Palette.SUCCESS
+                2 -> Palette.WARNING
+                else -> Palette.DANGER
+            }
+            titleRow.addView(makeText("${"▮".repeat(sig.bars)}${"▯".repeat(4 - sig.bars)} ${sig.label}",
+                10f, sigColor, true))
+            row.addView(titleRow)
+
+            val categoryLabel = when (cls.category) {
+                ScanCategory.KNOWN_SCOOTER -> "Scooter erkannt"
+                ScanCategory.PROBABLE_SCOOTER -> "Scooter wahrscheinlich"
+                ScanCategory.UNKNOWN_DEVICE -> "kein Scooter-Hinweis"
+            }
             row.addView(makeText(
-                "${device.address} · ${device.rssi} dBm · $modelLine$brandLine",
+                "${device.address} \u00b7 ${device.rssi} dBm \u00b7 $categoryLabel",
                 11f, Palette.TEXT_MUTED
+            ).apply { setPadding(0, dp(2), 0, 0) })
+            row.addView(makeText(
+                "Hersteller: ${cls.brandLabel} \u00b7 Modell: ${cls.modelLabel} \u00b7 ${cls.confidenceLabel}",
+                11f, Palette.TEXT_SECONDARY
             ))
+
             val connected = connectedDevice?.address == device.address
             val connectButton = makePrimaryButton(
                 if (connected) "VERBUNDEN" else "VERBINDEN",
-                Palette.ACCENT_BLUE
+                if (cls.isScooterLike) Palette.ACCENT else Palette.SURFACE_HIGH
             ) { connectToDevice(device) }
             connectButton.isEnabled = !connected
             row.addView(connectButton, LinearLayout.LayoutParams(WRAP, WRAP).apply {
-                setMargins(0, dp(6), 0, 0)
+                setMargins(0, dp(8), 0, 0)
             })
             deviceListContainer.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply {
-                setMargins(0, dp(4), 0, 0)
+                setMargins(0, dp(6), 0, 0)
             })
         }
+    }
+
+    /** PHASE 12.3: Hersteller-Filter aus den tatsaechlich gefundenen Marken. */
+    private fun showManufacturerFilter() {
+        val brands = foundDevices.values
+            .map { ScanClassifier.classify(it.name, it.address).brandLabel }
+            .filter { it != "unbekannt" }
+            .distinct()
+            .sorted()
+        if (brands.isEmpty()) {
+            toast("Noch keine Hersteller erkannt \u2014 zuerst scannen.")
+            return
+        }
+        val options = (listOf("Alle Hersteller") + brands).toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Hersteller-Filter")
+            .setItems(options) { _, which ->
+                manufacturerFilter = if (which == 0) null else brands[which - 1]
+                showTab(Tab.INFO)
+            }
+            .setNegativeButton("Abbrechen", null)
+            .show()
     }
 
     @SuppressLint("MissingPermission")
@@ -1213,6 +1791,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             tabContent.addView(banner, cardParams())
         }
         tabContent.addView(makeSectionLabel("FAHRPARAMETER"))
+        val dangerCard = makeCard()
+        addDangerBadge(dangerCard, "Fahrparameter veraendern das Controller-Verhalten. Nur auf eigenem Testgeraet.")
+        tabContent.addView(dangerCard, cardParams())
         val maxLimit = if (detectedModel.isKnown) detectedModel.absMaxKmh.coerceAtMost(45) else 45
         tabContent.addView(makeSliderCard(
             "Max. Geschwindigkeit",
@@ -1232,23 +1813,35 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             sendTuning(adapter().buildZeroStartFrame(value), "zeroStart=$value")
         }, cardParams())
 
-        tabContent.addView(makeSliderCard(
-            "KERS-Rekuperation",
-            "Stärke der Motorbremse / Energierückgewinnung.",
-            0, 3, kersLevel.coerceIn(0, 3), "Stufe"
-        ) { value ->
-            kersLevel = value
-            sendTuning(adapter().buildKersFrame(value), "kers=$value")
+        // PHASE 12.6: erweiterte Einstellungen einklappbar.
+        tabContent.addView(makeOutlineButton(
+            if (showAdvancedTools) "ERWEITERTE EINSTELLUNGEN AUSBLENDEN"
+            else "ERWEITERTE EINSTELLUNGEN ANZEIGEN",
+            Palette.ACCENT
+        ) {
+            showAdvancedTools = !showAdvancedTools
+            showTab(Tab.TOOLS)
         }, cardParams())
 
-        tabContent.addView(makeSliderCard(
-            "Motor-Temperaturschutz",
-            "Grenzwert, ab dem die Leistung reduziert wird.",
-            50, 90, motorTempGuardC.coerceIn(50, 90), "°C"
-        ) { value ->
-            motorTempGuardC = value
-            sendTuning(adapter().buildTempGuardFrame(value), "tempGuard=$value")
-        }, cardParams())
+        if (showAdvancedTools) {
+            tabContent.addView(makeSliderCard(
+                "KERS-Rekuperation",
+                "St\u00e4rke der Motorbremse / Energier\u00fcckgewinnung.",
+                0, 3, kersLevel.coerceIn(0, 3), "Stufe"
+            ) { value ->
+                kersLevel = value
+                sendTuning(adapter().buildKersFrame(value), "kers=$value")
+            }, cardParams())
+
+            tabContent.addView(makeSliderCard(
+                "Motor-Temperaturschutz",
+                "Grenzwert, ab dem die Leistung reduziert wird.",
+                50, 90, motorTempGuardC.coerceIn(50, 90), "\u00b0C"
+            ) { value ->
+                motorTempGuardC = value
+                sendTuning(adapter().buildTempGuardFrame(value), "tempGuard=$value")
+            }, cardParams())
+        }
 
         tabContent.addView(makeSectionLabel("SCHALTER"))
         val toggles = makeCard()
@@ -1300,7 +1893,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         for (mode in RideMode.values()) {
             val button = makePrimaryButton(
                 mode.displayName,
-                if (mode == rideMode) Palette.ACCENT_GREEN else Palette.SURFACE
+                if (mode == rideMode) Palette.ACCENT else Palette.SURFACE_HIGH
             ) {
                 rideMode = mode
                 applyRideMode(mode)
@@ -1353,32 +1946,40 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             .show()
     }
 
+    /**
+     * PHASE 12.6: Polizei-Modus als rechtliches Limit — EIN Tipp, keine
+     * zusaetzliche Bestaetigung, WENN alle Sicherheitsvoraussetzungen erfuellt
+     * sind. Fehlt eine Voraussetzung, gibt es KEINE Erfolgsmeldung, sondern
+     * eine klare Ablehnung. Der Schreibbefehl laeuft weiterhin ueber
+     * [sendTuning] -> [WriteGuard] -> [TuningSafetyGate]; es wird nichts umgangen.
+     */
     private fun confirmPoliceMode() {
-        AlertDialog.Builder(this)
-            .setTitle("Polizei-Modus")
-            .setMessage(
-                "Setzt das Speed-Ceiling auf ${currentRegion.legalSpeedKmh} km/h " +
-                    "(${currentRegion.displayName}). Fortfahren?"
-            )
-            .setPositiveButton("Setzen") { _, _ ->
-                // PHASE 8.1 FIX (Sicherheitsaudit, Punkt 3): Der Polizei-Modus ist
-                // ein Tuning-Schreibbefehl (Speed-Ceiling / CMD 0x1F). Er lief
-                // bisher direkt ueber sendCommand() und UMGEHING damit das
-                // Tuning-Gate. Jetzt laeuft er ueber sendTuning() und ist bei
-                // unbekanntem Modell bzw. fehlender Hardware-Freigabe gesperrt.
-                val sent = sendTuning(
-                    adapter().buildPoliceModeFrame(currentRegion.legalSpeedKmh),
-                    "policeMode=${currentRegion.legalSpeedKmh}"
-                )
-                if (sent) {
-                    maxSpeedKmh = currentRegion.legalSpeedKmh
-                    addLog(LogCategory.INFO, "Polizei-Modus auf ${currentRegion.legalSpeedKmh} km/h gesetzt.")
-                } else {
-                    addLog(LogCategory.ERROR, "Polizei-Modus NICHT gesetzt (Tuning gesperrt).")
-                }
-            }
-            .setNegativeButton("Abbrechen", null)
-            .show()
+        val engine = bleEngine
+        val hasWritableLink = engineReady && engine?.hasWriteCharacteristic() == true
+        val block = tuningBlockReason()
+        if (!hasWritableLink) {
+            toast("Polizei-Modus nicht moeglich: keine aktive, schreibbare Verbindung.")
+            addLog(LogCategory.ERROR, "Polizei-Modus abgelehnt: keine schreibbare Verbindung.")
+            return
+        }
+        if (block != null) {
+            toast("Polizei-Modus gesperrt: $block")
+            addLog(LogCategory.ERROR, "Polizei-Modus gesperrt: $block")
+            return
+        }
+        val limit = currentRegion.legalSpeedKmh
+        val sent = sendTuning(
+            adapter().buildPoliceModeFrame(limit),
+            "policeMode=$limit"
+        )
+        if (sent) {
+            maxSpeedKmh = limit
+            addLog(LogCategory.INFO, "Polizei-Modus auf $limit km/h angefordert (${currentRegion.displayName}).")
+            toast("Polizei-Modus: $limit km/h angefordert.")
+        } else {
+            addLog(LogCategory.ERROR, "Polizei-Modus NICHT gesendet (Tuning gesperrt).")
+            toast("Polizei-Modus konnte nicht gesendet werden.")
+        }
     }
 
     private fun confirmPanic() {
@@ -1426,7 +2027,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
         val queued = engine.enqueueCommand(frame, label, requiresUnlock)
         if (!queued) {
-            addLog(LogCategory.ERROR, "Befehl '$label' konnte nicht eingereiht werden.")
+            // PHASE 12.4: stille Polls duerfen keine Fehlerflut erzeugen.
+            if (!silent) addLog(LogCategory.ERROR, "Befehl '$label' konnte nicht eingereiht werden.")
         } else if (!silent) {
             addLog(LogCategory.TX, "$label → ${ScooterFrames.toHex(frame)}")
         }
@@ -1514,6 +2116,38 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun renderDashboard() {
+        // ---- PHASE 12.5: COCKPIT -------------------------------------------
+        // Der Tacho zeigt ausschliesslich echte Messwerte. Ohne Daten steht
+        // dort "Nicht verfuegbar" - es gibt keine erfundene Anzeige.
+        val cockpit = makeCard()
+        dashGauge = CockpitGaugeView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(170))
+            setUnavailable("Geschwindigkeit")
+        }
+        cockpit.addView(dashGauge)
+        val sparkRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        sparkRow.addView(makeText("GESCHWINDIGKEIT (VERLAUF)", 10f, Palette.TEXT_MUTED))
+        speedSpark = SparklineView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(56))
+            setValues(emptyList(), 1f, Palette.ACCENT, "Noch keine Messwerte")
+        }
+        sparkRow.addView(speedSpark)
+        sparkRow.addView(makeText("LEISTUNG (VERLAUF)", 10f, Palette.TEXT_MUTED))
+        powerSpark = SparklineView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(56))
+            setValues(emptyList(), 1f, Palette.ACCENT_BLUE, "Noch keine Messwerte")
+        }
+        sparkRow.addView(powerSpark)
+        dashHistoryMinMax = makeText("Verlauf: min \u2014 \u00b7 max \u2014", 11f, Palette.TEXT_MUTED, true)
+        sparkRow.addView(dashHistoryMinMax, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(0, dp(6), 0, 0)
+        })
+        cockpit.addView(sparkRow)
+        tabContent.addView(cockpit, cardParams())
+
         tabContent.addView(makeSectionLabel("LIVE-TELEMETRIE"))
         val live = makeCard()
         dashSpeed = metricRow(live, "Geschwindigkeit")
@@ -1532,6 +2166,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         tabContent.addView(makeSectionLabel("TRIP-COMPUTER"))
         val tripCard = makeCard()
         dashTrip = metricRow(tripCard, "Strecke")
+        dashTripTime = metricRow(tripCard, "Fahrtzeit")
         dashRange = metricRow(tripCard, "Reichweite (Schätzung)")
         dashVmax = metricRow(tripCard, "Vmax")
         dashVavg = metricRow(tripCard, "Vavg")
@@ -1611,10 +2246,36 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     private fun startTelemetry() {
         stopTelemetry()
-        if (!engineReady) return
+        val engine = bleEngine ?: return
+        // PHASE 12.4: Polling nur starten, wenn ALLE Voraussetzungen erfuellt
+        // sind. Vorher feuerte der Poll jede Sekunde gegen ein fehlendes
+        // Write-Characteristic und erzeugte endlose Fehlermeldungen.
+        val decision = PollGate.evaluate(
+            engineReady = engineReady,
+            hasWriteChar = engine.hasWriteCharacteristic(),
+            modelKnown = detectedModel.isKnown,
+            adapterSupportsRead = adapterSupportsRead()
+        )
+        if (decision != PollDecision.ALLOWED) {
+            addLog(LogCategory.INFO, "Telemetrie-Polling nicht gestartet: ${PollGate.reason(decision)}")
+            return
+        }
         telemetryRunnable = object : Runnable {
             override fun run() {
-                if (!engineReady) return
+                val eng = bleEngine
+                if (!engineReady || eng == null) return
+                val d = PollGate.evaluate(
+                    engineReady = engineReady,
+                    hasWriteChar = eng.hasWriteCharacteristic(),
+                    modelKnown = detectedModel.isKnown,
+                    adapterSupportsRead = adapterSupportsRead()
+                )
+                if (d != PollDecision.ALLOWED) {
+                    // Kein Endlos-Fehler: einmalig informieren und Polling beenden.
+                    addLog(LogCategory.INFO, "Telemetrie-Polling gestoppt: ${PollGate.reason(d)}")
+                    stopTelemetry()
+                    return
+                }
                 sendCommand(adapter().buildReadStatusFrame(), "poll", false, silent = true)
                 handler.postDelayed(this, 1_000L)
             }
@@ -1665,6 +2326,31 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         demoActive = false
     }
 
+    /**
+     * PHASE 12.1: Der Trip-Timer laeuft auf einem eigenen Handler-Tick und
+     * damit unabhaengig vom aktiven Tab weiter — wie in der frueheren Fassung.
+     * Die Dauer selbst kommt aus [TripData] (Startzeitpunkt), nicht aus einer
+     * erfundenen Quelle.
+     */
+    private fun startTripClock() {
+        stopTripClock()
+        val r = object : Runnable {
+            override fun run() {
+                dashTripTime?.text = if (tripData.startMillis > 0L)
+                    TripClock.format(System.currentTimeMillis() - tripData.startMillis)
+                else "00:00:00"
+                handler.postDelayed(this, 1000L)
+            }
+        }
+        tripClockRunnable = r
+        handler.post(r)
+    }
+
+    private fun stopTripClock() {
+        tripClockRunnable?.let { handler.removeCallbacks(it) }
+        tripClockRunnable = null
+    }
+
     private fun scheduleTelemetryApply() {
         if (telemetryApplyScheduled) return
         telemetryApplyScheduled = true
@@ -1705,6 +2391,39 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun updateDashboardUi() {
         val t = lastTelemetry
         val trip = repository.trip
+        // ---- PHASE 12.5: Cockpit aktualisieren ----
+        val speed = t?.speedKmh
+        val powerW = if (t?.voltageV != null && t.currentA != null) t.voltageV * t.currentA else null
+        dashGauge?.setValue(speed, 60f, "km/h", "Geschwindigkeit", demo = demoActive)
+        if (speed == null) dashGauge?.setUnavailable("Geschwindigkeit")
+        if (speed != null) {
+            speedHistory.addLast(speed)
+            while (speedHistory.size > HISTORY_MAX) speedHistory.removeFirst()
+        }
+        if (powerW != null) {
+            powerHistory.addLast(powerW)
+            while (powerHistory.size > HISTORY_MAX) powerHistory.removeFirst()
+        }
+        speedSpark?.setValues(
+            speedHistory.toList(),
+            maxOf(60f, speedHistory.maxOrNull() ?: 0f),
+            Palette.ACCENT
+        )
+        powerSpark?.setValues(
+            powerHistory.toList(),
+            maxOf(500f, powerHistory.maxOrNull() ?: 0f),
+            Palette.ACCENT_BLUE
+        )
+        dashHistoryMinMax?.text = if (speedHistory.isEmpty()) {
+            "Verlauf: min \u2014 \u00b7 max \u2014"
+        } else {
+            String.format(
+                Locale.US,
+                "Verlauf: min %.1f km/h \u00b7 max %.1f km/h",
+                speedHistory.minOrNull() ?: 0f,
+                speedHistory.maxOrNull() ?: 0f
+            )
+        }
         dashSpeed?.text = t?.speedKmh?.let { String.format(Locale.US, "%.1f km/h", it) } ?: "—"
         dashPower?.text = if (t?.voltageV != null && t.currentA != null) {
             String.format(Locale.US, "%.0f W", t.voltageV * t.currentA)
@@ -1729,6 +2448,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             else -> "keine Daten"
         }
         dashTrip?.text = String.format(Locale.US, "%.2f km", trip.distanceKm)
+        dashTripTime?.text = if (trip.startMillis > 0L)
+            TripClock.format(System.currentTimeMillis() - trip.startMillis) else "00:00:00"
         dashVmax?.text = String.format(Locale.US, "%.1f km/h", trip.maxSpeedKmh)
         dashVavg?.text = String.format(Locale.US, "%.1f km/h", trip.avgSpeedKmh)
         dashWh?.text = String.format(Locale.US, "%.1f Wh", trip.energyWh)
@@ -2589,6 +3310,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             if (::statusText.isInitialized) {
                 statusText.text = "Bereit: ${detectedModel.displayName} [${detectedConfidence.label}] (${protocol.displayName})"
             }
+            lastConnectFailed = false
+            // PHASE 12.7 A: zuletzt verwendeten Scooter merken (kein Auto-Connect).
+            repository.lastDeviceAddress = address
+            repository.lastDeviceName = connectedDevice?.name ?: address
+            refreshConnectionStage()
             startTelemetry()
             // Verbindung ist vollstaendig bereit -> Prozess fuer App-Wechsel
             // und Display-Off priorisieren (Dienst besitzt die GATT NICHT).
@@ -2602,6 +3328,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             engineReady = false
             htDisconnectedAt = SystemClock.elapsedRealtime()
             htUnexpectedDisconnect = unexpected
+            disconnectCount++
+            if (unexpected) lastConnectFailed = true
+            refreshConnectionStage()
             hardwareTest.recordError(
                 HardwareErrorKind.DISCONNECT,
                 if (unexpected) "Verbindung unerwartet getrennt." else "Verbindung getrennt.",
