@@ -38,14 +38,20 @@ class NinebotAdapter : ScooterProtocolAdapter {
             ScooterModel.XIAOMI_PRO_2,
             ScooterModel.XIAOMI_M365
         ),
-        gattServiceUuids = listOf("0000e003-0000-1000-8000-00805f9b34fb"),
-        gattWriteCharUuids = listOf(
-            "0000fff1-0000-1000-8000-00805f9b34fb",
-            "0000fff2-0000-1000-8000-00805f9b34fb"
+        // PHASE 16.1: Rollenlisten werden aus der zentralen Registry [BleUuids]
+        // ABGELEITET, nicht mehr separat gepflegt. FFF1/FFF2 sind dort als
+        // Kandidaten fuer Write UND Notify gefuehrt, weil ihre reale Rolle ohne
+        // GATT-Mitschnitt nicht entschieden ist. Damit ist die fruehere
+        // Doppelbehauptung (Write-Liste == Notify-Liste, aber Registry = nur
+        // Write) beseitigt: Adapter und Registry stimmen jetzt ueberein.
+        gattServiceUuids = BleUuids.candidateUuids(
+            "Ninebot / Xiaomi", UuidRole.GATT_SERVICE
         ),
-        gattNotifyCharUuids = listOf(
-            "0000fff1-0000-1000-8000-00805f9b34fb",
-            "0000fff2-0000-1000-8000-00805f9b34fb"
+        gattWriteCharUuids = BleUuids.candidateUuids(
+            "Ninebot / Xiaomi", UuidRole.WRITE_CHARACTERISTIC
+        ),
+        gattNotifyCharUuids = BleUuids.candidateUuids(
+            "Ninebot / Xiaomi", UuidRole.NOTIFY_CHARACTERISTIC
         ),
         readOperations = setOf(
             ReadOperation.STATUS_TELEMETRY,

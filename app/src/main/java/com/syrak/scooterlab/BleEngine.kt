@@ -13,6 +13,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.syrak.scooterlab.diagnostics.GattCharacteristicRecord
 import com.syrak.scooterlab.diagnostics.GattProperty
 import com.syrak.scooterlab.diagnostics.GattServiceRecord
@@ -66,26 +67,43 @@ class BleEngine(
          * Implementierungen unveraendert bleiben.
          */
         fun onRawNotification(bytes: ByteArray) {}
+
+        /**
+         * PHASE 16: Ergebnis eines echten Characteristic-Reads. Wird NUR
+         * aufgerufen, wenn ein Read-Request zuvor gestartet wurde und entweder
+         * ein Callback (Erfolg/Fehler) oder ein Timeout/Abbruch vorliegt.
+         * Eine vorhandene Read-Property allein loest dies NICHT aus.
+         * Default leer, damit bestehende Implementierungen unveraendert bleiben.
+         */
+        fun onCharacteristicReadResult(outcome: ReadOutcome) {}
+
+        /**
+         * PHASE 16: Liste der tatsaechlich lesbaren Characteristics nach der
+         * Service-Discovery (aus dem realen GATT-Baum). Default leer.
+         */
+        fun onReadableCharacteristics(uuids: List<String>) {}
     }
 
     companion object {
-        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        /**
+         * PHASE 16: Alle UUIDs kommen aus der zentralen Registry [BleUuids].
+         * Werte unveraendert; Herkunft/Belegstatus ist dort dokumentiert.
+         */
+        val CCCD_UUID: UUID = UUID.fromString(BleUuids.CCCD)
 
         // Navee / Brightway
-        private val NAVEE_SERVICE = UUID.fromString(NaveeFrames.SERVICE_UUID)
-        private val NAVEE_CHAR_WRITE = UUID.fromString(NaveeFrames.CHAR_UUID)
-        private val NAVEE_CHAR_WRITE_ALT = UUID.fromString(NaveeFrames.CHAR_WRITE_UUID)
+        private val NAVEE_SERVICE = UUID.fromString(BleUuids.NAVEE_SERVICE)
+        private val NAVEE_CHAR_WRITE = UUID.fromString(BleUuids.NAVEE_CHAR_MAIN)
+        private val NAVEE_CHAR_WRITE_ALT = UUID.fromString(BleUuids.NAVEE_CHAR_ALT)
 
         // Bevorzugte Notify-UUIDs (Brightway: FFE1 = Notify, FFE2 = Write).
-        // Diese UUIDs stammen aus den bereits dokumentierten Projekt-Konstanten,
-        // es werden KEINE neuen UUIDs erfunden.
-        private val NAVEE_CHAR_NOTIFY = UUID.fromString(NaveeFrames.CHAR_UUID)
-        private val NAVEE_CHAR_NOTIFY_ALT = UUID.fromString(NaveeFrames.CHAR_WRITE_UUID)
+        private val NAVEE_CHAR_NOTIFY = UUID.fromString(BleUuids.NAVEE_CHAR_MAIN)
+        private val NAVEE_CHAR_NOTIFY_ALT = UUID.fromString(BleUuids.NAVEE_CHAR_ALT)
 
         // Ninebot / Xiaomi
-        private val NINEBOT_SERVICE = UUID.fromString("0000e003-0000-1000-8000-00805f9b34fb")
-        private val NINEBOT_CHAR_WRITE = UUID.fromString("0000fff1-0000-1000-8000-00805f9b34fb")
-        private val NINEBOT_CHAR_WRITE_ALT = UUID.fromString("0000fff2-0000-1000-8000-00805f9b34fb")
+        private val NINEBOT_SERVICE = UUID.fromString(BleUuids.NINEBOT_SERVICE)
+        private val NINEBOT_CHAR_WRITE = UUID.fromString(BleUuids.NINEBOT_CHAR_WRITE)
+        private val NINEBOT_CHAR_WRITE_ALT = UUID.fromString(BleUuids.NINEBOT_CHAR_WRITE_ALT)
 
         private const val REQUESTED_MTU = 247
         private const val ATT_HEADER = 3
@@ -101,6 +119,12 @@ class BleEngine(
 
         /** Max. Zeit vom connectGatt() bis zur einsatzbereiten Verbindung (onReady). */
         private const val CONNECT_TIMEOUT_MS = 15_000L
+
+        /**
+         * PHASE 16: Max. Wartezeit auf den `onCharacteristicRead`-Callback.
+         * Kommt danach kein Callback, gilt der Read als TIMEOUT (nicht als Erfolg).
+         */
+        private const val READ_TIMEOUT_MS = 3_000L
     }
 
     @Volatile private var gatt: BluetoothGatt? = null
@@ -172,6 +196,13 @@ class BleEngine(
     private val writeQueue = ArrayDeque<PendingWrite>()
     @Volatile private var writeInFlight = false
     @Volatile private var currentWrite: PendingWrite? = null
+
+    // ---- Read-Pfad (PHASE 16) ---------------------------------------------
+    /** Verfolgt GENAU EINEN laufenden Read (Android erlaubt nur eine GATT-Op). */
+    private val readTracker = ReadTracker()
+    private var readTimeout: Runnable? = null
+    /** Tatsaechlich lesbare Characteristics aus dem realen GATT-Baum. */
+    @Volatile private var readableChars: List<BluetoothGattCharacteristic> = emptyList()
 
     /** afterMtu() (Notify-Setup + Handshake + onReady) laeuft pro Verbindung GENAU EINMAL. */
     @Volatile private var initializationStarted = false
@@ -335,6 +366,8 @@ class BleEngine(
             awaitingAck = null
         }
         cancelResponseTimeout()
+        abortPendingRead("Verbindung zurueckgesetzt")
+        readableChars = emptyList()
         naveeHandshakeSent = false
         adapter.setUnlocked(false)
         notifyActive = false
@@ -499,6 +532,14 @@ class BleEngine(
                 //     abweichendem Service) diagnostizieren, ohne UUIDs zu raten.
                 dumpGatt("Service-Discovery")
 
+                // 1c) PHASE 16: lesbare Characteristics aus dem ECHTEN GATT-Baum
+                //     ermitteln. Das ist nur eine Bestandsaufnahme (Stufe 3),
+                //     KEIN erfolgreicher Read (Stufe 4).
+                readableChars = collectReadable(g)
+                listener.onLog("> gatt: ${readableChars.size} lesbare Characteristic(s): " +
+                        readableChars.joinToString(", ") { it.uuid.toString() })
+                listener.onReadableCharacteristics(readableChars.map { it.uuid.toString() })
+
                 // 2) MTU verhandeln (echt!)
                 listener.onLog("> gatt: requestMtu($REQUESTED_MTU)")
                 if (!g.requestMtu(REQUESTED_MTU)) {
@@ -603,6 +644,47 @@ class BleEngine(
                 }
             } catch (e: Exception) {
                 listener.onLog("> gatt: Exception in onDescriptorWrite: ${e.message}")
+            }
+        }
+
+        /**
+         * PHASE 16: Echter Read-Callback.
+         *
+         * Wir ueberschreiben bewusst die (in API 33 deprecated) 3-Argument-Variante.
+         * Der AOSP-Default der API-33-Variante mit `byte[] value` ruft intern genau
+         * diese auf, nachdem er den Wert in die Characteristic geschrieben hat.
+         * Damit funktioniert der Read auf ALLEN API-Leveln (26..34+).
+         *
+         * Ein Read gilt NUR bei GATT_SUCCESS und mindestens einem Byte als Erfolg.
+         */
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+        override fun onCharacteristicRead(
+            g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int
+        ) {
+            if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
+            try {
+                val uuid = ch.uuid.toString()
+                val gen = connectionGeneration
+                if (!readTracker.matches(uuid, gen)) {
+                    listener.onLog("> read: Callback ohne passenden Request ignoriert " +
+                            "(uuid=$uuid, status=$status, gen=$gen)")
+                    return
+                }
+                cancelReadTimeout()
+                val done = readTracker.complete()
+                val value: ByteArray = ch.value ?: ByteArray(0)
+                val byteCount = value.size
+                val st = ReadClassifier.fromCallback(status, BluetoothGatt.GATT_SUCCESS, byteCount)
+                val duration = done?.elapsedMs(SystemClock.elapsedRealtime()) ?: 0L
+                val hex = if (byteCount > 0) hexOf(value) else ""
+                val detail = if (st.isSuccess) "" else "status=$status"
+                val outcome = ReadOutcome(uuid, st, status, hex, byteCount, duration, detail)
+                listener.onLog("> read: ${outcome.summary()}")
+                listener.onCharacteristicReadResult(outcome)
+            } catch (e: Exception) {
+                listener.onLog("> read: Exception in onCharacteristicRead: ${e.message}")
+                readTracker.clear()
+                cancelReadTimeout()
             }
         }
 
@@ -1219,6 +1301,134 @@ class BleEngine(
         flashActive = false
         failPendingWrites("flash-abort")
         listener.onFlashFinished(false, "Flash manuell abgebrochen.")
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  READ-PFAD (PHASE 16)                                               */
+    /* ------------------------------------------------------------------ */
+    /** UUIDs der real lesbaren Characteristics (aus dem GATT-Baum). */
+    fun readableCharacteristicUuids(): List<String> = readableChars.map { it.uuid.toString() }
+
+    /** true, wenn aktuell ein Read auf seinen Callback/Timeout wartet. */
+    fun isReadPending(): Boolean = readTracker.isPending()
+
+    /**
+     * Startet einen echten Read. Ohne [uuid] wird die erste lesbare
+     * Characteristic verwendet. Es wird GENAU EIN Read gleichzeitig zugelassen.
+     *
+     * Wichtig: Der Rueckgabewert [ReadRequestResult.STARTED] bedeutet nur, dass
+     * der Request angenommen wurde. Ob der Read erfolgreich war, meldet
+     * ausschliesslich [Listener.onCharacteristicReadResult] mit einem
+     * [ReadOutcome] vom Status SUCCESS.
+     */
+    @SuppressLint("MissingPermission")
+    fun readCharacteristic(
+        uuid: String? = null,
+        label: String = "",
+        manual: Boolean = false
+    ): ReadRequestResult {
+        val g = synchronized(writeLock) { gatt }
+        val connected = g != null
+        val ch = resolveReadableChar(uuid)
+        val present = ch != null
+        val readable = ch != null && isReadable(ch)
+        if (!connected || !present || !readable) {
+            val res = ReadClassifier.fromRequest(connected, present, readable, false)
+            listener.onLog("> read[$label]: ${ReadClassifier.requestMessage(res)} (uuid=${uuid ?: "-"})")
+            return res
+        }
+        val gen = connectionGeneration
+        if (!readTracker.begin(ch!!.uuid.toString(), gen, SystemClock.elapsedRealtime(), label)) {
+            listener.onLog("> read[$label]: abgelehnt — es laeuft bereits ein Read " +
+                    "(${readTracker.pendingUuid()})")
+            return ReadRequestResult.REJECTED
+        }
+        armReadTimeout(label)
+        val accepted = try {
+            g!!.readCharacteristic(ch)
+        } catch (e: Exception) {
+            listener.onLog("> read[$label]: Exception bei readCharacteristic(): ${e.message}")
+            false
+        }
+        if (!accepted) {
+            cancelReadTimeout()
+            readTracker.abort()
+            listener.onLog("> read[$label]: readCharacteristic() vom BLE-Stack abgelehnt")
+            return ReadRequestResult.REJECTED
+        }
+        listener.onLog("> read[$label]: Read angefordert fuer ${ch.uuid}" +
+                if (manual) " (manuell)" else "")
+        return ReadRequestResult.STARTED
+    }
+
+    /**
+     * Bricht einen laufenden Read ab und meldet ABORTED (bzw. DISCONNECTED,
+     * wenn die Verbindung weg ist). Wird u. a. bei Disconnect aufgerufen.
+     */
+    fun abortPendingRead(reason: String = "abgebrochen") {
+        val p = readTracker.abort() ?: return
+        cancelReadTimeout()
+        val status = if (synchronized(writeLock) { gatt } == null) ReadStatus.DISCONNECTED
+        else ReadStatus.ABORTED
+        listener.onLog("> read[${p.label}]: abgebrochen ($reason, uuid=${p.uuid})")
+        listener.onCharacteristicReadResult(
+            ReadOutcome(
+                uuid = p.uuid,
+                status = status,
+                rawStatus = -1,
+                byteCount = 0,
+                durationMs = p.elapsedMs(SystemClock.elapsedRealtime()),
+                message = reason
+            )
+        )
+    }
+
+    private fun armReadTimeout(label: String) {
+        cancelReadTimeout()
+        val r = Runnable {
+            val p = readTracker.timeout(SystemClock.elapsedRealtime(), READ_TIMEOUT_MS) ?: return@Runnable
+            listener.onLog("> read[${p.label}]: TIMEOUT nach ${READ_TIMEOUT_MS} ms " +
+                    "(uuid=${p.uuid}) — kein Callback")
+            listener.onCharacteristicReadResult(
+                ReadOutcome(
+                    uuid = p.uuid,
+                    status = ReadStatus.TIMEOUT,
+                    rawStatus = -1,
+                    byteCount = 0,
+                    durationMs = p.elapsedMs(SystemClock.elapsedRealtime()),
+                    message = "kein Callback in ${READ_TIMEOUT_MS} ms"
+                )
+            )
+        }
+        readTimeout = r
+        Handler(Looper.getMainLooper()).postDelayed(r, READ_TIMEOUT_MS)
+    }
+
+    private fun cancelReadTimeout() {
+        readTimeout?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
+        readTimeout = null
+    }
+
+    private fun isReadable(ch: BluetoothGattCharacteristic): Boolean =
+        ch.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0
+
+    private fun collectReadable(g: BluetoothGatt): List<BluetoothGattCharacteristic> {
+        val out = ArrayList<BluetoothGattCharacteristic>()
+        try {
+            for (s: BluetoothGattService in g.services)
+                for (ch: BluetoothGattCharacteristic in s.characteristics)
+                    if (isReadable(ch)) out.add(ch)
+        } catch (e: Exception) {
+            listener.onLog("> read: Exception beim Sammeln lesbarer Characteristics: ${e.message}")
+        }
+        return out
+    }
+
+    private fun resolveReadableChar(uuid: String?): BluetoothGattCharacteristic? {
+        val g = synchronized(writeLock) { gatt } ?: return null
+        val live = if (readableChars.isNotEmpty()) readableChars else collectReadable(g)
+        if (uuid == null) return live.firstOrNull()
+        return live.firstOrNull { it.uuid.toString().equals(uuid, ignoreCase = true) }
     }
 
     /* ------------------------------------------------------------------ */

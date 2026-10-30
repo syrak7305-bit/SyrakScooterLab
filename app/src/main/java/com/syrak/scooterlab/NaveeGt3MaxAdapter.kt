@@ -43,9 +43,19 @@ class NaveeGt3MaxAdapter : ScooterProtocolAdapter {
         displayName = "Navee GT3 Max (Brightway)",
         protocol = BleProtocol.NAVEE_BRIGHTWAY,
         supportedModels = setOf(ScooterModel.NAVEE_GT3_MAX),
-        gattServiceUuids = listOf(NaveeFrames.SERVICE_UUID),
-        gattWriteCharUuids = listOf(NaveeFrames.CHAR_UUID, NaveeFrames.CHAR_WRITE_UUID),
-        gattNotifyCharUuids = listOf(NaveeFrames.CHAR_UUID, NaveeFrames.CHAR_WRITE_UUID),
+        // PHASE 16.1: Rollenlisten aus der zentralen Registry [BleUuids].
+        // Brightway: FFE1 = Notify, FFE2 = Write. Die fruehere Doppelbehauptung
+        // (beide UUIDs in beiden Listen) widersprach der Registry und dem
+        // dokumentierten Brightway-Layout und ist damit beseitigt.
+        gattServiceUuids = BleUuids.candidateUuids(
+            "Navee / Brightway", UuidRole.GATT_SERVICE
+        ),
+        gattWriteCharUuids = BleUuids.candidateUuids(
+            "Navee / Brightway", UuidRole.WRITE_CHARACTERISTIC
+        ),
+        gattNotifyCharUuids = BleUuids.candidateUuids(
+            "Navee / Brightway", UuidRole.NOTIFY_CHARACTERISTIC
+        ),
         readOperations = setOf(
             ReadOperation.STATUS_TELEMETRY,
             ReadOperation.BATTERY_BMS,

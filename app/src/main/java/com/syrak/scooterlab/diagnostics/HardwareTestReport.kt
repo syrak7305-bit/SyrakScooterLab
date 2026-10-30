@@ -104,6 +104,27 @@ data class HardwareErrorRecord(
     val atMs: Long
 )
 
+/**
+ * PHASE 16: Ein tatsaechlich durchgefuehrter Characteristic-Read.
+ * `success` ist NUR true, wenn ein echter Callback mit GATT_SUCCESS und
+ * mindestens einem Byte vorlag. Eine vorhandene Read-Property ist KEIN Read.
+ */
+data class ReadRecord(
+    val uuid: String,
+    val status: String,
+    val success: Boolean,
+    val byteCount: Int,
+    val durationMs: Long,
+    val atMs: Long,
+    val detail: String = ""
+)
+
+/** PHASE 16: Ein einzelner RSSI-Messwert der Verbindung. */
+data class RssiSample(
+    val rssi: Int,
+    val atMs: Long
+)
+
 /** Verbindungsverlauf einer Sitzung. */
 data class ConnectionRecord(
     val connectedAtMs: Long? = null,
@@ -155,8 +176,18 @@ data class HardwareTestReport(
     val services: List<GattServiceRecord> = emptyList(),
     val frames: List<FrameRecord> = emptyList(),
     val errors: List<HardwareErrorRecord> = emptyList(),
+    /** PHASE 16: durchgefuehrte Reads (Erfolg/Fehler/Timeout). */
+    val reads: List<ReadRecord> = emptyList(),
+    /** PHASE 16: RSSI-Zeitreihe waehrend der Sitzung. */
+    val rssiSamples: List<RssiSample> = emptyList(),
     val notes: List<String> = emptyList()
 ) {
+    /** Anzahl erfolgreicher Reads (echter Callback mit Bytes). */
+    val successfulReads: Int get() = reads.count { it.success }
+    /** Anzahl fehlgeschlagener Reads (GATT-Fehler/leer). */
+    val failedReads: Int get() = reads.count { !it.success && it.status != "TIMEOUT" }
+    /** Anzahl Read-Timeouts. */
+    val readTimeouts: Int get() = reads.count { it.status == "TIMEOUT" }
 
     /* ---------------------------- JSON ---------------------------- */
 
@@ -244,6 +275,29 @@ data class HardwareTestReport(
         }
         append(if (errors.isEmpty()) "],\n" else "\n  ],\n")
 
+        append("  \"reads\": [")
+        reads.forEachIndexed { i, r ->
+            append(if (i == 0) "\n" else ",\n")
+            append("    {\"uuid\": ").append(Json.quote(r.uuid))
+            append(", \"status\": ").append(Json.quote(r.status))
+            append(", \"success\": ").append(r.success)
+            append(", \"byteCount\": ").append(r.byteCount)
+            append(", \"durationMs\": ").append(r.durationMs)
+            append(", \"atMs\": ").append(r.atMs)
+            append(", \"detail\": ").append(Json.quote(r.detail))
+            append("}")
+        }
+        append(if (reads.isEmpty()) "],\n" else "\n  ],\n")
+
+        append("  \"rssiSeries\": [")
+        rssiSamples.forEachIndexed { i, r ->
+            append(if (i == 0) "\n" else ",\n")
+            append("    {\"rssi\": ").append(r.rssi)
+            append(", \"atMs\": ").append(r.atMs)
+            append("}")
+        }
+        append(if (rssiSamples.isEmpty()) "],\n" else "\n  ],\n")
+
         append("  \"notes\": ").append(Json.stringArray(notes)).append("\n")
         append("}\n")
     }
@@ -296,6 +350,12 @@ data class HardwareTestReport(
         errors.forEach { e ->
             row("error", e.kind.name, "${e.atMs}|${e.message}")
         }
+        reads.forEach { r ->
+            row("read", r.uuid, "${r.atMs}|${r.status}|success=${r.success}|bytes=${r.byteCount}|dur=${r.durationMs}|${r.detail}")
+        }
+        rssiSamples.forEach { r ->
+            row("rssi", "sample", "${r.atMs}|${r.rssi}")
+        }
         notes.forEachIndexed { i, n -> row("note", "note[$i]", n) }
     }
 
@@ -319,6 +379,10 @@ data class HardwareTestReport(
         appendLine("GATT: ${services.size} Services / ${services.sumOf { it.characteristics.size }} Characteristics")
         appendLine("Frames: ${frames.size} (TX ${frames.count { it.direction == FrameDirection.TX }}, RX ${frames.count { it.direction == FrameDirection.RX }})")
         appendLine("Fehler: ${errors.size}")
+        appendLine(
+            "Reads: ${reads.size} (ok ${successfulReads}, fehlgeschlagen ${failedReads}, " +
+                "Timeout $readTimeouts) \u00b7 RSSI-Messwerte: ${rssiSamples.size}"
+        )
         if (notes.isNotEmpty()) {
             appendLine("Hinweise:")
             notes.forEach { appendLine("  - $it") }
@@ -337,11 +401,15 @@ data class HardwareTestReport(
  */
 class HardwareTestCollector(
     private val maxFrames: Int = 2000,
-    private val maxErrors: Int = 200
+    private val maxErrors: Int = 200,
+    private val maxReads: Int = 500,
+    private val maxRssi: Int = 2000
 ) {
     private val frames = ArrayDeque<FrameRecord>()
     private val errors = ArrayDeque<HardwareErrorRecord>()
     private val scan = LinkedHashMap<String, ScanRecord>()
+    private val reads = ArrayDeque<ReadRecord>()
+    private val rssi = ArrayDeque<RssiSample>()
 
     fun recordFrame(direction: FrameDirection, hex: String, atMs: Long, label: String = "") {
         if (frames.size >= maxFrames) frames.removeFirst()
@@ -351,6 +419,18 @@ class HardwareTestCollector(
     fun recordError(kind: HardwareErrorKind, message: String, atMs: Long) {
         if (errors.size >= maxErrors) errors.removeFirst()
         errors.addLast(HardwareErrorRecord(kind, message, atMs))
+    }
+
+    /** PHASE 16: erfasst einen durchgefuehrten Read (Erfolg/Fehler/Timeout). */
+    fun recordRead(record: ReadRecord) {
+        if (reads.size >= maxReads) reads.removeFirst()
+        reads.addLast(record)
+    }
+
+    /** PHASE 16: erfasst einen RSSI-Messwert. */
+    fun recordRssi(value: Int, atMs: Long) {
+        if (rssi.size >= maxRssi) rssi.removeFirst()
+        rssi.addLast(RssiSample(value, atMs))
     }
 
     /** Fuehrt ein Scan-Ergebnis zusammen (gleiche Adresse = gleicher Eintrag). */
@@ -370,15 +450,21 @@ class HardwareTestCollector(
     fun frames(): List<FrameRecord> = frames.toList()
     fun errors(): List<HardwareErrorRecord> = errors.toList()
     fun scanResults(): List<ScanRecord> = scan.values.toList()
+    fun reads(): List<ReadRecord> = reads.toList()
+    fun rssiSamples(): List<RssiSample> = rssi.toList()
 
     fun clear() {
         frames.clear()
         errors.clear()
         scan.clear()
+        reads.clear()
+        rssi.clear()
     }
 
     fun frameCount(): Int = frames.size
     fun errorCount(): Int = errors.size
+    fun readCount(): Int = reads.size
+    fun rssiCount(): Int = rssi.size
 }
 
 /** Kleine, abhaengigkeitsfreie JSON-/CSV-Hilfe mit korrektem Escaping. */

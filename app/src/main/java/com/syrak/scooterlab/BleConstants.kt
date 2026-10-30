@@ -1,32 +1,45 @@
 package com.syrak.scooterlab.core.ble
 
+import com.syrak.scooterlab.BleUuids
 import java.util.UUID
 
 /**
- * Wire-level BLE identifiers used by the supported scooter families.
+ * Wire-level BLE identifiers used by the LEGACY BLE path.
  *
- * Ninebot / Segway / Xiaomi controllers expose the Nordic-UART-style GATT layout:
- *  - a single service carrying one write characteristic (app -> controller) and
- *    one notify characteristic (controller -> app).
+ * PHASE 16 — WICHTIG (belegter Widerspruch, jetzt dokumentiert):
+ * Diese Datei gehoert zum alten `BleManager`-Stack (Compose-Pfad). Der aktive,
+ * von `MainActivity` benutzte Stack ist `BleEngine` und verwendet fuer Ninebot
+ * `0000e003` / `0000fff1` / `0000fff2` sowie fuer Navee `0000ffe0` / `0000ffe1`
+ * / `0000ffe2`.
  *
- * Some Xiaomi firmwares advertise the Xiaomi service instead; both are scanned.
+ * Frueher stand hier die Behauptung, Nordic-UART sei "der Transport, den
+ * Ninebot/Segway/Xiaomi ESCs verwenden". Das widersprach `BleEngine`. Beide
+ * Werte bleiben unveraendert erhalten (nichts wird erfunden oder umgeschrieben),
+ * aber die Herkunft ist jetzt in [BleUuids] eindeutig als
+ * `LEGACY_UNCONFIRMED` klassifiziert. Es gibt ab Phase 16 nur noch EINE
+ * Textdefinition pro UUID; diese Datei verweist darauf.
  */
 object BleConstants {
 
-    /** Nordic UART Service — the transport used by Ninebot/Segway/Xiaomi ESCs. */
-    val UART_SERVICE: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
-    /** App -> controller (Write / Write-No-Response). */
-    val UART_WRITE_CHAR: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
-    /** Controller -> app (Notify). */
-    val UART_NOTIFY_CHAR: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+    /**
+     * Nordic UART Service (Legacy-Pfad).
+     * @see BleUuids.LEGACY_UART_SERVICE
+     */
+    val UART_SERVICE: UUID = UUID.fromString(BleUuids.LEGACY_UART_SERVICE)
 
-    /** Xiaomi proprietary service (advertised by some M365/1S/Pro units). */
-    val XIAOMI_SERVICE: UUID = UUID.fromString("0000fe95-0000-1000-8000-00805f9b34fb")
+    /** App -> controller (Write / Write-No-Response). Legacy-Pfad. */
+    val UART_WRITE_CHAR: UUID = UUID.fromString(BleUuids.LEGACY_UART_WRITE)
+
+    /** Controller -> app (Notify). Legacy-Pfad. */
+    val UART_NOTIFY_CHAR: UUID = UUID.fromString(BleUuids.LEGACY_UART_NOTIFY)
+
+    /** Xiaomi proprietary service (Legacy-Scanfilter). */
+    val XIAOMI_SERVICE: UUID = UUID.fromString(BleUuids.LEGACY_XIAOMI_SERVICE)
 
     /** Standard Client Characteristic Configuration Descriptor. */
-    val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    val CCCD: UUID = UUID.fromString(BleUuids.CCCD)
 
-    /** Service UUIDs used as scan filters. */
+    /** Service UUIDs used as scan filters (Legacy-Pfad). */
     val SCAN_SERVICE_FILTERS: List<UUID> = listOf(UART_SERVICE, XIAOMI_SERVICE)
 
     /** Advertised-name prefixes used for client-side brand classification. */

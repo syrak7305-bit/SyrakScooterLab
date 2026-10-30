@@ -53,9 +53,13 @@ object ScooterFrames {
  *  NAVEE / BRIGHTWAY FRAME-BUILDER  (AA 55 | CMD | LEN | PAYLOAD | SUM)
  * ------------------------------------------------------------------------- */
 object NaveeFrames {
-    const val SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
-    const val CHAR_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"
-    const val CHAR_WRITE_UUID = "0000ffe2-0000-1000-8000-00805f9b34fb"
+    /**
+     * PHASE 16: Die Werte kommen jetzt aus der zentralen Registry [BleUuids].
+     * Text und Bedeutung sind unveraendert — es gibt nur noch EINE Definition.
+     */
+    const val SERVICE_UUID = BleUuids.NAVEE_SERVICE
+    const val CHAR_UUID = BleUuids.NAVEE_CHAR_MAIN
+    const val CHAR_WRITE_UUID = BleUuids.NAVEE_CHAR_ALT
 
     private const val H1 = 0xAA
     private const val H2 = 0x55

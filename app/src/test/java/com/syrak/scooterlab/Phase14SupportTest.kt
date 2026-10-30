@@ -138,7 +138,7 @@ class Phase14SupportTest {
     fun `ladder shows no stage when nothing is proven`() {
         val report = CompatibilityLadder.evaluate(CompatibilityEvidence())
         assertNull(report.highest)
-        assertEquals(6, report.missing.size)
+        assertEquals(7, report.missing.size)
         assertTrue(report.stages.none { it.reached })
     }
 
@@ -156,7 +156,7 @@ class Phase14SupportTest {
         )
         assertEquals(CompatibilityStage.GATT_DISCOVERED, report.highest)
         assertFalse(report.stages.first { it.stage == CompatibilityStage.TELEMETRY_VALIDATED }.reached)
-        assertEquals(4, report.missing.size)
+        assertEquals(5, report.missing.size)
     }
 
     @Test
@@ -173,6 +173,7 @@ class Phase14SupportTest {
             CompatibilityEvidence(
                 detected = true,
                 gattDiscovered = true,
+                readPropertyFound = true,
                 readOnlyTested = true,
                 telemetryValidated = true,
                 writeProtocolValidated = true,
@@ -181,8 +182,8 @@ class Phase14SupportTest {
         )
         assertEquals(CompatibilityStage.HARDWARE_VERIFIED, report.highest)
         assertTrue(report.missing.isEmpty())
-        assertEquals(6, CompatibilityLadder.reachedStages(CompatibilityEvidence(
-            detected = true, gattDiscovered = true, readOnlyTested = true,
+        assertEquals(7, CompatibilityLadder.reachedStages(CompatibilityEvidence(
+            detected = true, gattDiscovered = true, readPropertyFound = true, readOnlyTested = true,
             telemetryValidated = true, writeProtocolValidated = true, hardwareVerified = true
         )).size)
     }

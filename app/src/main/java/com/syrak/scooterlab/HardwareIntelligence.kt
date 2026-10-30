@@ -26,15 +26,19 @@ import kotlin.math.roundToInt
 enum class CompatibilityStage(val rank: Int) {
     DETECTED(1),
     GATT_DISCOVERED(2),
-    READ_ONLY_TESTED(3),
-    TELEMETRY_VALIDATED(4),
-    WRITE_PROTOCOL_VALIDATED(5),
-    HARDWARE_VERIFIED(6);
+    /** PHASE 16: Es EXISTIERT eine lesbare Characteristic (nur Bestandsaufnahme). */
+    READ_PROPERTY_FOUND(3),
+    /** PHASE 16: Ein ECHTER Read ist mit Callback erfolgreich zurueckgekommen. */
+    READ_ONLY_TESTED(4),
+    TELEMETRY_VALIDATED(5),
+    WRITE_PROTOCOL_VALIDATED(6),
+    HARDWARE_VERIFIED(7);
 
     fun label(language: AppLanguage): String = when (this) {
         DETECTED -> if (language == AppLanguage.DE) "Erkannt" else "Detected"
         GATT_DISCOVERED -> if (language == AppLanguage.DE) "GATT gelesen" else "GATT discovered"
-        READ_ONLY_TESTED -> if (language == AppLanguage.DE) "Lesen getestet" else "Read-only tested"
+        READ_PROPERTY_FOUND -> if (language == AppLanguage.DE) "Read-Property gefunden" else "Read property found"
+        READ_ONLY_TESTED -> if (language == AppLanguage.DE) "Read erfolgreich" else "Read succeeded"
         TELEMETRY_VALIDATED -> if (language == AppLanguage.DE) "Telemetrie bestaetigt" else "Telemetry validated"
         WRITE_PROTOCOL_VALIDATED -> if (language == AppLanguage.DE) "Schreibprotokoll bestaetigt" else "Write protocol validated"
         HARDWARE_VERIFIED -> if (language == AppLanguage.DE) "Hardware verifiziert" else "Hardware verified"
@@ -49,6 +53,12 @@ enum class CompatibilityStage(val rank: Int) {
 data class CompatibilityEvidence(
     val detected: Boolean = false,
     val gattDiscovered: Boolean = false,
+    /**
+     * PHASE 16: Es gibt mindestens eine lesbare Characteristic im GATT-Baum.
+     * Das ist NICHT dasselbe wie ein erfolgreicher Read.
+     */
+    val readPropertyFound: Boolean = false,
+    /** PHASE 16: Ein echter Read kam mit GATT_SUCCESS und Bytes zurueck. */
     val readOnlyTested: Boolean = false,
     val telemetryValidated: Boolean = false,
     val writeProtocolValidated: Boolean = false,
@@ -81,6 +91,7 @@ object CompatibilityLadder {
         val flags = mapOf(
             CompatibilityStage.DETECTED to evidence.detected,
             CompatibilityStage.GATT_DISCOVERED to evidence.gattDiscovered,
+            CompatibilityStage.READ_PROPERTY_FOUND to evidence.readPropertyFound,
             CompatibilityStage.READ_ONLY_TESTED to evidence.readOnlyTested,
             CompatibilityStage.TELEMETRY_VALIDATED to evidence.telemetryValidated,
             CompatibilityStage.WRITE_PROTOCOL_VALIDATED to evidence.writeProtocolValidated,

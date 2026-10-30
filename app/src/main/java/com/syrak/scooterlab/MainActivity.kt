@@ -321,6 +321,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var lastConnectFailed = false
     private var connStageView: TextView? = null
     private var htLastGatt: List<com.syrak.scooterlab.diagnostics.GattServiceRecord> = emptyList()
+    // ---- PHASE 16: Read-Pfad --------------------------------------------
+    /** Mindestens eine lesbare Characteristic im echten GATT-Baum gefunden. */
+    @Volatile private var readPropertyFound = false
+    /** Zaehlt echte erfolgreiche Reads (Callback mit Bytes) seit Verbindungsaufbau. */
+    @Volatile private var readSuccessCount = 0
+    /** Letzter Read-Ausgang fuer die UI. */
+    @Volatile private var lastReadOutcome: ReadOutcome? = null
     private var pendingExportContent: String? = null
     private var pendingExportMime: String = "application/json"
 
@@ -825,6 +832,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             services = htLastGatt,
             frames = hardwareTest.frames(),
             errors = hardwareTest.errors(),
+            reads = hardwareTest.reads(),
+            rssiSamples = hardwareTest.rssiSamples(),
             notes = buildList {
                 add("Reine Beobachtungsdaten. Keine erfundenen UUIDs, Kommandos oder Decoder-Offsets.")
                 if (!detectedModel.isKnown) {
@@ -1731,6 +1740,29 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         modelCard.addView(makeText(support.note, 11f, Palette.TEXT_MUTED).apply {
             setPadding(0, dp(4), 0, 0)
         })
+        // PHASE 16 §9: Ehrliche Hardware-Support-Kennzeichnung. Diese Ebenen
+        // werden strikt getrennt. Eine simulierte BLE-Verbindung ist KEIN
+        // Hardware-Nachweis; ohne echten Scooter-Test bleibt die oberste Stufe offen.
+        val realDeviceTested = hardwareVerified
+        modelCard.addView(makeText("Hardware-Nachweis (ehrlich):", 12f, Palette.TEXT_PRIMARY, true).apply {
+            setPadding(0, dp(8), 0, 0)
+        })
+        listOf(
+            "Code implementiert: ja",
+            "Unit-getestet: ja (JVM-Tests, ohne echtes Geraet)",
+            "BLE-Verhalten simuliert: ja (Tests, kein Hardware-Beweis)",
+            "Mit echtem Geraet getestet: " + if (realDeviceTested) "ja" else "nein",
+            "Mit echtem Scooter-Protokoll bestaetigt: " + if (realDeviceTested) "ja" else "nein"
+        ).forEach { line ->
+            modelCard.addView(makeText("\u2022 $line", 11f, Palette.TEXT_SECONDARY))
+        }
+        if (!realDeviceTested) {
+            modelCard.addView(makeText(
+                "Hinweis: Es liegt noch KEIN bestaetigter Hardware-Test vor. Das Geraet wird " +
+                    "daher nicht als vollstaendig unterstuetzt bezeichnet.",
+                11f, Palette.ACCENT_YELLOW
+            ).apply { setPadding(0, dp(4), 0, 0) })
+        }
         if (detectedModel.isKnown) {
             modelCard.addView(makeText(
                 "eKFV-Hinweis: ${currentRegion.legalSpeedKmh} km/h in ${currentRegion.displayName}. " +
@@ -1745,10 +1777,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         // Geraet erkannt != Protokoll unterstuetzt != Telemetrie validiert.
         tabContent.addView(makeSectionLabel("KOMPATIBILITAET"))
         val compatCard = makeCard()
-        // PHASE 15: Belege strenger fassen.
-        // - Eine gemeldete Read-Property ist KEIN erfolgreicher Lesevorgang.
-        //   Die BLE-Schicht hat keinen Read-Callback, daher bleibt diese Stufe
-        //   ehrlich offen, bis ein echter Lesevorgang bestaetigt ist.
+        // PHASE 16: Belege strenger fassen.
+        // - Stufe 3 (Read-Property gefunden) und Stufe 4 (echter Read erfolgreich)
+        //   sind getrennt. Eine gemeldete Read-Property ist KEIN Leseerfolg; erst
+        //   ein echter onCharacteristicRead-Callback mit Bytes zaehlt.
         // - Empfangene BLE-Daten sind nicht automatisch bestaetigte Telemetrie.
         //   Es muessen plausible Kernwerte vorliegen und die Messung darf nicht
         //   veraltet sein.
@@ -1759,7 +1791,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val compatEvidence = CompatibilityEvidence(
             detected = connectedDevice != null || lastTelemetryAtElapsed > 0L,
             gattDiscovered = htLastGatt.isNotEmpty(),
-            readOnlyTested = false,
+            // PHASE 16: Read-Property (Bestandsaufnahme) ist NICHT der Read-Erfolg.
+            readPropertyFound = readPropertyFound,
+            readOnlyTested = readSuccessCount > 0,
             telemetryValidated = telemetryPlausible,
             writeProtocolValidated = hardwareVerified && detectedModel.isKnown,
             hardwareVerified = hardwareVerified && detectedModel.isKnown
@@ -2061,14 +2095,16 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         gattAnalysis.notes.forEach { note ->
             gattCard.addView(makeText(note, 11f, Palette.TEXT_MUTED))
         }
-        // Ehrlicher Hinweis auf den bekannten UUID-Widerspruch.
+        // PHASE 16: UUID-Herkunft aus der zentralen Registry (BleUuids).
         gattCard.addView(makeText(
-            "Bekannter Widerspruch (nicht behoben, da nicht verifizierbar): BleConstants " +
-                "verwendet die UART-UUIDs 6e400001/6e400002/6e400003 bzw. fe95, waehrend " +
-                "BleEngine und die Adapter 0000e003/0000fff1/0000fff2 nutzen. Welche Variante " +
-                "am GT3 Max tatsaechlich aktiv ist, ist ohne Hardware-Test offen.",
-            11f, Palette.WARNING
+            "UUID-Registry: ${BleUuids.all().size} Definitionen, davon " +
+                "${BleUuids.unprovenCount()} ohne externen Beleg, " +
+                "${BleUuids.confirmedOnHardwareCount()} am realen Geraet bestaetigt.",
+            11f, Palette.TEXT_SECONDARY, true
         ).apply { setPadding(0, dp(8), 0, 0) })
+        BleUuids.transportContradictions().forEach { line ->
+            gattCard.addView(makeText(line, 11f, Palette.WARNING))
+        }
         body.addView(gattCard, cardParams())
 
         // ---- PHASE 12.7 C: VERBINDUNGSQUALITAET ------------------------------
@@ -3447,6 +3483,26 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun importSuggestion(suggestion: FirmwareSuggestion) {
         val validation = lastValidation
         val bytes = validation?.extractedBinary ?: loadedFirmwareBytes
+        // PHASE 16 §5: Identitaetssicherung. Eine lokal ausgewaehlte Datei darf
+        // NICHT unter dem Namen eines fremden Katalogpakets gespeichert werden.
+        val decision = FirmwareImportGuard.evaluate(
+            suggestionPackageId = suggestion.packageId,
+            selectedPackageId = selectedFirmware?.id,
+            validationValid = validation?.valid == true,
+            hashVerified = validation?.hashVerified == true,
+            modelCompatible = validation?.modelCompatible == true
+        )
+        if (decision != FirmwareImportDecision.ALLOWED) {
+            val reason = FirmwareImportGuard.reason(decision, AppLanguage.DE)
+            toast(reason)
+            addLog(LogCategory.ERROR, "Paket '${suggestion.name}' nicht uebernommen: $reason")
+            AlertDialog.Builder(this)
+                .setTitle("Uebernahme abgelehnt")
+                .setMessage(reason + "\n\nEs wird nichts gespeichert und nichts geflasht.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
         if (validation != null && validation.valid && bytes != null && selectedFirmwareName != null) {
             AlertDialog.Builder(this)
                 .setTitle("Paket \u00fcbernehmen")
@@ -4255,6 +4311,37 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
     }
 
+    override fun onReadableCharacteristics(uuids: List<String>) {
+        runOnUiThread {
+            readPropertyFound = uuids.isNotEmpty()
+            if (uuids.isNotEmpty()) {
+                addLog(LogCategory.INFO, "Lesbare Characteristics: ${uuids.size}")
+            }
+        }
+    }
+
+    override fun onCharacteristicReadResult(outcome: ReadOutcome) {
+        runOnUiThread {
+            lastReadOutcome = outcome
+            if (outcome.success) readSuccessCount++
+            hardwareTest.recordRead(
+                com.syrak.scooterlab.diagnostics.ReadRecord(
+                    uuid = outcome.uuid,
+                    status = outcome.status.name,
+                    success = outcome.success,
+                    byteCount = outcome.byteCount,
+                    durationMs = outcome.durationMs,
+                    atMs = SystemClock.elapsedRealtime(),
+                    detail = outcome.message
+                )
+            )
+            addLog(
+                if (outcome.success) LogCategory.INFO else LogCategory.ERROR,
+                "Read: ${outcome.summary(AppLanguage.DE)}"
+            )
+        }
+    }
+
     override fun onFlashProgress(written: Int, total: Int) {
         runOnUiThread {
             val percent = if (total > 0) (written * 100 / total) else 0
@@ -4281,6 +4368,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             lastRssi = rssi
             rssiSamples.addLast(LinkSample(rssi, SystemClock.elapsedRealtime()))
             while (rssiSamples.size > MAX_RSSI_SAMPLES) rssiSamples.removeFirst()
+            hardwareTest.recordRssi(rssi, SystemClock.elapsedRealtime())
             sysRssiView?.text = "RSSI $rssi"
         }
     }
