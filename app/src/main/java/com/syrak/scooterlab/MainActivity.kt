@@ -114,6 +114,23 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private val KEY_DISCLAIMER_START = "phase13_disclaimer_start"
     private val KEY_COUNTRY_START = "phase13_country_start"
 
+    /* ------------------------------------------------------------------ */
+    /*  PHASE 14 (Teil C): SPRACHAUFLÖSUNG FÜR RECHTSTEXTE                */
+    /* ------------------------------------------------------------------ */
+    /**
+     * Sprache des allgemeinen Haftungstextes. Beim ersten Start IMMER Englisch
+     * (Vorgabe), danach optional vom Nutzer auf Deutsch umschaltbar.
+     */
+    private var disclaimerLanguage: AppLanguage = AppLanguage.EN
+
+    /**
+     * Sprache des Länderhinweises: zuerst die Android-Systemsprache, danach
+     * die Landessprache, sonst Englisch. Sprache und Land bleiben getrennt:
+     * die Sprache bestimmt nur die Darstellung, das Land den Inhalt.
+     */
+    private fun noticeLanguage(): AppLanguage =
+        LanguageResolver.resolve(Locale.getDefault().toLanguageTag(), repository.region.code)
+
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
     // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
@@ -543,9 +560,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         elevation = dp(1).toFloat()
     }
 
-    /** PHASE 13: Sektionslabel mit technischer Kontur. */
+    /**
+     * PHASE 14 (Teil B): Sektionslabel bewusst zurueckhaltend in Grau.
+     * Rot bleibt echten Marken-/Warnakzenten vorbehalten, damit die Oberflaeche
+     * ruhig und hochwertig wirkt statt bunt.
+     */
     private fun makeSectionLabel(value: String): TextView =
-        makeText(value.uppercase(), 10.5f, Palette.ACCENT, true).apply {
+        makeText(value.uppercase(), 10.5f, Palette.TEXT_MUTED, true).apply {
             letterSpacing = 0.22f
             setPadding(dp(2), dp(18), 0, dp(8))
         }
@@ -1095,39 +1116,54 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         header.addView(headerText, LinearLayout.LayoutParams(0, WRAP, 1f))
         col.addView(header)
 
-        col.addView(makeText("SICHERHEITS- & HAFTUNGSHINWEIS", 18f, Palette.DANGER, true))
+        // PHASE 14 (Teil C): Der allgemeine Haftungstext erscheint beim ersten
+        // Start IMMER auf Englisch. Eine optionale Umschaltung auf Deutsch ist
+        // moeglich, ohne den Inhalt zu veraendern (keine Maschinenuebersetzung).
+        val lang = disclaimerLanguage
+        col.addView(makeText(DisclaimerText.title(lang), 18f, Palette.DANGER, true))
         col.addView(makeText(
-            "Bitte vollstaendig lesen. Dieser Hinweis muss vor der ersten Nutzung bestaetigt werden.",
+            DisclaimerText.intro(lang),
             12f, Palette.TEXT_MUTED
-        ).apply { setPadding(0, dp(6), 0, dp(18)) })
+        ).apply { setPadding(0, dp(6), 0, dp(10)) })
 
-        // PHASE 12.1: Die vollstaendige, mehrteilige Fassung wurde aus der
-        // frueheren Implementierung wiederhergestellt. Keine Warnung entfernt.
-        val sections = listOf(
-            "Altersbeschraenkung & Sachkunde" to
-                "Diese App und ihre Firmware-Werkzeuge richten sich ausschliesslich an volljaehrige Nutzer. Minderjaehrige duerfen das Fahrzeug nur unter direkter Aufsicht und voller Verantwortung einer erziehungsberechtigten Person nutzen.",
-            "Persoenliche Sicherheit & Schutzausruestung" to
-                "Trage immer zertifizierte Schutzausruestung (Helm, Protektoren) und pruefe vor jeder Fahrt Bremsen, Reifendruck, Faltmechanismus und Lenkung. Fahre niemals abgelenkt, muede oder unter Einfluss von Alkohol, Medikamenten oder Drogen.",
-            "Hardware-Risiken & Bauteilschaeden" to
-                "Low-Level-Diagnosebefehle, das Aendern von Firmware-Registern, das Verstellen von Geschwindigkeitsbegrenzern oder das Flashen eigener MCU-Pakete bergen technische Risiken. Fehlerhafte Parameter koennen den Motorcontroller dauerhaft beschaedigen, zu Thermal-Durchgehen in Lithium-Ionen-Akkus, blockierenden Bremsen oder schweren elektronischen Fehlfunktionen fuehren.",
-            "Rechtliche Konformitaet & Strassenverkehr" to
-                "Das Veraendern werkseitiger Geschwindigkeitsgrenzen, Leistungsgrenzen oder Softwareprofile kann gegen lokales Verkehrsrecht, regionale Typgenehmigungen (z. B. eKFV in Deutschland) und oeffentliche Verkehrsregeln verstossen. Fahrzeuge, die ueber die zulaessigen Grenzen hinaus modifiziert wurden, duerfen im oeffentlichen Verkehr, auf Radwegen oder Gehwegen nicht betrieben werden.",
-            "Versicherung & Gewaehrleistungsverlust" to
-                "Das Modifizieren von Firmware oder das Umgehen werkseitiger Hardware-Beschraenkungen laesst die Herstellergarantie sofort erloeschen. Aenderungen an Hoechstgeschwindigkeit oder Ausgangsleistung lassen in der Regel die gesetzliche Haftpflichtversicherung entfallen und setzen den Betreiber im Schadensfall einem erheblichen finanziellen und rechtlichen Risiko aus.",
-            "Unabhaengiges Drittanbieter-Projekt" to
-                "Syrak ScooterLab ist ein unabhaengiges Entwickler-Werkzeug. Es besteht keine Verbindung, Unterstuetzung, Sponsoring oder offizielle Zusammenarbeit mit Segway-Ninebot, Xiaomi, Navee oder anderen Micro-Mobility-Herstellern.",
-            "Gewaehrleistungsausschluss & Eigenverantwortung" to
-                "Die Software wird ohne jegliche ausdrueckliche oder stillschweigende Gewaehrleistung bereitgestellt. Mit dem Fortfahren uebernimmst du die vollstaendige persoenliche Haftung fuer Sachschaeden, Koerperverletzungen, rechtliche Sanktionen oder Bussgelder, die aus der Nutzung entstehen."
-        )
-        sections.forEach { (heading, body) ->
-            col.addView(makeText(heading, 13f, Palette.TEXT_PRIMARY, true).apply { setPadding(0, dp(12), 0, dp(4)) })
-            col.addView(makeText(body, 12.5f, Palette.TEXT_SECONDARY).apply {
+        // Sprachumschaltung: Englisch (Standard) / Deutsch. Der Text bleibt in
+        // beiden Faellen identisch im Umfang - es wird nichts gekuerzt.
+        val langRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(10))
+        }
+        val enChip = makeOutlineButton(
+            "ENGLISH",
+            if (lang == AppLanguage.EN) Palette.ACCENT else Palette.OUTLINE
+        ) {
+            if (disclaimerLanguage != AppLanguage.EN) {
+                disclaimerLanguage = AppLanguage.EN
+                showDisclaimer()
+            }
+        }
+        val deChip = makeOutlineButton(
+            "DEUTSCH",
+            if (lang == AppLanguage.DE) Palette.ACCENT else Palette.OUTLINE
+        ) {
+            if (disclaimerLanguage != AppLanguage.DE) {
+                disclaimerLanguage = AppLanguage.DE
+                showDisclaimer()
+            }
+        }
+        langRow.addView(enChip, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(0, 0, dp(6), 0) })
+        langRow.addView(deChip, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(6), 0, 0, 0) })
+        col.addView(langRow)
+
+        // PHASE 12.1: Die vollstaendige, mehrteilige Fassung bleibt erhalten.
+        // Keine Warnung wurde entfernt - nur sprachlich ausgelagert.
+        DisclaimerText.sections(lang).forEach { section ->
+            col.addView(makeText(section.heading, 13f, Palette.TEXT_PRIMARY, true).apply { setPadding(0, dp(12), 0, dp(4)) })
+            col.addView(makeText(section.body, 12.5f, Palette.TEXT_SECONDARY).apply {
                 setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, 0, 0, dp(6))
             })
         }
         col.addView(makeText(
-            "Der Notaus ist eine elektronische Unterstuetzung und ersetzt NICHT die mechanische Bremse. " +
-                "Firmware-Flashen bleibt gesperrt, solange kein verifizierter SHA-256 und keine belegte Modell-/Hardware-Kompatibilitaet vorliegen.",
+            DisclaimerText.emergency(lang),
             12f, Palette.WARNING
         ).apply { setPadding(0, dp(14), 0, dp(20)) })
 
@@ -1136,7 +1172,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             disclaimerStartElapsed = CountdownGate.start(SystemClock.elapsedRealtime())
         }
         val gateHint = makeText(
-            "Pflicht-Lesephase: mindestens 10 Sekunden und bis zum Ende scrollen.",
+            DisclaimerText.gateHint(lang, (DISCLAIMER_COUNTDOWN_MS / 1000L).toInt()),
             11f, Palette.TEXT_MUTED
         ).apply { setLineSpacing(dp(2).toFloat(), 1f); setPadding(0, 0, 0, dp(8)) }
         col.addView(gateHint)
@@ -1144,7 +1180,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             setPadding(0, 0, 0, dp(8))
         }
         col.addView(gateStatus)
-        val accept = makePrimaryButton("GESPERRT · 10s", Palette.ACCENT) {}
+        val accept = makePrimaryButton(
+            DisclaimerText.lockedButton(lang, (DISCLAIMER_COUNTDOWN_MS / 1000L).toInt()),
+            Palette.ACCENT
+        ) {}
         col.addView(accept, LinearLayout.LayoutParams(MATCH, WRAP))
 
         scroll.addView(col)
@@ -1158,7 +1197,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             scroll = scroll,
             status = gateStatus,
             button = accept,
-            acceptLabel = "HINWEIS AKZEPTIEREN"
+            acceptLabel = DisclaimerText.acceptLabel(disclaimerLanguage)
         ) {
             repository.disclaimersAccepted = true
             disclaimerStartElapsed = 0L
@@ -1213,48 +1252,53 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }, LinearLayout.LayoutParams(0, WRAP, 1f))
         col.addView(header)
 
-        val notice = CountryLegalCatalog.forRegion(repository.region)
-        col.addView(makeText("REGIONALE RECHTLICHE HINWEISE", 18f, Palette.ACCENT, true))
+        // PHASE 14 (Teil C): Sprache aus Systemsprache/Land ableiten. Der Inhalt
+        // (Land, Grenzwerte, Quellen) bleibt unveraendert - nur die Darstellung
+        // wird lokalisiert. Es findet KEINE Maschinenuebersetzung statt.
+        val lang = noticeLanguage()
+        val notice = CountryNoticeTexts.forRegion(repository.region, lang)
+        col.addView(makeText(CountryNoticeTexts.title(lang), 18f, Palette.ACCENT, true))
         col.addView(makeText(notice.displayName, 13f, Palette.TEXT_MUTED).apply {
-            setPadding(0, dp(4), 0, dp(14))
+            setPadding(0, dp(4), 0, dp(4))
         })
-        val speedLine = notice.legalSpeedKmh?.let { "Bauartbedingte Hoechstgeschwindigkeit: $it km/h" }
-            ?: "Keine belegbare Geschwindigkeitsgrenze hinterlegt"
-        col.addView(makeText(speedLine, 14f, if (notice.verified) Palette.SUCCESS else Palette.WARNING, true))
+        col.addView(makeText(CountryNoticeTexts.languageLine(lang), 10.5f, Palette.TEXT_MUTED).apply {
+            setPadding(0, 0, 0, dp(12))
+        })
         col.addView(makeText(
-            if (notice.verified) "Belegt durch benannte Rechtsquelle."
-            else "Nicht abschliessend belegt — allgemeiner Hinweis.",
+            CountryNoticeTexts.speedLine(lang, notice.legalSpeedKmh, notice.displayName),
+            14f, if (notice.verified) Palette.SUCCESS else Palette.WARNING, true
+        ))
+        col.addView(makeText(
+            CountryNoticeTexts.verifiedLine(lang, notice.verified),
             11f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(4), 0, dp(12)) })
         notice.points.forEach { p ->
-            col.addView(makeText("•  $p", 12.5f, Palette.TEXT_SECONDARY).apply {
+            col.addView(makeText("\u2022  $p", 12.5f, Palette.TEXT_SECONDARY).apply {
                 setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, 0, 0, dp(8))
             })
         }
-        col.addView(makeText("Quelle: ${notice.source}", 11f, Palette.TEXT_MUTED).apply {
+        col.addView(makeText("${CountryNoticeTexts.sourceLabel(lang)}: ${notice.source}", 11f, Palette.TEXT_MUTED).apply {
             setPadding(0, dp(8), 0, dp(2))
         })
-        col.addView(makeText("Stand: ${notice.sourceDate}", 11f, Palette.TEXT_MUTED))
+        col.addView(makeText("${CountryNoticeTexts.dateLabel(lang)}: ${notice.sourceDate}", 11f, Palette.TEXT_MUTED))
 
         // PHASE 13: transparente Kennzeichnung der Aktualitaet/Unsicherheit.
         // Es werden bewusst KEINE neuen Grenzwerte behauptet.
         col.addView(makeText(
-            "Aktualitaet: Die hinterlegten Angaben (Katalogstand ${CountryLegalCatalog.CATALOG_DATE}) " +
-                "koennen veraltet sein und sind ausdruecklich KEINE Rechtsberatung und keine Zusicherung " +
-                "aktueller Grenzwerte. Pruefe die geltende Rechtslage bei der zustaendigen Behoerde.",
+            CountryNoticeTexts.transparency(lang, CountryLegalCatalog.CATALOG_DATE),
             11f, Palette.WARNING
         ).apply {
             setLineSpacing(dp(2).toFloat(), 1f)
             setPadding(0, dp(10), 0, dp(4))
         })
 
-        val change = makeOutlineButton("LAND MANUELL WAEHLEN", Palette.ACCENT) {
+        val change = makeOutlineButton(CountryNoticeTexts.changeCountry(lang), Palette.ACCENT) {
             showCountryPicker()
         }
         col.addView(change, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, dp(8)) })
 
         val gateHint = makeText(
-            "Pflicht-Lesephase: mindestens 8 Sekunden und bis zum Ende scrollen.",
+            DisclaimerText.gateHint(lang, (COUNTRY_COUNTDOWN_MS / 1000L).toInt()),
             11f, Palette.TEXT_MUTED
         ).apply { setLineSpacing(dp(2).toFloat(), 1f); setPadding(0, 0, 0, dp(8)) }
         col.addView(gateHint)
@@ -1262,7 +1306,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             setPadding(0, 0, 0, dp(8))
         }
         col.addView(gateStatus)
-        val accept = makePrimaryButton("GESPERRT · 8s", Palette.ACCENT) {}
+        val accept = makePrimaryButton(
+            DisclaimerText.lockedButton(lang, (COUNTRY_COUNTDOWN_MS / 1000L).toInt()),
+            Palette.ACCENT
+        ) {}
         col.addView(accept, LinearLayout.LayoutParams(MATCH, WRAP))
 
         scroll.addView(col)
@@ -1279,7 +1326,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             scroll = scroll,
             status = gateStatus,
             button = accept,
-            acceptLabel = "VERSTANDEN & WEITER"
+            acceptLabel = CountryNoticeTexts.accept(lang)
         ) {
             repository.countryNoticeAccepted = true
             countryStartElapsed = 0L
@@ -1291,12 +1338,17 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val regions = Region.values()
         val labels = regions.map { "${it.displayName} (${it.code})" }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Land waehlen")
+            .setTitle(CountryNoticeTexts.changeCountry(noticeLanguage()).lowercase().replaceFirstChar { it.uppercase() })
             .setItems(labels) { _, which ->
+                val previous = repository.region
                 repository.region = regions[which]
                 currentRegion = regions[which]
-                // PHASE 13: Nach einem Laenderwechsel beginnt die Lesephase neu —
-                // ein Wechsel darf den Countdown nicht verkuerzen.
+                // PHASE 13/14: Ein Laenderwechsel setzt die Lesebestaetigung
+                // zurueck UND startet die Lesephase neu - ein Wechsel darf den
+                // Countdown nicht verkuerzen und nicht als Zustimmung gelten.
+                if (previous != regions[which]) {
+                    repository.countryNoticeAccepted = false
+                }
                 countryStartElapsed = 0L
                 showCountryDisclaimer()
             }
@@ -1662,6 +1714,52 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
         tabContent.addView(modelCard, cardParams())
 
+        // ---- PHASE 14 (Teil E): KOMPATIBILITAETSLEITER ----------------------
+        // Es werden ausschliesslich tatsaechlich belegte Stufen angezeigt.
+        // Geraet erkannt != Protokoll unterstuetzt != Telemetrie validiert.
+        tabContent.addView(makeSectionLabel("KOMPATIBILITAET"))
+        val compatCard = makeCard()
+        val compatEvidence = CompatibilityEvidence(
+            detected = connectedDevice != null || lastTelemetryAtElapsed > 0L,
+            gattDiscovered = htLastGatt.isNotEmpty(),
+            readOnlyTested = htLastGatt.any { svc -> svc.characteristics.any { it.readable } } &&
+                hardwareTest.frameCount() > 0,
+            telemetryValidated = lastTelemetryAtElapsed > 0L,
+            writeProtocolValidated = hardwareVerified && detectedModel.isKnown,
+            hardwareVerified = hardwareVerified && detectedModel.isKnown
+        )
+        val compatReport = CompatibilityLadder.evaluate(compatEvidence, AppLanguage.DE)
+        compatCard.addView(makeText(
+            "Hoechste belegte Stufe: " +
+                (compatReport.highest?.label(AppLanguage.DE) ?: "keine"),
+            13f, if (compatReport.highest == null) Palette.TEXT_MUTED else Palette.SUCCESS, true
+        ))
+        compatReport.stages.forEach { entry ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            row.addView(makeText(
+                if (entry.reached) "\u2713" else "\u00b7",
+                13f, if (entry.reached) Palette.SUCCESS else Palette.TEXT_MUTED, true
+            ), LinearLayout.LayoutParams(dp(20), WRAP))
+            row.addView(makeText(
+                entry.stage.label(AppLanguage.DE), 12.5f,
+                if (entry.reached) Palette.TEXT_PRIMARY else Palette.TEXT_MUTED
+            ), LinearLayout.LayoutParams(0, WRAP, 1f))
+            row.addView(makeText(
+                entry.evidence, 10.5f,
+                if (entry.reached) Palette.SUCCESS else Palette.TEXT_MUTED
+            ))
+            compatCard.addView(row)
+        }
+        compatCard.addView(makeText(
+            "Nicht belegte Stufen werden nie als erreicht dargestellt. " +
+                "Schreibbefehle bleiben gesperrt, solange die Schreibstufe nicht belegt ist.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setLineSpacing(dp(2).toFloat(), 1f); setPadding(0, dp(8), 0, 0) })
+        tabContent.addView(compatCard, cardParams())
+
         tabContent.addView(makeSectionLabel("DIAGNOSE"))
         val diag = makeCard()
         diag.addView(makeText(
@@ -1672,12 +1770,33 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             "RSSI: ${if (lastRssi == Int.MIN_VALUE) "—" else "$lastRssi dBm"}   Adapter: ${adapter().displayName}",
             12f, Palette.TEXT_SECONDARY
         ).apply { setPadding(0, dp(5), 0, 0) })
+        // PHASE 14 (Teil E): Veraltete Messwerte werden klar gekennzeichnet.
+        val freshState = Freshness.state(
+            lastTelemetryAtElapsed.takeIf { it > 0L },
+            SystemClock.elapsedRealtime()
+        )
+        val freshAge = Freshness.ageSeconds(
+            lastTelemetryAtElapsed.takeIf { it > 0L },
+            SystemClock.elapsedRealtime()
+        )
+        diag.addView(makeText(
+            "Telemetrie: ${freshState.label(AppLanguage.DE)}" +
+                (freshAge?.let { "  ·  vor ${it}s" } ?: ""),
+            12f,
+            when (freshState) {
+                FreshnessState.FRESH -> Palette.SUCCESS
+                FreshnessState.AGING -> Palette.WARNING
+                FreshnessState.STALE -> Palette.DANGER
+                FreshnessState.NEVER -> Palette.TEXT_MUTED
+            },
+            true
+        ).apply { setPadding(0, dp(5), 0, 0) })
         diag.addView(makeText(
             "Telemetrie-Offsets sind NICHT am realen GT3 Max verifiziert. " +
                 "Nur tatsaechlich empfangene Frames werden angezeigt; DEMO-Werte sind als DEMO markiert.",
             11f, Palette.ACCENT_YELLOW
         ).apply { setPadding(0, dp(5), 0, 0) })
-        val dumpButton = makePrimaryButton("GATT-DIAGNOSE (LOG)", Palette.ACCENT_BLUE) {
+        val dumpButton = makePrimaryButton("GATT-DIAGNOSE (LOG)", Palette.SURFACE_HIGH) {
             val e = bleEngine
             if (e == null) {
                 addLog(LogCategory.ERROR, "GATT-Diagnose: keine Engine (nicht verbunden).")
@@ -1701,10 +1820,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             11f, Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(4), 0, 0) })
         // PHASE 11: Exportierbarer Hardware-Testbericht.
-        diag.addView(makePrimaryButton("TESTBERICHT ALS JSON EXPORTIEREN", Palette.ACCENT_BLUE) {
+        diag.addView(makePrimaryButton("TESTBERICHT ALS JSON EXPORTIEREN", Palette.SURFACE_HIGH) {
             exportHardwareReport(csv = false)
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
-        diag.addView(makePrimaryButton("TESTBERICHT ALS CSV EXPORTIEREN", Palette.ACCENT_BLUE) {
+        diag.addView(makePrimaryButton("TESTBERICHT ALS CSV EXPORTIEREN", Palette.SURFACE_HIGH) {
             exportHardwareReport(csv = true)
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
         diag.addView(makePrimaryButton("ZUSAMMENFASSUNG KOPIEREN", Palette.TEXT_SECONDARY) {
@@ -1746,8 +1865,96 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
         tabContent.addView(sysCard, cardParams())
 
+        // ---- PHASE 14 (Teil D): TECHNIK IN DEN ENTWICKLERBEREICH ------------
+        // Die frueheren Abschnitte GATT-STRUKTUR, VERBINDUNGSQUALITAET,
+        // DIAGNOSE-HISTORIE und LOG-TERMINAL sind fuer normale Nutzer nicht
+        // noetig. Sie bleiben vollstaendig erhalten, sind aber nur noch im
+        // geschuetzten Entwicklerbereich sichtbar.
+        tabContent.addView(makeSectionLabel("ENTWICKLERBEREICH"))
+        val devCard = makeCard()
+        devCard.addView(makeText(
+            "GATT-Struktur, Verbindungsqualitaet, Diagnose-Historie und das Log-Terminal " +
+                "sind technische Rohdaten. Sie bleiben fuer Entwicklung und Hardware-Tests " +
+                "erhalten und sind hier gebuendelt.",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setLineSpacing(dp(3).toFloat(), 1f) })
+        devCard.addView(makeOutlineButton("ENTWICKLERBEREICH OEFFNEN", Palette.TEXT_SECONDARY) {
+            requestDeveloperAccess { showDeveloperArea() }
+        }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
+        tabContent.addView(devCard, cardParams())
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  PHASE 14 (Teil D): GESCHUETZTER ENTWICKLERBEREICH                 */
+    /* ------------------------------------------------------------------ */
+    /**
+     * Interne Diagnose- und Hardware-Ansichten (GATT-Struktur, Verbindungs-
+     * qualitaet, Diagnose-Historie, Log-Terminal) sind fuer normale Nutzer
+     * nicht noetig. Sie werden NICHT geloescht, sondern hier gebuendelt und
+     * nur nach bewusster Freigabe erreichbar (PIN, falls gesetzt). Der
+     * Rohdaten-Export fuer Entwicklung und Hardware-Tests bleibt erhalten.
+     */
+    private fun requestDeveloperAccess(onGranted: () -> Unit) {
+        if (repository.hasPin) {
+            val input = EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                    android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+                hint = "PIN"
+                setSingleLine()
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Entwicklerbereich")
+                .setMessage("Dieser Bereich enthaelt technische Rohdaten (GATT, Logs, Historie). Bitte PIN eingeben.")
+                .setView(input)
+                .setPositiveButton("Oeffnen") { _, _ ->
+                    if (repository.verifyPin(input.text.toString())) onGranted()
+                    else toast("Falsche PIN.")
+                }
+                .setNegativeButton("Abbrechen", null)
+                .show()
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("Entwicklerbereich")
+                .setMessage(
+                    "Technische Rohdaten fuer Entwicklung und Hardware-Tests: " +
+                        "GATT-Struktur, Verbindungsqualitaet, Diagnose-Historie und Log-Terminal.\n\n" +
+                        "Diese Ansichten sind fuer den normalen Betrieb nicht erforderlich."
+                )
+                .setPositiveButton("Oeffnen") { _, _ -> onGranted() }
+                .setNegativeButton("Abbrechen", null)
+                .show()
+        }
+    }
+
+    private fun showDeveloperArea() {
+        rootContainer.removeAllViews()
+        val scroll = ScrollView(this)
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Palette.BG)
+            setPadding(dp(16), dp(16), dp(16), dp(24))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(10))
+        }
+        header.addView(makeOutlineButton("ZURUECK", Palette.TEXT_SECONDARY) {
+            showTab(Tab.INFO)
+        }, LinearLayout.LayoutParams(WRAP, WRAP))
+        header.addView(makeText("ENTWICKLERBEREICH", 16f, Palette.TEXT_PRIMARY, true).apply {
+            letterSpacing = 0.06f
+            setPadding(dp(12), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        body.addView(header)
+        body.addView(makeText(
+            "Technische Rohdaten. Nur fuer Entwicklung und Hardware-Tests - " +
+                "nicht Teil des normalen Nutzerbetriebs.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, 0, 0, dp(12)) })
+
         // ---- PHASE 12.4: GATT-STRUKTUR --------------------------------------
-        tabContent.addView(makeSectionLabel("GATT-STRUKTUR"))
+        body.addView(makeSectionLabel("GATT-STRUKTUR"))
         val gattCard = makeCard()
         if (htLastGatt.isEmpty()) {
             gattCard.addView(makeText(
@@ -1792,10 +1999,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 "am GT3 Max tatsaechlich aktiv ist, ist ohne Hardware-Test offen.",
             11f, Palette.WARNING
         ).apply { setPadding(0, dp(8), 0, 0) })
-        tabContent.addView(gattCard, cardParams())
+        body.addView(gattCard, cardParams())
 
         // ---- PHASE 12.7 C: VERBINDUNGSQUALITAET ------------------------------
-        tabContent.addView(makeSectionLabel("VERBINDUNGSQUALITAET"))
+        body.addView(makeSectionLabel("VERBINDUNGSQUALITAET"))
         val qualityCard = makeCard()
         val sig = if (lastRssi == Int.MIN_VALUE) null else SignalQualityScale.fromRssi(lastRssi)
         qualityCard.addView(makeText(
@@ -1820,10 +2027,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             else "Hinweis: Keine Instabilitaet beobachtet.",
             11f, if (unstable) Palette.WARNING else Palette.TEXT_MUTED
         ).apply { setPadding(0, dp(6), 0, 0) })
-        tabContent.addView(qualityCard, cardParams())
+        body.addView(qualityCard, cardParams())
 
         // ---- PHASE 12.7 B: DIAGNOSE-HISTORIE --------------------------------
-        tabContent.addView(makeSectionLabel("DIAGNOSE-HISTORIE"))
+        body.addView(makeSectionLabel("DIAGNOSE-HISTORIE"))
         val histCard = makeCard()
         val history = DiagnosticHistoryCodec.decode(repository.diagnosticHistoryRaw)
         if (history.isEmpty()) {
@@ -1846,7 +2053,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             saveDiagnosticHistory()
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
         if (history.size >= 2) {
-            histCard.addView(makePrimaryButton("LETZTE ZWEI BERICHTE VERGLEICHEN", Palette.ACCENT_BLUE) {
+            histCard.addView(makePrimaryButton("LETZTE ZWEI BERICHTE VERGLEICHEN", Palette.SURFACE_HIGH) {
                 val old = history[history.size - 2]
                 val new = history[history.size - 1]
                 AlertDialog.Builder(this)
@@ -1859,13 +2066,16 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         if (history.isNotEmpty()) {
             histCard.addView(makeOutlineButton("HISTORIE LOESCHEN", Palette.WARNING) {
                 repository.diagnosticHistoryRaw = ""
-                showTab(Tab.INFO)
+                showDeveloperArea()
             }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
         }
-        tabContent.addView(histCard, cardParams())
+        body.addView(histCard, cardParams())
 
-        tabContent.addView(makeSectionLabel("LOG-TERMINAL"))
-        tabContent.addView(buildLogCard(), cardParams())
+        body.addView(makeSectionLabel("LOG-TERMINAL"))
+        body.addView(buildLogCard(), cardParams())
+
+        scroll.addView(body)
+        rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
     }
 
     /**
@@ -2263,7 +2473,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         special.addView(makePrimaryButton("GERMAN MANEUVER (VOLATIL)", Palette.ACCENT_ORANGE) {
             confirmGermanManeuver()
         }, LinearLayout.LayoutParams(MATCH, WRAP))
-        special.addView(makePrimaryButton("POLIZEI-MODUS (LEGALES LIMIT)", Palette.ACCENT_BLUE) {
+        special.addView(makePrimaryButton("POLIZEI-MODUS (LEGALES LIMIT)", Palette.SURFACE_HIGH) {
             confirmPoliceMode()
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
         special.addView(makePrimaryButton("PANIK / NOTAUS-RAMPE", Palette.ACCENT_RED) {
@@ -2592,7 +2802,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         val diagWarnCard = makeCard()
         diagWarnings = makeText("Keine Warnungen.", 12f, Palette.TEXT_MUTED)
         diagWarnCard.addView(diagWarnings, LinearLayout.LayoutParams(MATCH, WRAP))
-        diagLogButton = makePrimaryButton("DIAGNOSE-LOG (0)", Palette.ACCENT_BLUE) {
+        diagLogButton = makePrimaryButton("DIAGNOSE-LOG (0)", Palette.SURFACE_HIGH) {
             showDiagnosticLogDialog()
         }
         diagWarnCard.addView(diagLogButton, LinearLayout.LayoutParams(MATCH, WRAP).apply {
@@ -2611,7 +2821,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         tabContent.addView(cells, cardParams())
 
         val actions = makeCard()
-        actions.addView(makePrimaryButton("TRIP ZURÜCKSETZEN", Palette.ACCENT_BLUE) {
+        actions.addView(makePrimaryButton("TRIP ZURÜCKSETZEN", Palette.SURFACE_HIGH) {
             repository.trip.reset()
             updateDashboardUi()
             addLog(LogCategory.INFO, "Trip zurückgesetzt.")
@@ -2981,7 +3191,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             else "Datei: $selectedFirmwareName",
             12f, Palette.TEXT_SECONDARY
         ))
-        fileCard.addView(makePrimaryButton("DATEI AUSWÄHLEN", Palette.ACCENT_BLUE) {
+        fileCard.addView(makePrimaryButton("DATEI AUSWÄHLEN", Palette.SURFACE_HIGH) {
             firmwarePicker.launch(arrayOf("application/octet-stream", "application/zip", "*/*"))
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
         lastValidation?.let { validation ->
@@ -3246,7 +3456,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             if (repository.hasPin) "PIN ist gesetzt." else "Keine PIN gesetzt.",
             12f, Palette.TEXT_SECONDARY
         ))
-        pinCard.addView(makePrimaryButton("PIN SETZEN / ÄNDERN", Palette.ACCENT_BLUE) {
+        pinCard.addView(makePrimaryButton("PIN SETZEN / ÄNDERN", Palette.SURFACE_HIGH) {
             promptSetPin()
         }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
         if (repository.hasPin) {
@@ -3292,9 +3502,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
         tabContent.addView(profileCard, cardParams())
 
-        tabContent.addView(makeSectionLabel("LOG-TERMINAL"))
-        tabContent.addView(buildLogCard(), cardParams())
-
+        // PHASE 14 (Teil D): Das doppelte Log-Terminal wurde entfernt.
+        // Das Log-Terminal existiert nur noch im geschuetzten Entwicklerbereich.
         tabContent.addView(makeSectionLabel("ÜBER"))
         val about = makeCard()
         about.addView(makeText(

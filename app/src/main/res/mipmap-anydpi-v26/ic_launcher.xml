@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- PHASE 14: Verweist auf die echte SYRAK-Marke (vorher faelschlich auf
+     @android:drawable/ic_menu_compass). -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background"/>
-    <foreground android:drawable="@android:drawable/ic_menu_compass"/>
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
 </adaptive-icon>
