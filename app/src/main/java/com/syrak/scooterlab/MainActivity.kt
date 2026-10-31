@@ -302,6 +302,19 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var diagWarnings: TextView? = null
     private var diagLogButton: Button? = null
 
+    // ---- PHASE 16.2: Telemetrie-Empfangsdiagnose ----
+    private var diagRxNotifications: TextView? = null
+    private var diagRxBytes: TextView? = null
+    private var diagRxLast: TextView? = null
+    private var diagRxFrames: TextView? = null
+    private var diagRxDecode: TextView? = null
+    private var diagRxBuffer: TextView? = null
+    private var diagRxAdapter: TextView? = null
+    private var diagRxNotify: TextView? = null
+    private var diagRxCause: TextView? = null
+    /** Letzter von der Engine gemeldeter Diagnose-Schnappschuss (UI-Thread). */
+    @Volatile private var lastTelemetryDiag: TelemetryDiagnosticsSnapshot? = null
+
     /** Monotone Empfangszeit der letzten Telemetrie (SystemClock.elapsedRealtime). */
     @Volatile private var lastTelemetryAtElapsed = 0L
     /** Zaehlt BLE-/Protokoll-Kommunikationsfehler seit dem letzten Verbindungsaufbau. */
@@ -2909,6 +2922,19 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         diagCommErrors = metricRow(diagSystem, "Kommunikationsfehler")
         tabContent.addView(diagSystem, cardParams())
 
+        // PHASE 16.2: Empfangsdiagnose — macht sichtbar, WO Telemetrie verloren geht.
+        val diagRx = makeCard()
+        diagRxNotifications = metricRow(diagRx, "Notifications empfangen")
+        diagRxBytes = metricRow(diagRx, "Empfangene Bytes")
+        diagRxLast = metricRow(diagRx, "Letzter Empfang")
+        diagRxFrames = metricRow(diagRx, "Frames (ungültig)")
+        diagRxDecode = metricRow(diagRx, "Decoder ok / Fehler")
+        diagRxBuffer = metricRow(diagRx, "Reassembler-Puffer")
+        diagRxAdapter = metricRow(diagRx, "Aktiver Adapter")
+        diagRxNotify = metricRow(diagRx, "Notify (CCCD)")
+        diagRxCause = metricRow(diagRx, "Fehlerursache")
+        tabContent.addView(diagRx, cardParams())
+
         val diagBattery = makeCard()
         diagBatteryState = metricRow(diagBattery, "Akkustand")
         diagBatteryVoltage = metricRow(diagBattery, "Packspannung")
@@ -3111,6 +3137,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun updateDashboardUi() {
         val t = lastTelemetry
         val trip = repository.trip
+        // PHASE 16.2: Empfangsdiagnose bei jedem Refresh mit aktuellem Stand zeigen.
+        lastTelemetryDiag?.let { applyTelemetryDiagnostics(it) }
         // ---- PHASE 12.5: Cockpit aktualisieren ----
         val speed = t?.speedKmh
         val powerW = if (t?.voltageV != null && t.currentA != null) t.voltageV * t.currentA else null
@@ -4309,6 +4337,31 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 FrameDirection.RX, hex, SystemClock.elapsedRealtime(), "notification"
             )
         }
+    }
+
+    /**
+     * PHASE 16.2: Empfangsdiagnose der Engine uebernehmen und die Diagnose-Karte
+     * aktualisieren. Wird vom BLE-Callback-Thread aufgerufen -> UI-Thread.
+     */
+    override fun onTelemetryDiagnostics(snapshot: TelemetryDiagnosticsSnapshot) {
+        lastTelemetryDiag = snapshot
+        runOnUiThread { applyTelemetryDiagnostics(snapshot) }
+    }
+
+    /** Schreibt einen Diagnose-Schnappschuss in die "Telemetrie-Empfang"-Karte. */
+    private fun applyTelemetryDiagnostics(s: TelemetryDiagnosticsSnapshot) {
+        diagRxNotifications?.text = "${s.notifications}"
+        diagRxBytes?.text = "${s.bytes} B"
+        diagRxLast?.text = s.lastRxAtMs?.let { ms ->
+            val age = SystemClock.elapsedRealtime() - ms
+            "vor ${age} ms"
+        } ?: "—"
+        diagRxFrames?.text = "${s.framesDetected} (${s.invalidFrames})"
+        diagRxDecode?.text = "${s.decodeSuccess} / ${s.decodeFailure}"
+        diagRxBuffer?.text = "${s.bufferedBytes} B"
+        diagRxAdapter?.text = s.activeAdapter.ifBlank { "—" }
+        diagRxNotify?.text = if (s.notifyActive) "aktiv" else "inaktiv"
+        diagRxCause?.text = s.missingCause
     }
 
     override fun onReadableCharacteristics(uuids: List<String>) {

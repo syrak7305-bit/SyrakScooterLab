@@ -82,6 +82,14 @@ class BleEngine(
          * Service-Discovery (aus dem realen GATT-Baum). Default leer.
          */
         fun onReadableCharacteristics(uuids: List<String>) {}
+
+        /**
+         * PHASE 16.2: Aktualisierter Telemetrie-Diagnose-Schnappschuss. Wird nach
+         * jeder verarbeiteten Notification sowie beim Verbindungsauf-/abbau
+         * gemeldet. Default leer, damit bestehende Implementierungen unveraendert
+         * bleiben. Enthaelt KEINE sensiblen Daten (keine MAC, keine Roh-Frames).
+         */
+        fun onTelemetryDiagnostics(snapshot: TelemetryDiagnosticsSnapshot) {}
     }
 
     companion object {
@@ -178,6 +186,19 @@ class BleEngine(
 
     @Volatile private var notifyActive = false
     @Volatile private var lastRxMillis = 0L
+    @Volatile private var linkConnected = false
+
+    // ---- PHASE 16.2: Telemetrie-Reassemblierung + Diagnose ----------------
+    /**
+     * Setzt aus mehreren BLE-Notifications einen vollstaendigen Frame zusammen.
+     * Bisher wurde jede Notification einzeln dekodiert -> laengere Frames
+     * (z.B. Navee-Status mit Zellspannungen) gingen verloren. Reines Kotlin.
+     */
+    private val reassembler = FrameReassembler()
+
+    /** Zaehlt empfangene Notifications/Bytes/Frames/Decode-Ergebnisse (thread-sicher). */
+    private val telemetryDiagnostics = TelemetryDiagnostics()
+
     private var responseTimeout: Runnable? = null
     private var awaitingAck: PendingWrite? = null
 
@@ -350,6 +371,7 @@ class BleEngine(
         lastDevice = null
         cancelConnectTimeout()
         readyReached = false
+        linkConnected = false
         val old = synchronized(writeLock) { val o = gatt; gatt = null; connectingDevice = null; o }
         try { old?.disconnect(); old?.close() } catch (_: Exception) {}
         writeChar = null
@@ -372,6 +394,8 @@ class BleEngine(
         adapter.setUnlocked(false)
         notifyActive = false
         lastRxMillis = 0L
+        reassembler.reset()
+        telemetryDiagnostics.reset()
     }
 
     /* ------------------------------------------------------------------ */
@@ -441,6 +465,7 @@ class BleEngine(
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         listener.onLog("> link: CONNECTED ${g.device.address} — discoverServices()")
+                        linkConnected = true
                         resetConnectionState()
                         listener.onConnected(g.device.address)
                         // FIX E: Rueckgabewert auswerten.
@@ -452,6 +477,7 @@ class BleEngine(
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         listener.onLog("> link: DISCONNECTED (status=$status)")
+                        linkConnected = false
                         cancelConnectTimeout()
                         resetConnectionState()
                         failPendingWrites("disconnected")
@@ -1172,24 +1198,87 @@ class BleEngine(
         try {
             // PHASE 11: Roh-Frame fuer den Hardware-Testbericht melden.
             listener.onRawNotification(value)
-            // Primaer ueber den aktiven Adapter dekodieren, danach Cross-Fallback,
-            // damit auch abweichende/unvollstaendige Frames sicher greifen.
-            var t = adapter.parseTelemetry(value)
-            if (t == null) {
-                t = when (adapter.protocol) {
-                    BleProtocol.NAVEE_BRIGHTWAY -> TelemetryDecoder.decodeNinebot(value)
-                    BleProtocol.NINEBOT -> TelemetryDecoder.decodeNavee(value)
+
+            // PHASE 16.2: Empfangs-Statistik erfassen (Notification + Bytes).
+            telemetryDiagnostics.recordChunk(value.size, SystemClock.elapsedRealtime())
+
+            // PHASE 16.2: Mehrere Notifications zu vollstaendigen Frames zusammensetzen.
+            val reassembly = reassembler.feed(value)
+            if (reassembly.droppedBytes > 0) {
+                listener.onLog("> rx: ${reassembly.droppedBytes} Byte nicht zuordenbar verworfen (Resync)")
+            }
+            if (!reassembly.hasFrames) {
+                // Noch unvollstaendig -> gepuffert, auf naechsten Chunk warten.
+                emitDiagnostics()
+                return
+            }
+
+            for (frame in reassembly.frames) {
+                val validation = FrameValidator.validate(frame)
+                telemetryDiagnostics.recordFrame(validation.structurallyValid)
+                listener.onLog("> rx: ${validation.summary()}")
+
+                // Nur strukturell gueltige Frames dekodieren. Ungueltige (falsche
+                // Laenge) werden gezaehlt, aber NICHT als Telemetrie ausgegeben.
+                if (!validation.structurallyValid) {
+                    telemetryDiagnostics.recordDecode(false, "ungueltige Frame-Struktur")
+                    continue
+                }
+
+                val result = decodeFrame(frame)
+                telemetryDiagnostics.recordDecode(result.success, result.reason)
+                if (result.telemetry != null) {
+                    listener.onTelemetry(result.telemetry)
+                } else {
+                    listener.onLog("> rx: Decode fehlgeschlagen: ${result.reason ?: "unbekannt"}")
                 }
             }
-            if (t != null) {
-                listener.onTelemetry(t)
-            } else {
-                listener.onLog("> rx: unbehandeltes Frame ${hexOf(value)}")
-            }
+            emitDiagnostics()
         } catch (e: Exception) {
+            telemetryDiagnostics.recordDecode(false, e.message)
             listener.onLog("> rx: Exception beim Dekodieren: ${e.message}")
+            emitDiagnostics()
         }
     }
+
+    /**
+     * Dekodiert einen strukturell gueltigen Frame primaer ueber den aktiven
+     * Adapter, danach ueber den Cross-Fallback (falls der Adapter nicht passt).
+     * Nutzt die Result-API, damit der Grund eines Fehlschlags sichtbar bleibt.
+     */
+    private fun decodeFrame(frame: ByteArray): TelemetryDecodeResult {
+        // Primaer: aktiver Adapter (liefert bereits Telemetry?; wir nutzen die
+        // Result-Variante, um den Grund zu erhalten).
+        val primary = when (adapter.protocol) {
+            BleProtocol.NAVEE_BRIGHTWAY -> TelemetryDecoder.decodeNaveeResult(frame)
+            BleProtocol.NINEBOT -> TelemetryDecoder.decodeNinebotResult(frame)
+        }
+        if (primary.success) return primary
+
+        // Cross-Fallback: manche Controller antworten in einem anderen Framing.
+        val fallback = when (adapter.protocol) {
+            BleProtocol.NAVEE_BRIGHTWAY -> TelemetryDecoder.decodeNinebotResult(frame)
+            BleProtocol.NINEBOT -> TelemetryDecoder.decodeNaveeResult(frame)
+        }
+        return if (fallback.success) fallback else primary
+    }
+
+    /** Meldet den aktuellen Diagnose-Zustand an den Listener. */
+    private fun emitDiagnostics() {
+        listener.onTelemetryDiagnostics(telemetryDiagnostics())
+    }
+
+    /**
+     * PHASE 16.2: Aktueller Telemetrie-Diagnose-Schnappschuss (thread-sicher).
+     * Fuer die UI/den exportierbaren Bericht. Enthaelt keine sensiblen Daten.
+     */
+    fun telemetryDiagnostics(): TelemetryDiagnosticsSnapshot =
+        telemetryDiagnostics.snapshot(
+            activeAdapter = adapter.id,
+            bufferedBytes = reassembler.bufferedBytes,
+            notifyActive = notifyActive,
+            connected = linkConnected
+        )
 
     /* ------------------------------------------------------------------ */
     /*  ECHTES CHUNK-FLASHING                                              */

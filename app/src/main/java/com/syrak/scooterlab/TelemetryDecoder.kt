@@ -5,12 +5,36 @@ package com.syrak.scooterlab
  *  ---------------------------------------------------------------------------
  *  !! VERIFIKATIONSPFLICHT !!
  *  Die folgenden Offsets sind die einzigen Werte in dieser Datei, die NICHT
- *  aus öffentlicher Spezifikation stammen (es gibt keine). Sie sind bewusst
+ *  aus oeffentlicher Spezifikation stammen (es gibt keine). Sie sind bewusst
  *  als benannte Konstanten ausgelagert, damit sie nach einem echten Mitschnitt
- *  (HCI-Snoop oder nRF Connect Logger) in EINER Zeile korrigiert werden können.
- *  Der Decoder selbst (Header-Check, Längen-Check, Vorzeichen, Skalierung) ist
+ *  (HCI-Snoop oder nRF Connect Logger) in EINER Zeile korrigiert werden koennen.
+ *
+ *  PHASE 16.2 — HAERTUNG:
+ *  Vor dem eigentlichen Dekodieren wird jeder Frame strukturell geprueft
+ *  ([FrameValidator]): Header vorhanden UND deklarierte Laenge == tatsaechliche
+ *  Laenge. Unvollstaendige/abgeschnittene Frames werden damit VERWORFEN statt
+ *  mit Zufallswerten dekodiert. Die Pruefsumme wird berechnet und im Ergebnis
+ *  gemeldet, aber NICHT zum Verwerfen benutzt (Formel ist UNVERIFIED).
+ *
+ *  Der Decoder selbst (Header-Check, Laengen-Check, Vorzeichen, Skalierung) ist
  *  voll funktional und real.
  * ------------------------------------------------------------------------- */
+
+/**
+ * Ergebnis einer Dekodierung inklusive der strukturellen Frame-Pruefung.
+ *
+ * @param telemetry dekodierte Werte oder null (nicht dekodierbar).
+ * @param validation Ergebnis von [FrameValidator.validate].
+ * @param reason menschenlesbarer Grund, falls [telemetry] null ist.
+ */
+data class TelemetryDecodeResult(
+    val telemetry: Telemetry?,
+    val validation: FrameValidation,
+    val reason: String? = null
+) {
+    val success: Boolean get() = telemetry != null
+}
+
 object TelemetryDecoder {
 
     // ---- Ninebot/Xiaomi ESC-Info-Payload ----------------------------------
@@ -31,15 +55,25 @@ object TelemetryDecoder {
 
     /**
      * Dekodiert einen Ninebot/Xiaomi-Notify-Frame ABSOLUT absturzsicher.
-     * Jedes Feld wird einzeln bounds-geprüft; fehlt ein Feld oder ist es
+     * Jedes Feld wird einzeln bounds-geprueft; fehlt ein Feld oder ist es
      * unplausibel, bleibt es null (Tacho zeigt dann '--' statt eines Falschwerts).
      */
-    fun decodeNinebot(frame: ByteArray): Telemetry? {
-        if (!hasRange(frame, 0, 2)) return null
-        if (frame.size < NB_MIN_LEN) return null
-        if (frame[0] != 0x5A.toByte() || frame[1] != 0xA5.toByte()) return null
+    fun decodeNinebot(frame: ByteArray): Telemetry? = decodeNinebotResult(frame).telemetry
+
+    /** Wie [decodeNinebot], liefert aber zusaetzlich die Frame-Validierung. */
+    fun decodeNinebotResult(frame: ByteArray): TelemetryDecodeResult {
+        val v = FrameValidator.validate(frame)
+        if (v.family != FrameFamily.NINEBOT) {
+            return TelemetryDecodeResult(null, v, "kein Ninebot-Frame (Header ${v.family.label})")
+        }
+        if (!v.structurallyValid) {
+            return TelemetryDecodeResult(null, v, "strukturell ungueltig: ${v.summary()}")
+        }
+        if (frame.size < NB_MIN_LEN) {
+            return TelemetryDecodeResult(null, v, "zu kurz fuer Kernfelder (${frame.size} < $NB_MIN_LEN)")
+        }
         val p = NB_PAYLOAD_START
-        return try {
+        val t = try {
             val cells = decodeCellArray(frame, p + NB_OFF_CELLS, NB_CELL_COUNT)
             Telemetry(
                 speedKmh = u16leOrNull(frame, p + NB_OFF_SPEED)
@@ -60,10 +94,12 @@ object TelemetryDecoder {
                 source = BleProtocol.NINEBOT
             )
         } catch (_: Exception) { null }
+        return TelemetryDecodeResult(t, v, if (t == null) "Dekodierung warf/leer" else null)
     }
 
     // ---- Navee/Brightway Status-Payload -----------------------------------
     // Antwort: AA 55 CMD LEN <payload> SUM -> payload beginnt bei Index 4
+    // Alt-Header 55 AA hat dasselbe Layout (nur Header/Pruefsumme anders).
     private const val NV_PAYLOAD_START = 4
     private const val NV_OFF_SPEED = 0      // uint16 LE, 0.1 km/h
     private const val NV_OFF_VOLTAGE = 2    // uint16 LE, 0.01 V
@@ -82,12 +118,22 @@ object TelemetryDecoder {
      * Kernwerte (Spannung, Geschwindigkeit, Akku-%) werden dekodiert, sobald sie
      * im Frame enthalten sind; nicht empfangene Felder bleiben null.
      */
-    fun decodeNavee(frame: ByteArray): Telemetry? {
-        if (!hasRange(frame, 0, 2)) return null
-        if (frame.size < NV_MIN_LEN) return null
-        if (frame[0] != 0xAA.toByte() || frame[1] != 0x55.toByte()) return null
+    fun decodeNavee(frame: ByteArray): Telemetry? = decodeNaveeResult(frame).telemetry
+
+    /** Wie [decodeNavee], liefert aber zusaetzlich die Frame-Validierung. */
+    fun decodeNaveeResult(frame: ByteArray): TelemetryDecodeResult {
+        val v = FrameValidator.validate(frame)
+        if (v.family != FrameFamily.NAVEE_STD && v.family != FrameFamily.NAVEE_ALT) {
+            return TelemetryDecodeResult(null, v, "kein Navee-Frame (Header ${v.family.label})")
+        }
+        if (!v.structurallyValid) {
+            return TelemetryDecodeResult(null, v, "strukturell ungueltig: ${v.summary()}")
+        }
+        if (frame.size < NV_MIN_LEN) {
+            return TelemetryDecodeResult(null, v, "zu kurz fuer Kernfelder (${frame.size} < $NV_MIN_LEN)")
+        }
         val p = NV_PAYLOAD_START
-        return try {
+        val t = try {
             val cells = decodeCellArray(frame, p + NV_OFF_CELLS, NV_CELL_COUNT)
             Telemetry(
                 speedKmh = u16leOrNull(frame, p + NV_OFF_SPEED)
@@ -108,6 +154,7 @@ object TelemetryDecoder {
                 source = BleProtocol.NAVEE_BRIGHTWAY
             )
         } catch (_: Exception) { null }
+        return TelemetryDecodeResult(t, v, if (t == null) "Dekodierung warf/leer" else null)
     }
 
     /**
