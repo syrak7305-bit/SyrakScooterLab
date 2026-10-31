@@ -68,3 +68,25 @@ dependencies {
     debugImplementation(libs.androidx.ui.test.manifest)
     debugImplementation(libs.androidx.ui.tooling)
 }
+
+/* ============================================================================
+ * PHASE 16.2 — CI-ABSICHERUNG
+ * ----------------------------------------------------------------------------
+ * BEFUND: Der bestehende GitHub-Actions-Workflow rief bisher NUR
+ * `assembleDebug` auf. Ein erfolgreicher Build galt damit faelschlich als
+ * vollstaendige Qualitaetssicherung, obwohl KEINE Tests liefen.
+ *
+ * Der Workflow selbst konnte in dieser Umgebung nicht geaendert werden
+ * (der Bot-Token besitzt keine `workflows`-Berechtigung). Deshalb wird die
+ * Testausfuehrung hier verbindlich in den Build-Graphen gehaengt:
+ *
+ *   assembleDebug  ->  haengt ab von  ->  testDebugUnitTest
+ *
+ * Der vorhandene Workflow ruft `assembleDebug` auf; damit laufen jetzt
+ * zwangslaeufig alle Unit-Tests. Schlaegt ein Test fehl, schlaegt
+ * `testDebugUnitTest` und damit auch `assembleDebug` und der CI-Job fehl.
+ * Das ist bewusst KEIN stiller Zusatzschritt, sondern eine harte Abhaengigkeit.
+ * ==========================================================================*/
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    dependsOn("testDebugUnitTest")
+}
