@@ -74,10 +74,29 @@ data class TelemetryDiagnosticsSnapshot(
     val cccdWriteRequested: Boolean = false,
     val cccdWriteAccepted: Boolean = false,
     val cccdWriteStatus: Int? = null,
-    val notifySetupIssue: String? = null
+    val notifySetupIssue: String? = null,
+    // ---- Phase 16.3.1: lokale Registrierung + Descriptor-Callback ----
+    /** true, wenn setCharacteristicNotification() ueberhaupt aufgerufen wurde. */
+    val localNotifyRegistrationAttempted: Boolean = false,
+    /** Rueckgabe von setCharacteristicNotification(); false = lokal abgelehnt. */
+    val localNotifyRegistered: Boolean = false,
+    /** true, wenn IRGENDEINE Characteristic im GATT-Baum notifiable ist. */
+    val anyNotifiablePresent: Boolean = false,
+    /** true, sobald onDescriptorWrite fuer den CCCD eingetroffen ist. */
+    val descriptorCallbackReceived: Boolean = false,
+    /** true, wenn onDescriptorWrite GATT_SUCCESS meldete. */
+    val descriptorCallbackSuccess: Boolean = false
 ) {
     /** Ehrliche Ursache, wenn (noch) keine nutzbare Telemetrie vorliegt. */
     val missingCause: String get() = TelemetryDiagnosis.cause(this)
+
+    /**
+     * true NUR, wenn die komplette Notify-Kette belegt ist: lokale Registrierung
+     * erfolgreich, CCCD-Write vom Stack angenommen und Descriptor-Callback mit
+     * GATT_SUCCESS. Einzelne Schritte allein reichen NICHT.
+     */
+    val notifyChainComplete: Boolean
+        get() = localNotifyRegistered && cccdWriteAccepted && descriptorCallbackSuccess
 
     /** Kurze, logbare Zeile. */
     fun summary(): String = buildString {
@@ -95,6 +114,7 @@ data class TelemetryDiagnosticsSnapshot(
                 cccdWriteStatus != null && cccdWriteStatus != TelemetryDiagnostics.GATT_SUCCESS ->
                     "write-status=$cccdWriteStatus"
                 notifyActive -> "aktiv"
+                localNotifyRegistrationAttempted && !localNotifyRegistered -> "lokal abgelehnt"
                 cccdWriteRequested && !cccdWriteAccepted -> "write abgelehnt"
                 cccdWriteRequested -> "write angefordert"
                 cccdPresent -> "vorhanden"
@@ -138,6 +158,11 @@ object TelemetryDiagnosis {
                 return "Notify-Characteristic ${s.notifyCharUuid.ifBlank { "?" }} gefunden, " +
                     "aber CCCD-Deskriptor (0x2902) fehlt. Notify kann nicht aktiviert werden."
             }
+            if (s.localNotifyRegistrationAttempted && !s.localNotifyRegistered) {
+                return "Lokale Notify-Registrierung fehlgeschlagen " +
+                    "(setCharacteristicNotification lieferte false fuer " +
+                    "${s.notifyCharUuid.ifBlank { "?" }}). Notify bleibt inaktiv."
+            }
             if (s.cccdWriteRequested && !s.cccdWriteAccepted) {
                 return "CCCD-Aktivierung (writeDescriptor) wurde vom Stack abgelehnt " +
                     "(${s.notifyCharUuid.ifBlank { "?" }}). Notify bleibt inaktiv."
@@ -149,8 +174,11 @@ object TelemetryDiagnosis {
                     "${s.cccdWriteStatus}). Notify bleibt inaktiv."
             }
             if (s.cccdWriteRequested && !s.notifyActive) {
+                val cb = if (s.descriptorCallbackReceived)
+                    "(onDescriptorWrite empfangen, aber kein Erfolg)"
+                else "(kein onDescriptorWrite)"
                 return "CCCD-Aktivierung angefordert, aber noch nicht bestaetigt " +
-                    "(kein onDescriptorWrite). Notify-Status unklar."
+                    "$cb. Notify-Status unklar."
             }
             if (s.notifySetupIssue != null) {
                 return "Notify konnte nicht aktiviert werden: ${s.notifySetupIssue}"
@@ -219,6 +247,11 @@ class TelemetryDiagnostics {
     private var cccdWriteAccepted = false
     private var cccdWriteStatus: Int? = null
     private var notifySetupIssue: String? = null
+    private var localNotifyRegistrationAttempted = false
+    private var localNotifyRegistered = false
+    private var anyNotifiablePresent = false
+    private var descriptorCallbackReceived = false
+    private var descriptorCallbackSuccess = false
 
     @Synchronized
     fun recordChunk(byteCount: Int, atMs: Long) {
@@ -264,7 +297,10 @@ class TelemetryDiagnostics {
         cccdPresent: Boolean,
         cccdWriteRequested: Boolean,
         cccdWriteAccepted: Boolean,
-        issue: String?
+        issue: String?,
+        localNotifyRegistrationAttempted: Boolean = false,
+        localNotifyRegistered: Boolean = false,
+        anyNotifiablePresent: Boolean = notifyCharFound
     ) {
         this.notifyCharFound = notifyCharFound
         this.notifyCharUuid = notifyCharUuid
@@ -272,12 +308,17 @@ class TelemetryDiagnostics {
         this.cccdWriteRequested = cccdWriteRequested
         this.cccdWriteAccepted = cccdWriteAccepted
         this.notifySetupIssue = issue
+        this.localNotifyRegistrationAttempted = localNotifyRegistrationAttempted
+        this.localNotifyRegistered = localNotifyRegistered
+        this.anyNotifiablePresent = anyNotifiablePresent
     }
 
     /** Haelt den Status aus onDescriptorWrite fest (0 == GATT_SUCCESS). */
     @Synchronized
     fun recordCccdResult(status: Int) {
         cccdWriteStatus = status
+        descriptorCallbackReceived = true
+        descriptorCallbackSuccess = status == GATT_SUCCESS
     }
 
     @Synchronized
@@ -299,6 +340,11 @@ class TelemetryDiagnostics {
         cccdWriteAccepted = false
         cccdWriteStatus = null
         notifySetupIssue = null
+        localNotifyRegistrationAttempted = false
+        localNotifyRegistered = false
+        anyNotifiablePresent = false
+        descriptorCallbackReceived = false
+        descriptorCallbackSuccess = false
     }
 
     @Synchronized
@@ -328,6 +374,11 @@ class TelemetryDiagnostics {
         cccdWriteRequested = cccdWriteRequested,
         cccdWriteAccepted = cccdWriteAccepted,
         cccdWriteStatus = cccdWriteStatus,
-        notifySetupIssue = notifySetupIssue
+        notifySetupIssue = notifySetupIssue,
+        localNotifyRegistrationAttempted = localNotifyRegistrationAttempted,
+        localNotifyRegistered = localNotifyRegistered,
+        anyNotifiablePresent = anyNotifiablePresent,
+        descriptorCallbackReceived = descriptorCallbackReceived,
+        descriptorCallbackSuccess = descriptorCallbackSuccess
     )
 }

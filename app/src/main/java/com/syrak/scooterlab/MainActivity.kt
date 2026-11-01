@@ -58,6 +58,8 @@ import com.syrak.scooterlab.diagnostics.HardwareErrorKind
 import com.syrak.scooterlab.diagnostics.HardwareTestCollector
 import com.syrak.scooterlab.diagnostics.GattProperty
 import com.syrak.scooterlab.diagnostics.HardwareTestReport
+import com.syrak.scooterlab.diagnostics.HardwareReportIdentity
+import com.syrak.scooterlab.diagnostics.NotifyDiagnosticsRecord
 import com.syrak.scooterlab.diagnostics.ScanRecord
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -336,6 +338,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var lastConnectFailed = false
     private var connStageView: TextView? = null
     private var htLastGatt: List<com.syrak.scooterlab.diagnostics.GattServiceRecord> = emptyList()
+    // PHASE 16.3.1: Aktive Geraeteidentitaet stammt AUSSCHLIESSLICH aus der realen
+    // GATT-Verbindung (onConnected). Ein Scan-Treffer ist KEINE Verbindung.
+    private var activeIdentityAddress: String? = null
+    private var activeIdentityName: String? = null
+    /** Adresse, zu der der GATT-Cache htLastGatt gehoert (null = keiner). */
+    private var htGattAddress: String? = null
     // ---- PHASE 16: Read-Pfad --------------------------------------------
     /** Mindestens eine lesbare Characteristic im echten GATT-Baum gefunden. */
     @Volatile private var readPropertyFound = false
@@ -802,6 +810,24 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /*  PHASE 11: HARDWARE-TESTBERICHT (EXPORT)                           */
     /* ================================================================== */
 
+    /** PHASE 16.3.1: mappt den Notify-Diagnose-Schnappschuss in den Bericht. */
+    private fun TelemetryDiagnosticsSnapshot.toNotifyDiagnosticsRecord(): NotifyDiagnosticsRecord =
+        NotifyDiagnosticsRecord(
+            selectedNotifyCharUuid = notifyCharUuid,
+            selectedNotifyCharFound = notifyCharFound,
+            anyNotifiablePresent = anyNotifiablePresent,
+            localRegistrationAttempted = localNotifyRegistrationAttempted,
+            localRegistrationSucceeded = localNotifyRegistered,
+            cccdPresent = cccdPresent,
+            cccdWriteRequested = cccdWriteRequested,
+            cccdWriteAccepted = cccdWriteAccepted,
+            descriptorCallbackReceived = descriptorCallbackReceived,
+            descriptorCallbackSuccess = descriptorCallbackSuccess,
+            notificationsReceived = notifications,
+            notifyActive = notifyActive,
+            issue = notifySetupIssue
+        )
+
     /** Baut den exportierbaren Bericht aus tatsaechlich beobachteten Daten. */
     private fun buildHardwareReport(): HardwareTestReport {
         val support = SupportMatrix.snapshot(
@@ -815,36 +841,57 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             ),
             detectedManufacturer
         )
-        val deviceName = connectedDevice?.name
-            ?: foundDevices.values.firstOrNull()?.name
-        val address = connectedDevice?.address
-            ?: foundDevices.values.firstOrNull()?.address
-            ?: "—"
-        val liveGatt = bleEngine?.gattSnapshot().orEmpty()
-        if (liveGatt.isNotEmpty()) htLastGatt = liveGatt
+        // PHASE 16.3.1: Nur eine echte Verbindung gilt als aktiv. Ein beliebiger
+        // Scan-Treffer (foundDevices) darf NIE als aktive GATT-Verbindung erscheinen.
+        val connected = activeIdentityAddress != null &&
+            (linkState == BleLinkState.CONNECTED || linkState == BleLinkState.READY)
+        // GATT-Schnappschuss nur von der AKTIVEN Verbindung uebernehmen.
+        if (connected) {
+            val liveGatt = bleEngine?.gattSnapshot().orEmpty()
+            if (liveGatt.isNotEmpty()) {
+                htLastGatt = liveGatt
+                htGattAddress = activeIdentityAddress
+            }
+        }
+        val idRes = HardwareReportIdentity.resolve(
+            HardwareReportIdentity.Inputs(
+                activeAddress = activeIdentityAddress,
+                activeName = activeIdentityName,
+                connected = connected,
+                lastUsedAddress = repository.lastDeviceAddress,
+                lastUsedName = repository.lastDeviceName,
+                cachedGattAddress = htGattAddress,
+                hasCachedGatt = htLastGatt.isNotEmpty()
+            )
+        )
+        // Alte GATT-Daten duerfen NICHT als aktuelle Verbindung erscheinen.
+        val reportServices = if (idRes.useCachedGatt) htLastGatt else emptyList()
+        val notifyRecord = if (connected) lastTelemetryDiag?.toNotifyDiagnosticsRecord() else null
         return HardwareTestReport(
             generatedAtEpochMs = System.currentTimeMillis(),
             appVersion = appVersionName(),
-            deviceName = deviceName,
-            address = address,
+            deviceName = idRes.deviceName,
+            address = idRes.address,
             manufacturer = detectedManufacturer.displayName,
             detectedModel = if (detectedModel.isKnown) detectedModel.displayName else "unbekannt",
             confidence = detectedConfidence.label,
             supportStatus = support.status.label,
             readOnly = WriteGuard.isReadOnly(detectedModel, hardwareVerified, adapter()),
-            protocol = activeProtocol.displayName,
-            adapterId = adapter().id,
+            protocol = if (connected) activeProtocol.displayName else "",
+            adapterId = if (connected) adapter().id else "",
             connection = ConnectionRecord(
                 connectedAtMs = htConnectedAt.takeIf { it > 0 },
                 readyAtMs = htReadyAt.takeIf { it > 0 },
                 disconnectedAtMs = htDisconnectedAt.takeIf { it > 0 },
-                mtu = bleEngine?.currentMtu() ?: 0,
-                protocol = activeProtocol.displayName,
-                adapterId = adapter().id,
+                mtu = if (connected) bleEngine?.currentMtu() ?: 0 else 0,
+                protocol = if (connected) activeProtocol.displayName else "",
+                adapterId = if (connected) adapter().id else "",
                 disconnectUnexpected = htUnexpectedDisconnect
             ),
+            identity = idRes.identity,
+            notifyDiagnostics = notifyRecord,
             scanResults = hardwareTest.scanResults(),
-            services = htLastGatt,
+            services = reportServices,
             frames = hardwareTest.frames(),
             errors = hardwareTest.errors(),
             reads = hardwareTest.reads(),
@@ -4226,6 +4273,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         runOnUiThread {
             linkState = linkState.transition(BleLinkEvent.GATT_CONNECTED)
             commErrorCount = 0
+            // PHASE 16.3.1: Identitaet NUR aus der realen Verbindung setzen.
+            activeIdentityAddress = address
+            activeIdentityName = connectedDevice?.name ?: address
+            // Neue Verbindung -> alten GATT-Cache verwerfen (kein stale GATT).
+            htLastGatt = emptyList()
+            htGattAddress = address
             htConnectedAt = SystemClock.elapsedRealtime()
             htReadyAt = 0L
             htDisconnectedAt = 0L
@@ -4243,6 +4296,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         runOnUiThread {
             engineReady = true
             htReadyAt = SystemClock.elapsedRealtime()
+            // PHASE 16.3.1: GATT-Cache gehoert zu genau dieser Verbindung.
+            if (activeIdentityAddress == null) activeIdentityAddress = address
+            htGattAddress = address
             activeProtocol = protocol
             linkState = linkState.transition(BleLinkEvent.READY)
             reconnectAttempts = 0
@@ -4266,6 +4322,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onDisconnected(unexpected: Boolean) {
         runOnUiThread {
             engineReady = false
+            // PHASE 16.3.1: aktive Identitaet endet mit der Verbindung. Der
+            // GATT-Cache bleibt nur als Historie, ist aber an KEINE aktive
+            // Verbindung mehr gebunden (htGattAddress = null).
+            activeIdentityAddress = null
+            activeIdentityName = null
+            htGattAddress = null
             htDisconnectedAt = SystemClock.elapsedRealtime()
             htUnexpectedDisconnect = unexpected
             disconnectCount++
