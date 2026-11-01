@@ -61,9 +61,13 @@ import com.syrak.scooterlab.diagnostics.HardwareTestReport
 import com.syrak.scooterlab.diagnostics.HardwareReportIdentity
 import com.syrak.scooterlab.diagnostics.NotifyDiagnosticsRecord
 import com.syrak.scooterlab.diagnostics.ScanRecord
+import com.syrak.scooterlab.recognition.AdvertisementFeatures
+import com.syrak.scooterlab.recognition.GattDiscoveryStatus
+import com.syrak.scooterlab.recognition.GattFeatures
 import com.syrak.scooterlab.recognition.RecognitionConfidence
 import com.syrak.scooterlab.recognition.RecognitionEngine
 import com.syrak.scooterlab.recognition.RecognitionExport
+import com.syrak.scooterlab.recognition.RecognitionInput
 import com.syrak.scooterlab.recognition.RecognitionResult
 import com.syrak.scooterlab.recognition.RecognitionSession
 import java.io.ByteArrayOutputStream
@@ -176,6 +180,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private val recognitionEngine = RecognitionEngine()
     /** PHASE 17.1: letzte Hardware-Erkennung; wird bei Geraetewechsel zurueckgesetzt. */
     private val recognitionSession = RecognitionSession()
+    /** PHASE 17.2: Zeitpunkte der letzten Scan- bzw. GATT-Bewertung (Export). */
+    private val recognitionScanObservedAt = mutableMapOf<String, Long>()
+    private var recognitionGattObservedAtMs = 0L
     // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
     // Geraete bleiben optional sichtbar (nicht verstecken).
     private var showAllDevices = false
@@ -533,10 +540,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 scanObservations[address] = observation
 
                 // PHASE 17.1: Hardware-Erkennung auf Basis der vollstaendigen
-                // Beobachtung. Die Session verwirft ein altes Ergebnis
-                // automatisch, sobald eine andere Adresse beobachtet wird.
+                // Beobachtung.
+                // PHASE 17.2: Scan-Ergebnisse werden PRO ADRESSE abgelegt und
+                // duerfen die aktive Hardware-Erkennung NICHT ueberschreiben.
                 val recognition = recognitionEngine.recognize(observation)
-                recognitionSession.observe(address, recognition)
+                recognitionSession.observeScan(address, recognition)
+                recognitionScanObservedAt[address] = System.currentTimeMillis()
 
                 // Kandidatenstatus aus der VOLLSTAENDIGEN Beobachtung, nicht
                 // mehr nur aus dem Namen.
@@ -1022,8 +1031,20 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             rssiSamples = hardwareTest.rssiSamples(),
             // PHASE 17.1: Erkennungsdaten werden getrennt vom Nutzerprofil
             // exportiert. Seriennummer wird NICHT uebernommen, MAC maskiert.
-            recognition = recognitionSession.current?.let {
-                RecognitionExport.from(it, repository.riderScooterProfile)
+            // PHASE 17.2: zusaetzlich Scan-Ergebnis (Advertisement) und
+            // Zeitpunkte, damit Advertisement-, GATT- und End-Erkennung im
+            // Export unterscheidbar bleiben.
+            recognition = recognitionSession.displayResult()?.let { result ->
+                val scan = result.address
+                    .takeIf { it.isNotBlank() }
+                    ?.let { recognitionSession.scanResultFor(it) }
+                RecognitionExport.from(
+                    result = result,
+                    profile = repository.riderScooterProfile,
+                    scanResult = scan,
+                    scanObservedAtMs = recognitionScanObservedAt[result.address],
+                    gattObservedAtMs = recognitionGattObservedAtMs.takeIf { it > 0 }
+                )
             },
             notes = buildList {
                 add("Reine Beobachtungsdaten. Keine erfundenen UUIDs, Kommandos oder Decoder-Offsets.")
@@ -2251,7 +2272,6 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         tabContent.addView(makeSectionLabel("ERKENNUNG"))
         val card = makeCard()
         val profile = repository.riderScooterProfile
-        val result = recognitionSession.current
 
         /* ---- NUTZERPROFIL (vom Nutzer gewaehlt, NICHT erkannt) ---- */
         card.addView(recognitionSubLabel("NUTZERPROFIL"))
@@ -2261,9 +2281,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         recognitionRow(card, "Gewaehlte Marke", profileBrand)
         recognitionRow(card, "Gewaehltes Modell", profileModel)
 
-        /* ---- HARDWARE-ERKENNUNG (tatsaechlich beobachtet) ---- */
-        card.addView(recognitionSubLabel("HARDWARE-ERKENNUNG"))
-        if (result == null) {
+        /* ================= SCAN-ERKENNUNG (Advertisement) ================= */
+        card.addView(recognitionSubLabel("SCAN-ERKENNUNG"))
+        val activeAddress = recognitionSession.activeAddress
+            ?: recognitionSession.lastActiveAddress
+        val scanResult = activeAddress?.let { recognitionSession.scanResultFor(it) }
+            ?: recognitionSession.current
+        if (scanResult == null) {
             recognitionRow(
                 card, "Status", "Noch kein Bluetooth-Geraet beobachtet.",
                 Palette.TEXT_SECONDARY
@@ -2271,97 +2295,124 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         } else {
             recognitionRow(
                 card, "Bluetooth-Geraetename",
-                result.deviceName?.takeIf { it.isNotBlank() } ?: "ohne Namen"
+                scanResult.deviceName?.takeIf { it.isNotBlank() } ?: "ohne Namen"
             )
             recognitionRow(
                 card, "Erkannte Marke",
-                if (result.detectedBrand.isKnown) result.detectedBrand.displayName else "UNBEKANNT"
+                if (scanResult.detectedBrand.isKnown) scanResult.detectedBrand.displayName else "UNBEKANNT"
             )
             recognitionRow(
                 card, "Erkannte Modellfamilie",
-                result.detectedModelFamily ?: "UNBEKANNT"
+                scanResult.detectedModelFamily ?: "UNBEKANNT"
             )
             recognitionRow(
-                card, "Erkanntes Modell",
-                result.confirmedModel ?: result.probableModel ?: "UNKNOWN",
-                if (result.confirmedModel != null) Palette.SUCCESS else Palette.TEXT_SECONDARY
+                card, "Konfidenz (Advertisement)",
+                scanResult.confidence.displayName,
+                recognitionConfidenceColor(scanResult.confidence)
             )
             recognitionRow(
-                card, "Konfidenz-Status",
-                result.confidence.displayName,
-                recognitionConfidenceColor(result.confidence)
+                card, "Advertisement-Merkmale",
+                scanResult.advertisement?.summary() ?: "keine"
             )
         }
 
-        /* ---- TECHNISCHE DATEN ---- */
-        card.addView(recognitionSubLabel("TECHNISCHE DATEN"))
-        if (result == null) {
-            recognitionRow(card, "Merkmale", "keine Daten", Palette.TEXT_SECONDARY)
+        /* ============ LIVE-HARDWARE-ERKENNUNG (aktive Verbindung) ============ */
+        card.addView(recognitionSubLabel("LIVE-HARDWARE-ERKENNUNG"))
+        val liveResult = recognitionSession.activeResult
+        val historyResult = recognitionSession.lastActiveResult
+        val shown = liveResult ?: historyResult
+        if (shown == null) {
+            recognitionRow(
+                card, "Status",
+                "Keine aktive Verbindung. Es wurde noch keine GATT-Discovery durchgefuehrt.",
+                Palette.TEXT_SECONDARY
+            )
         } else {
-            val adv = result.advertisement
-            val gatt = result.gatt
-            val services = (gatt?.serviceUuids ?: emptyList())
-                .ifEmpty { adv?.specificServiceUuids ?: emptyList() }
+            if (liveResult == null) {
+                recognitionRow(card, "Verbindung", "GETRENNT (Historie)", Palette.WARNING)
+            }
+            val gatt = shown.gatt
+            val status = gatt?.discoveryStatus ?: GattDiscoveryStatus.NOT_ATTEMPTED
+            recognitionRow(
+                card, "GATT-Discovery",
+                status.displayName,
+                when (status) {
+                    GattDiscoveryStatus.COMPLETE -> Palette.SUCCESS
+                    GattDiscoveryStatus.INCOMPLETE -> Palette.WARNING
+                    GattDiscoveryStatus.FAILED -> Palette.DANGER
+                    GattDiscoveryStatus.NOT_ATTEMPTED -> Palette.TEXT_SECONDARY
+                }
+            )
+            if (status == GattDiscoveryStatus.NOT_ATTEMPTED) {
+                recognitionRow(
+                    card, "Hinweis",
+                    "Noch keine GATT-Discovery \u2014 das Advertisement-Ergebnis gilt.",
+                    Palette.TEXT_SECONDARY
+                )
+            }
+            val services = gatt?.serviceUuids.orEmpty()
             recognitionRow(
                 card, "Erkannte Services",
                 if (services.isEmpty()) "keine" else services.joinToString(", ")
             )
             recognitionRow(
                 card, "Charakteristik-Anzahl",
-                gatt?.characteristicCount?.toString() ?: "0"
+                (gatt?.characteristicCount ?: 0).toString()
+            )
+            gatt?.errors?.takeIf { it.isNotEmpty() }?.let { errs ->
+                recognitionRow(card, "Discovery-Fehler", errs.joinToString("; "), Palette.DANGER)
+            }
+            recognitionRow(
+                card, "Konfidenz (final)",
+                shown.confidence.displayName,
+                recognitionConfidenceColor(shown.confidence)
             )
             recognitionRow(
-                card, "Advertisement-Merkmale",
-                adv?.summary() ?: "keine"
-            )
-            recognitionRow(
-                card, "GATT-Ergebnis",
-                gatt?.discoveryStatus?.displayName ?: "nicht versucht"
+                card, "Erkanntes Modell",
+                shown.confirmedModel ?: shown.probableModel ?: "UNKNOWN",
+                if (shown.confirmedModel != null) Palette.SUCCESS else Palette.TEXT_SECONDARY
             )
         }
 
-        /* ---- ERKENNUNGSBEGRUENDUNG ---- */
-        card.addView(recognitionSubLabel("ERKENNUNGSBEGRUENDUNG"))
-        card.addView(makeText(
-            result?.summarySentence() ?: "Bluetooth-Geraet gefunden? Noch kein Scan-Ergebnis vorhanden.",
-            12.5f, Palette.TEXT_SECONDARY
-        ).apply { setPadding(0, 0, 0, dp(6)) })
-        if (result != null) {
-            if (result.matchedFeatures.isNotEmpty()) {
-                recognitionRow(
-                    card, "Passende Merkmale",
-                    result.matchedFeatures.take(6).joinToString("\n") { it.label() }
-                )
-            }
-            if (result.missingFeatures.isNotEmpty()) {
-                recognitionRow(
-                    card, "Fehlende Merkmale",
-                    result.missingFeatures.take(6).joinToString(", ")
-                )
-            }
-            if (result.contradictoryFeatures.isNotEmpty()) {
-                recognitionRow(
-                    card, "Widerspruechliche Merkmale",
-                    result.contradictoryFeatures.take(6).joinToString(", "),
-                    Palette.WARNING
-                )
-            }
-            if (result.unknownFeatures.isNotEmpty()) {
-                recognitionRow(
-                    card, "Unbekannte Merkmale",
-                    result.unknownFeatures.take(6).joinToString(", ")
-                )
-            }
-            if (result.confidence == RecognitionConfidence.UNKNOWN ||
-                result.confidence == RecognitionConfidence.FAMILY_ONLY
-            ) {
-                recognitionRow(
-                    card, "Grund fuer UNKNOWN",
-                    "Die verfuegbaren technischen Merkmale reichen fuer eine " +
-                        "Modellbestaetigung nicht aus.",
-                    Palette.TEXT_SECONDARY
-                )
-            }
+        /* ================= ERGEBNISVERGLEICH ================= */
+        card.addView(recognitionSubLabel("ERGEBNISVERGLEICH"))
+        if (shown == null) {
+            recognitionRow(card, "Status", "Noch kein Vergleich moeglich.", Palette.TEXT_SECONDARY)
+        } else {
+            val before = scanResult
+            recognitionRow(
+                card, "Vor GATT-Discovery",
+                before?.confidence?.displayName ?: "kein Scan-Ergebnis",
+                before?.let { recognitionConfidenceColor(it.confidence) } ?: Palette.TEXT_SECONDARY
+            )
+            recognitionRow(
+                card, "Nach GATT-Discovery",
+                shown.confidence.displayName,
+                recognitionConfidenceColor(shown.confidence)
+            )
+            val scanLabels = before?.matchedFeatures?.map { it.label() }?.toSet().orEmpty()
+            val added = shown.matchedFeatures
+                .filter { it.kind.startsWith("GATT_") }
+                .map { it.label() }
+                .filterNot { it in scanLabels }
+                .distinct()
+            recognitionRow(
+                card, "Neu hinzugekommene Evidenz",
+                if (added.isEmpty()) "keine" else added.take(6).joinToString("\n"),
+                if (added.isEmpty()) Palette.TEXT_SECONDARY else Palette.SUCCESS
+            )
+            recognitionRow(
+                card, "Weiterhin fehlend",
+                if (shown.missingFeatures.isEmpty()) "keine"
+                else shown.missingFeatures.take(6).joinToString(", ")
+            )
+            recognitionRow(
+                card, "Widerspruechliche Merkmale",
+                if (shown.contradictoryFeatures.isEmpty()) "keine"
+                else shown.contradictoryFeatures.take(6).joinToString(", "),
+                if (shown.contradictoryFeatures.isEmpty()) Palette.TEXT_PRIMARY else Palette.WARNING
+            )
+            recognitionRow(card, "Begruendung", shown.summarySentence())
         }
 
         tabContent.addView(card, cardParams())
@@ -5193,6 +5244,41 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
     }
 
+    /**
+     * PHASE 17.2: Fuehrt Advertisement- und Live-GATT-Daten der AKTIVEN
+     * Verbindung zusammen und legt das Ergebnis als aktives Ergebnis ab.
+     *
+     * BINDEND:
+     *  - Es wird ausschliesslich der Snapshot der GATT-Instanz verwendet, die
+     *    zu [address] gehoert (Adress- und Generationen-Pruefung). Ein
+     *    verspaeteter Callback einer alten Verbindung kann damit kein
+     *    Ergebnis mehr setzen.
+     *  - Der Discovery-Status stammt aus dem echten Callback. Passt die
+     *    Discovery-Generation nicht zur Verbindungsgeneration, gilt der
+     *    Status als NICHT VERSUCHT (kein stale-Status).
+     *  - Es wird KEINE neue BLE-Verbindung aufgebaut und KEINE zusaetzliche
+     *    GATT-Discovery gestartet.
+     */
+    private fun evaluateActiveRecognition(address: String, archive: Boolean = false) {
+        val snap = bleEngine?.liveGattSnapshot()
+        if (snap == null || !snap.matchesAddress(address)) {
+            // Kein passender Snapshot -> kein aktives Ergebnis fuer diese Adresse.
+            if (archive) recognitionSession.archiveActive()
+            return
+        }
+        val gattFeatures = GattFeatures.from(
+            records = snap.effectiveServices,
+            discoveryStatus = snap.effectiveDiscoveryStatus,
+            errors = listOfNotNull(snap.effectiveDiscoveryError)
+        )
+        val adv = scanObservations[address]?.let { AdvertisementFeatures.from(it) }
+        val merged = recognitionEngine.recognize(
+            RecognitionInput(advertisement = adv, gatt = gattFeatures)
+        )
+        recognitionSession.bindActive(address, merged)
+        if (archive) recognitionSession.archiveActive()
+    }
+
     override fun onConnected(address: String) {
         runOnUiThread {
             linkState = linkState.transition(BleLinkEvent.GATT_CONNECTED)
@@ -5213,6 +5299,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             htDisconnectedAt = 0L
             htUnexpectedDisconnect = false
             htDisconnectStatus = null
+            // PHASE 17.2: neue Verbindung -> kein GATT-Zeitstempel der alten.
+            recognitionGattObservedAtMs = 0L
             diagnosticLog.add(
                 SystemClock.elapsedRealtime(), DiagnosticSeverity.INFO,
                 "GATT_CONNECTED", "GATT verbunden: $address"
@@ -5247,6 +5335,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             repository.lastDeviceAddress = address
             repository.lastDeviceName = connectedDevice?.name ?: address
             refreshConnectionStage()
+            // PHASE 17.2: Jetzt liegen echte GATT-Daten der AKTIVEN Verbindung
+            // vor. Advertisement + GATT werden zusammengefuehrt und erneut
+            // bewertet. Reine Auswertung, keine neue Verbindung/Discovery.
+            evaluateActiveRecognition(address)
+            recognitionGattObservedAtMs = System.currentTimeMillis()
             startTelemetry()
             // Verbindung ist vollstaendig bereit -> Prozess fuer App-Wechsel
             // und Display-Off priorisieren (Dienst besitzt die GATT NICHT).
@@ -5264,6 +5357,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     override fun onDisconnected(unexpected: Boolean) {
         runOnUiThread {
             engineReady = false
+            // PHASE 17.2: VOR dem Verwerfen der Identitaet den letzten echten
+            // GATT-Stand dieser Verbindung auswerten und als GETRENNTE Historie
+            // ablegen. Damit bleibt z. B. eine fehlgeschlagene Service-Discovery
+            // sichtbar, ohne als aktive Verbindung zu gelten.
+            activeIdentityAddress?.let { addr -> evaluateActiveRecognition(addr, archive = true) }
+                ?: recognitionSession.archiveActive()
             // PHASE 16.3.2: Diagnose-Schnappschuss der alten Verbindung
             // verwerfen, damit die Statuszeile nicht mit alten Telemetrie-
             // Zaehlern weiterrechnet.
