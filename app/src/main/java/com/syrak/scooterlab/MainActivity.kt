@@ -311,6 +311,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var diagRxBuffer: TextView? = null
     private var diagRxAdapter: TextView? = null
     private var diagRxNotify: TextView? = null
+    private var diagRxNotifyChar: TextView? = null
+    private var diagRxCccd: TextView? = null
     private var diagRxCause: TextView? = null
     /** Letzter von der Engine gemeldeter Diagnose-Schnappschuss (UI-Thread). */
     @Volatile private var lastTelemetryDiag: TelemetryDiagnosticsSnapshot? = null
@@ -2932,6 +2934,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         diagRxBuffer = metricRow(diagRx, "Reassembler-Puffer")
         diagRxAdapter = metricRow(diagRx, "Aktiver Adapter")
         diagRxNotify = metricRow(diagRx, "Notify (CCCD)")
+        diagRxNotifyChar = metricRow(diagRx, "Notify-Characteristic")
+        diagRxCccd = metricRow(diagRx, "CCCD-Kette")
         diagRxCause = metricRow(diagRx, "Fehlerursache")
         tabContent.addView(diagRx, cardParams())
 
@@ -4359,8 +4363,29 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         diagRxFrames?.text = "${s.framesDetected} (${s.invalidFrames})"
         diagRxDecode?.text = "${s.decodeSuccess} / ${s.decodeFailure}"
         diagRxBuffer?.text = "${s.bufferedBytes} B"
-        diagRxAdapter?.text = s.activeAdapter.ifBlank { "—" }
+        // PHASE 16.3: Adapter nur als "erkannt" zeigen, wenn er aus einem
+        // bekannten Service abgeleitet wurde — sonst ehrlich "(angenommen)".
+        diagRxAdapter?.text = when {
+            s.activeAdapter.isBlank() -> "—"
+            s.adapterConfirmed -> s.activeAdapter
+            else -> "${s.activeAdapter} (angenommen)"
+        }
         diagRxNotify?.text = if (s.notifyActive) "aktiv" else "inaktiv"
+        diagRxNotifyChar?.text = when {
+            s.notifyCharUuid.isNotBlank() -> s.notifyCharUuid
+            s.discoveryDone -> "keine gefunden"
+            else -> "—"
+        }
+        diagRxCccd?.text = when {
+            s.cccdWriteStatus != null && s.cccdWriteStatus != TelemetryDiagnostics.GATT_SUCCESS ->
+                "write-status=${s.cccdWriteStatus}"
+            s.notifyActive -> "aktiv"
+            s.cccdWriteRequested && !s.cccdWriteAccepted -> "write abgelehnt"
+            s.cccdWriteRequested -> "write angefordert"
+            s.cccdPresent -> "vorhanden"
+            s.discoveryDone -> "fehlt"
+            else -> "—"
+        }
         diagRxCause?.text = s.missingCause
     }
 
