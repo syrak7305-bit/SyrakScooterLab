@@ -54,6 +54,16 @@ class BleEngine(
         fun onConnected(address: String)
         fun onReady(address: String, protocol: BleProtocol, mtu: Int)
         fun onDisconnected(unexpected: Boolean)
+
+        /**
+         * PHASE 16.3.4: roher GATT-Disconnect-Statuscode aus
+         * onConnectionStateChange (0 = GATT_SUCCESS). Wird VOR
+         * [onDisconnected] aufgerufen, damit der Bericht den Code speichern
+         * kann. Default-Implementierung leer -> bestehende Listener bleiben
+         * unveraendert. Keine Interpretation des Codes.
+         */
+        fun onDisconnectStatus(status: Int) {}
+
         fun onTelemetry(t: Telemetry)
         fun onWriteResult(label: String, frame: ByteArray, success: Boolean, detail: String)
         fun onFlashProgress(written: Int, total: Int)
@@ -65,8 +75,13 @@ class BleEngine(
          * Dekodierung. Wird fuer den exportierbaren Hardware-Testbericht
          * benoetigt. Default-Implementierung leer, damit bestehende
          * Implementierungen unveraendert bleiben.
+         *
+         * PHASE 16.3.4: [characteristicUuid] ist die UUID der Characteristic, auf
+         * der die Notification ankam (nur UUID, kein Roh-Frame, keine MAC). Der
+         * Parameter hat einen Default, damit bestehende Implementierungen und
+         * Tests unveraendert kompilieren.
          */
-        fun onRawNotification(bytes: ByteArray) {}
+        fun onRawNotification(bytes: ByteArray, characteristicUuid: String? = null) {}
 
         /**
          * PHASE 16: Ergebnis eines echten Characteristic-Reads. Wird NUR
@@ -386,13 +401,25 @@ class BleEngine(
         try { old?.disconnect(); old?.close() } catch (_: Exception) {}
         writeChar = null
         notifyChar = null
-        resetConnectionState()
+        // PHASE 16.3.4: auch beim bewussten Trennen die Zaehler der Sitzung
+        // erhalten (naechster Verbindungsaufbau setzt sie ohnehin zurueck).
+        resetConnectionState(resetDiagnostics = false)
         failPendingWrites("disconnect")
         if (notifyListener) listener.onDisconnected(false)
     }
 
-    /** Setzt den gesamten Verbindungs-/Initialisierungszustand zurueck. */
-    private fun resetConnectionState() {
+    /**
+     * Setzt den gesamten Verbindungs-/Initialisierungszustand zurueck.
+     *
+     * PHASE 16.3.4: [resetDiagnostics] steuert, ob auch die Telemetrie-Zaehler
+     * (Notifications, Bytes, Frames, Empfang je UUID) verworfen werden.
+     * Bei einem DISCONNECT werden die Zaehler NICHT mehr geloescht, damit der
+     * Hardware-Bericht die letzte Sitzung noch belegen kann. Ein NEUER
+     * Verbindungsaufbau (connect/reconnect/CONNECTED) setzt sie weiterhin
+     * zurueck. Default true erhaelt das bisherige Verhalten fuer alle anderen
+     * Aufrufer.
+     */
+    private fun resetConnectionState(resetDiagnostics: Boolean = true) {
         synchronized(writeLock) {
             initializationStarted = false
             awaitingAck = null
@@ -406,7 +433,7 @@ class BleEngine(
         localNotifyRegistered = false
         lastRxMillis = 0L
         reassembler.reset()
-        telemetryDiagnostics.reset()
+        if (resetDiagnostics) telemetryDiagnostics.reset()
     }
 
     /* ------------------------------------------------------------------ */
@@ -493,8 +520,12 @@ class BleEngine(
                         listener.onLog("> link: DISCONNECTED (status=$status)")
                         linkConnected = false
                         cancelConnectTimeout()
-                        resetConnectionState()
+                        // PHASE 16.3.4: Zaehler der letzten Sitzung NICHT verwerfen,
+                        // damit der Bericht den Empfang/die Notify-Kette noch belegt.
+                        resetConnectionState(resetDiagnostics = false)
                         failPendingWrites("disconnected")
+                        // PHASE 16.3.4: rohen Statuscode VOR onDisconnected melden.
+                        listener.onDisconnectStatus(status)
                         listener.onDisconnected(status != BluetoothGatt.GATT_SUCCESS)
                         emitDiagnostics()
                     }
@@ -548,6 +579,17 @@ class BleEngine(
                         adapter = ProtocolAdapters.forProtocol(BleProtocol.NINEBOT)
                         adapterConfirmed = true
                         writeChar = nbWrite.first
+                        // PHASE 16.3.4 (A6, Ninebot-Notify-Praeferenz):
+                        // FFF1/FFF2 sind in BleUuids als DUAL-ROLE-Kandidaten
+                        // dokumentiert (Write UND moeglicherweise Notify). Ob sie
+                        // tatsaechlich Notify tragen, ist ohne GATT-Mitschnitt NICHT
+                        // entschieden. Deshalb bleibt die Praeferenzliste unveraendert:
+                        // sie enthaelt nur dokumentierte UUIDs und erfindet keine
+                        // Notify-UUID. GattCharacteristicSelector.pickNotify stellt
+                        // sicher, dass ein NICHT-notify-faehiges Characteristic NIE
+                        // gewaehlt wird (auch nicht bei UUID-Treffer). Eine echte
+                        // Korrektur waere erst mit belegtem Notify-Characteristic
+                        // zulaessig.
                         notifyChar = findNotifyChar(
                             g, NINEBOT_SERVICE,
                             listOf(NINEBOT_CHAR_WRITE, NINEBOT_CHAR_WRITE_ALT),
@@ -785,7 +827,10 @@ class BleEngine(
                     cancelResponseTimeout()
                     synchronized(writeLock) { awaitingAck = null }
                 }
-                handleNotification(v)
+                // PHASE 16.3.4: UUID der empfangenden Characteristic mitgeben, damit
+                // belegbar ist, WELCHER Kanal tatsaechlich Daten liefert.
+                val sourceUuid = ch.uuid?.toString()
+                handleNotification(v, sourceUuid)
             } catch (e: Exception) {
                 listener.onLog("> rx: Exception in onCharacteristicChanged: ${e.message}")
             }
@@ -1293,13 +1338,17 @@ class BleEngine(
     /* ------------------------------------------------------------------ */
     /*  NOTIFY -> TELEMETRIE (adapter-getrieben)                           */
     /* ------------------------------------------------------------------ */
-    private fun handleNotification(value: ByteArray) {
+    private fun handleNotification(value: ByteArray, characteristicUuid: String? = null) {
         try {
             // PHASE 11: Roh-Frame fuer den Hardware-Testbericht melden.
-            listener.onRawNotification(value)
+            // PHASE 16.3.4: UUID der Quell-Characteristic mitgeben.
+            listener.onRawNotification(value, characteristicUuid)
 
             // PHASE 16.2: Empfangs-Statistik erfassen (Notification + Bytes).
-            telemetryDiagnostics.recordChunk(value.size, SystemClock.elapsedRealtime())
+            // PHASE 16.3.4: zusaetzlich pro Characteristic-UUID zaehlen.
+            telemetryDiagnostics.recordChunk(
+                value.size, SystemClock.elapsedRealtime(), characteristicUuid
+            )
 
             // PHASE 16.2: Mehrere Notifications zu vollstaendigen Frames zusammensetzen.
             val reassembly = reassembler.feed(value)

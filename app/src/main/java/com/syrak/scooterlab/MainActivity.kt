@@ -134,8 +134,30 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private fun noticeLanguage(): AppLanguage =
         LanguageResolver.resolve(Locale.getDefault().toLanguageTag(), repository.region.code)
 
+    /** PHASE 16.3.2: letzter Telemetrie-Diagnosezustand (fuer die Statuszeile). */
+    private var lastDiagSnapshot: TelemetryDiagnosticsSnapshot? = null
+
     private var isScanning = false
     private val foundDevices = linkedMapOf<String, ScooterDevice>()
+    /**
+     * PHASE 16.3.2: fuehrt Scan-Beobachtungen pro Adresse zusammen.
+     *
+     * Behebt zwei belegte Defekte:
+     *  • Namens-Regression (R3): ein Callback ohne Namen ueberschrieb bisher
+     *    einen bekannten Namen mit "Unknown Device".
+     *  • Fehlende Aggregation (R5): seenCount/Zeitraum wurden nicht gepflegt.
+     *
+     * Wird ausschliesslich auf dem UI-Thread benutzt.
+     */
+    private val scanAggregator = ScanAggregator()
+    /** PHASE 16.3.2: letzte Evidenz je Adresse (fuer die Detailanzeige). */
+    private val scanEvidence = linkedMapOf<String, AdvertisementEvidence>()
+    /**
+     * PHASE 16.3.4: letzte VOLLSTAENDIGE Scan-Beobachtung je Adresse.
+     * Damit klassifiziert die Liste (updateDeviceList) nicht mehr nur anhand
+     * des Namens, sondern mit denselben Advertisement-Daten wie der Scan-Callback.
+     */
+    private val scanObservations = linkedMapOf<String, ScanObservation>()
     // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
     // Geraete bleiben optional sichtbar (nicht verstecken).
     private var showAllDevices = false
@@ -332,6 +354,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var htReadyAt = 0L
     private var htDisconnectedAt = 0L
     private var htUnexpectedDisconnect = false
+    // PHASE 16.3.4: roher GATT-Disconnect-Statuscode (null = keiner beobachtet).
+    private var htDisconnectStatus: Int? = null
     // PHASE 12.7: Verbindungsqualitaet (Abbrueche zaehlen)
     private var disconnectCount = 0
     // PHASE 12.3: granularer Verbindungsstatus
@@ -419,38 +443,93 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             result ?: return
             val device = result.device
             val address = device.address
-            val name = try {
+
+            // PHASE 16.3.2: Rohdaten getrennt erfassen statt sofort zu einem
+            // Namen zu verengen. `device.name` und `scanRecord.deviceName`
+            // bleiben getrennt, damit [DeviceNameResolver] die Herkunft
+            // bestimmen kann. Es wird KEIN Platzhalter-String mehr erzeugt.
+            val gattName = try {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
                     ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT) ==
                     PackageManager.PERMISSION_GRANTED
-                ) device.name ?: result.scanRecord?.deviceName ?: "Unknown Device"
-                else result.scanRecord?.deviceName ?: "Unknown Device"
+                ) device.name else null
             } catch (_: SecurityException) {
-                result.scanRecord?.deviceName ?: "Unknown Device"
+                null
             }
 
-            // PHASE 8: Kandidaten-Erkennung in eine reine, testbare Funktion
-            // ausgelagert ([ScooterCandidateFilter]). Vorher lag hier eine
-            // private Inline-Liste, die KuKirin nicht kannte und nicht testbar war.
-            val candidate = ScooterCandidateFilter.looksLikeScooter(name)
+            val record = result.scanRecord
+            val observation = ScanObservation(
+                address = address,
+                gattDeviceName = gattName,
+                advertisedName = record?.deviceName,
+                // PHASE 16.3.2: Advertisement-Daten werden ab jetzt ausgewertet.
+                // Vorher wurde KEINES dieser Felder gelesen (belegter Defekt R1).
+                serviceUuids = record?.serviceUuids
+                    ?.mapNotNull { ScanObservation.normalizeUuid(it.uuid.toString()) }
+                    ?.distinct()
+                    ?: emptyList(),
+                manufacturerIds = record?.manufacturerSpecificData
+                    ?.let { data ->
+                        (0 until data.size()).mapNotNull { i ->
+                            // Key = Company Identifier (0..65535), Value = Rohdaten.
+                            runCatching { data.keyAt(i) }.getOrNull()
+                        }
+                    }
+                    ?.distinct()
+                    ?: emptyList(),
+                serviceDataUuids = record?.serviceData
+                    ?.keys
+                    ?.mapNotNull { ScanObservation.normalizeUuid(it.uuid.toString()) }
+                    ?.distinct()
+                    ?: emptyList(),
+                rssi = result.rssi,
+                timestampMs = SystemClock.elapsedRealtime()
+            )
+
+            // PHASE 16.3.2: konservative Advertisement-Analyse (reine Logik).
+            val evidence = AdvertisementAnalyzer.analyze(observation)
 
             // WICHTIG: Callback laeuft auf Binder-Thread -> UI-Update auf Main-Thread
             runOnUiThread {
-                foundDevices[address] = ScooterDevice(device, name, address, result.rssi, candidate, false)
+                // Aggregation: Name bleibt monoton, RSSI wird aktualisiert,
+                // seenCount/firstSeen/lastSeen werden korrekt gepflegt.
+                val aggregated = scanAggregator.observe(observation, evidence)
+                scanEvidence[address] = aggregated.evidence
+                // PHASE 16.3.4: vollstaendige Beobachtung fuer die Listen-
+                // Klassifizierung merken (nicht nur den Namen).
+                scanObservations[address] = observation
+
+                // Kandidatenstatus aus der VOLLSTAENDIGEN Beobachtung, nicht
+                // mehr nur aus dem Namen.
+                val cls = ScanClassifier.classify(observation)
+                foundDevices[address] = ScooterDevice(
+                    device = device,
+                    name = aggregated.name,
+                    address = address,
+                    rssi = aggregated.rssi,
+                    isScooterCandidate = cls.isScooterLike,
+                    isDemo = false,
+                    nameSource = aggregated.nameSource
+                )
+
                 // PHASE 11: Scan-Treffer strukturiert fuer den Export erfassen.
-                val det = ScooterModel.detectDetailed(name, address)
-                val now = SystemClock.elapsedRealtime()
+                // PHASE 16.3.2: jetzt mit aggregierten Zaehlern und OHNE
+                // Platzhalter-Namen. HardwareTestReport.recordScan fuehrt
+                // seenCount/firstSeen selbst weiter — deshalb werden hier die
+                // Werte der Aggregation uebergeben, damit beide Sichten
+                // identisch sind.
+                val det = ScooterModel.detectDetailed(aggregated.name ?: "", address)
                 hardwareTest.recordScan(
                     ScanRecord(
-                        name = name,
+                        name = aggregated.name,
                         address = address,
-                        rssi = result.rssi,
-                        brand = ScooterBrand.classify(name).displayName,
+                        rssi = aggregated.rssi,
+                        brand = cls.brandLabel,
                         detectedModel = if (det.model.isKnown) det.model.displayName else "unbekannt",
-                        confidence = det.confidence.label,
-                        firstSeenMs = now,
-                        lastSeenMs = now,
-                        seenCount = 1
+                        confidence = cls.confidenceLabel,
+                        firstSeenMs = aggregated.firstSeenMs,
+                        lastSeenMs = aggregated.lastSeenMs,
+                        seenCount = aggregated.seenCount
                     )
                 )
                 requestThrottledListUpdate()
@@ -825,7 +904,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             descriptorCallbackSuccess = descriptorCallbackSuccess,
             notificationsReceived = notifications,
             notifyActive = notifyActive,
-            issue = notifySetupIssue
+            issue = notifySetupIssue,
+            notificationsByUuid = notificationsByUuid
         )
 
     /** Baut den exportierbaren Bericht aus tatsaechlich beobachteten Daten. */
@@ -866,7 +946,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         )
         // Alte GATT-Daten duerfen NICHT als aktuelle Verbindung erscheinen.
         val reportServices = if (idRes.useCachedGatt) htLastGatt else emptyList()
-        val notifyRecord = if (connected) lastTelemetryDiag?.toNotifyDiagnosticsRecord() else null
+        // PHASE 16.3.4: Die Notify-Diagnose der LETZTEN Sitzung bleibt auch nach
+        // einem Disconnect erhalten (Zaehler werden nicht mehr verworfen). Ob es
+        // sich um eine aktive oder eine beendete Sitzung handelt, ergibt sich
+        // aus connection/identity und notifyActive — es wird nichts unterstellt.
+        val notifyRecord = lastTelemetryDiag?.toNotifyDiagnosticsRecord()
         return HardwareTestReport(
             generatedAtEpochMs = System.currentTimeMillis(),
             appVersion = appVersionName(),
@@ -886,7 +970,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 mtu = if (connected) bleEngine?.currentMtu() ?: 0 else 0,
                 protocol = if (connected) activeProtocol.displayName else "",
                 adapterId = if (connected) adapter().id else "",
-                disconnectUnexpected = htUnexpectedDisconnect
+                disconnectUnexpected = htUnexpectedDisconnect,
+                disconnectStatus = htDisconnectStatus
             ),
             identity = idRes.identity,
             notifyDiagnostics = notifyRecord,
@@ -1720,12 +1805,17 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     } else {
                         connectToDevice(
                             ScooterDevice(
-                                remote,
-                                repository.lastDeviceName.ifBlank { lastAddr },
-                                lastAddr,
-                                Int.MIN_VALUE,
-                                false,
-                                false
+                                device = remote,
+                                // PHASE 16.3.2: null statt Pseudo-Name. Ein leerer
+                                // oder Platzhalter-gespeicherter Name wird zu null,
+                                // damit die UI "Name nicht verfuegbar" zeigt.
+                                name = DeviceNameResolver.normalize(repository.lastDeviceName),
+                                address = lastAddr,
+                                rssi = Int.MIN_VALUE,
+                                isScooterCandidate = false,
+                                isDemo = false,
+                                nameSource = if (DeviceNameResolver.normalize(repository.lastDeviceName) != null)
+                                    DeviceNameSource.GATT_DEVICE_NAME else DeviceNameSource.NONE
                             )
                         )
                     }
@@ -1753,6 +1843,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             },
             true
         ))
+        // PHASE 16.3.4: Geraetename und erkanntes Modell STRIKT getrennt zeigen.
+        // Der Geraetename stammt aus dem Scan/GATT; das Modell ist eine reine
+        // Namensheuristik. Beides wird nie vermischt.
+        modelCard.addView(makeText(
+            "Ger\u00e4t: ${currentDeviceName()}  \u00b7  Adresse: ${currentDeviceAddress()}",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(6), 0, 0) })
         modelCard.addView(makeText(modelEvidence(), 12f, Palette.TEXT_MUTED).apply {
             setPadding(0, dp(6), 0, 0)
         })
@@ -2270,31 +2367,77 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      * PHASE 12.3: Verbindungszustand in klar getrennten Stufen.
      * Wichtig: "Verbunden" und "Diagnose bereit" sind NICHT dasselbe.
      */
-    private fun connectionStage(): Pair<String, Int> = when {
-        engineReady && detectedModel.isKnown && hardwareVerified ->
-            "Diagnose bereit" to Palette.SUCCESS
-        engineReady && !detectedModel.isKnown ->
-            "Diagnose bereit \u00b7 Modell unbekannt" to Palette.WARNING
-        engineReady ->
-            "Diagnose bereit \u00b7 Protokoll nicht verifiziert" to Palette.WARNING
-        linkState == BleLinkState.CONNECTED ->
-            "Services werden untersucht" to Palette.ACCENT
-        linkState == BleLinkState.CONNECTING ->
-            "Verbindung wird hergestellt" to Palette.ACCENT
-        lastConnectFailed ->
-            "Verbindung fehlgeschlagen" to Palette.DANGER
-        isScanning ->
-            "Suche l\u00e4uft" to Palette.ACCENT
-        connectedDevice != null ->
-            "Ger\u00e4t erkannt" to Palette.ACCENT
-        else ->
-            "Nicht verbunden" to Palette.TEXT_MUTED
+    /**
+     * PHASE 16.3.2 (Auftrag Teilziel D): Statuszeile.
+     *
+     * Belegter Defekt (R8): Bisher meldete die App "Diagnose bereit", sobald
+     * die Engine bereit war — auch wenn 0 Notifications und 0 Frames vorlagen.
+     * Ein erfolgreicher GATT-Connect wurde damit als erfolgreiche
+     * Telemetrieverbindung dargestellt. Das ist genau das, was der Auftrag
+     * verbietet.
+     *
+     * Jetzt werden DREI Ebenen getrennt ausgewiesen:
+     *   1. Verbindung (GATT steht)
+     *   2. Dienst/Notify (Kette vollstaendig?)
+     *   3. Telemetrie (kommen tatsaechlich Frames?)
+     *
+     * "Diagnose bereit" erscheint nur noch, wenn tatsaechlich Telemetrie
+     * fliesst. Sonst steht ausdruecklich "verbunden, keine Telemetrie".
+     */
+    private fun connectionStage(): Pair<String, Int> {
+        // PHASE 16.3.2: Die eigentliche Entscheidung liegt in der reinen,
+        // unit-getesteten ConnectionStagePolicy. Hier nur noch die Abbildung
+        // auf Palette-Farben — damit ist die Ehrlichkeitslogik ohne Hardware
+        // pruefbar (siehe Phase1632ScanDetectionTest).
+        val stage = ConnectionStagePolicy.evaluate(
+            engineReady = engineReady,
+            linkState = linkState,
+            lastConnectFailed = lastConnectFailed,
+            isScanning = isScanning,
+            deviceFound = connectedDevice != null,
+            diagnostics = lastDiagSnapshot
+        )
+        val color = when (stage.severity) {
+            StageSeverity.SUCCESS -> Palette.SUCCESS
+            StageSeverity.WARNING -> Palette.WARNING
+            StageSeverity.ACCENT -> Palette.ACCENT
+            StageSeverity.DANGER -> Palette.DANGER
+            StageSeverity.MUTED -> Palette.TEXT_MUTED
+        }
+        return stage.text to color
     }
 
     private fun refreshConnectionStage() {
         val (label, color) = connectionStage()
         connStageView?.text = label
         connStageView?.setTextColor(color)
+    }
+
+    /**
+     * PHASE 16.3.4: Anzeigename des GERAETS (nicht des Modells). Ehrlicher
+     * Fallback, wenn kein echter Name empfangen wurde — es wird nie die MAC als
+     * "Name" ausgegeben.
+     */
+    private fun currentDeviceName(): String =
+        DeviceDisplayLabels.deviceName(connectedDevice?.name)
+
+    /** PHASE 16.3.4: Adresse des verbundenen Geraets (nur zur Anzeige). */
+    private fun currentDeviceAddress(): String =
+        connectedDevice?.address ?: activeIdentityAddress ?: "\u2014"
+
+    /**
+     * PHASE 16.3.4: Klassifiziert einen Scan-Treffer mit der vollstaendigen
+     * [ScanObservation] (Name + Advertisement). Faellt nur dann auf die reine
+     * Namens-Heuristik zurueck, wenn fuer die Adresse keine Beobachtung
+     * gespeichert ist (z. B. Demo-Geraet).
+     */
+    private fun classifyScan(device: ScooterDevice): ScanClassification {
+        val obs = scanObservations[device.address]
+        return if (obs != null) {
+            ScanClassifier.classify(obs)
+        } else {
+            ScanClassifier.classify(device.name, device.address)
+        }
     }
 
     private fun modelEvidence(): String {
@@ -2346,6 +2489,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             return
         }
         foundDevices.clear()
+        // PHASE 16.3.2: Aggregation und Evidenz gehoeren zu EINEM Scan und
+        // werden mit ihm zurueckgesetzt (kein Altbestand aus frueheren Scans).
+        scanAggregator.clear()
+        scanEvidence.clear()
+        scanObservations.clear()
         updateDeviceList()
         isScanning = true
         if (::scanButton.isInitialized) {
@@ -2384,7 +2532,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         deviceListContainer.removeAllViews()
 
         val all = foundDevices.values.toList()
-        val classified = all.map { it to ScanClassifier.classify(it.name, it.address) }
+        // PHASE 16.3.4: mit vollstaendiger ScanObservation klassifizieren.
+        val classified = all.map { it to classifyScan(it) }
         val scooterLike = classified.filter { it.second.isScooterLike }
         val unknown = classified.filter { !it.second.isScooterLike }
 
@@ -2434,8 +2583,18 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             val titleRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             }
-            titleRow.addView(makeText(device.name, 14f, Palette.TEXT_PRIMARY, true),
-                LinearLayout.LayoutParams(0, WRAP, 1f))
+            // PHASE 16.3.2: ehrlicher Name. Liegt KEIN Name vor, wird das
+            // ausdruecklich gesagt (Teilziel B) — statt eines Pseudo-Namens
+            // "Unknown Device", der wie ein echter Geraetename aussah.
+            titleRow.addView(
+                makeText(
+                    device.displayName("Name nicht verfuegbar"),
+                    14f,
+                    if (device.hasRealName) Palette.TEXT_PRIMARY else Palette.TEXT_MUTED,
+                    device.hasRealName
+                ),
+                LinearLayout.LayoutParams(0, WRAP, 1f)
+            )
             val sig = SignalQualityScale.fromRssi(device.rssi)
             val sigColor = when (sig.bars) {
                 4, 3 -> Palette.SUCCESS
@@ -2459,6 +2618,28 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 "Hersteller: ${cls.brandLabel} \u00b7 Modell: ${cls.modelLabel} \u00b7 ${cls.confidenceLabel}",
                 11f, Palette.TEXT_SECONDARY
             ))
+            // PHASE 16.3.2: Herkunft des Namens und Begruendung der Einordnung
+            // sichtbar machen. Ohne das ist "Scooter wahrscheinlich" nicht
+            // nachpruefbar — und ein Advertisement-Hinweis waere von einem
+            // bewiesenen Modell nicht unterscheidbar.
+            val nameOriginLabel = when (device.nameSource) {
+                DeviceNameSource.GATT_DEVICE_NAME -> "Name: Bluetooth-Geraetename"
+                DeviceNameSource.ADVERTISEMENT -> "Name: Advertisement"
+                DeviceNameSource.NONE -> "Name: nicht vorhanden"
+            }
+            row.addView(makeText(
+                nameOriginLabel,
+                10f, Palette.TEXT_MUTED
+            ).apply { setPadding(0, dp(2), 0, 0) })
+            val evidence = scanEvidence[device.address]
+            if (evidence != null && evidence.hasHint) {
+                row.addView(makeText(
+                    "Hinweis: ${evidence.kind?.label ?: "-"} \u00b7 " +
+                        if (evidence.isStrong) "stark" else "schwach (allein nicht ausreichend)",
+                    10f,
+                    if (evidence.isStrong) Palette.ACCENT else Palette.TEXT_MUTED
+                ).apply { setPadding(0, dp(2), 0, 0) })
+            }
 
             val connected = connectedDevice?.address == device.address
             val connectButton = makePrimaryButton(
@@ -2478,7 +2659,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /** PHASE 12.3: Hersteller-Filter aus den tatsaechlich gefundenen Marken. */
     private fun showManufacturerFilter() {
         val brands = foundDevices.values
-            .map { ScanClassifier.classify(it.name, it.address).brandLabel }
+            .map { classifyScan(it).brandLabel }
             .filter { it != "unbekannt" }
             .distinct()
             .sorted()
@@ -4254,17 +4435,17 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     override fun onLog(line: String) {
         runOnUiThread {
-            // PHASE 9: Fehlerhafte BLE-/Protokoll-Zeilen zusaetzlich im
-            // Diagnose-Log mit Zeitstempel erfassen (tracebares Fehlerlog).
-            val lower = line.lowercase(Locale.ROOT)
-            if (lower.contains("exception") || lower.contains("fehlgeschlagen") ||
-                lower.contains("timeout") || lower.contains("fehler")
-            ) {
-                commErrorCount++
-                diagnosticLog.add(
-                    SystemClock.elapsedRealtime(), DiagnosticSeverity.ERROR, "BLE", line
-                )
-            }
+            // PHASE 16.3.2 (belegter Defekt R7): Die Fehlerzahl wurde bisher aus
+            // TEXTMUSTERN abgeleitet (contains("fehler") / "timeout" /
+            // "fehlgeschlagen" / "exception"). Damit zaehlte jede informative
+            // Zeile als Fehler, und die Zahl hing von der Formulierung ab statt
+            // von einem Ereignis.
+            //
+            // Jetzt: KEINE Zaehlung mehr aus Log-Texten. Fehler werden
+            // ausschliesslich an strukturierten Ereignissen gezaehlt
+            // (onWriteResult -> WRITE_FAILED, onDisconnected -> DISCONNECT nur
+            // bei unexpected, onScanFailed). Das Diagnose-Log bleibt als
+            // Nachweis erhalten, beeinflusst aber die Kennzahl nicht mehr.
             addLog(LogCategory.INFO, line)
         }
     }
@@ -4273,9 +4454,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         runOnUiThread {
             linkState = linkState.transition(BleLinkEvent.GATT_CONNECTED)
             commErrorCount = 0
+            // PHASE 16.3.2: neue Verbindung -> alte Telemetrie-Diagnose gilt nicht mehr.
+            lastDiagSnapshot = null
             // PHASE 16.3.1: Identitaet NUR aus der realen Verbindung setzen.
             activeIdentityAddress = address
-            activeIdentityName = connectedDevice?.name ?: address
+            // PHASE 16.3.4: KEIN MAC-Fallback als "Name". Fehlt ein echter
+            // Geraetename, bleibt activeName null (der Bericht zeigt dann die
+            // Adresse separat, nicht als Namen).
+            activeIdentityName = connectedDevice?.name?.takeIf { it.isNotBlank() }
             // Neue Verbindung -> alten GATT-Cache verwerfen (kein stale GATT).
             htLastGatt = emptyList()
             htGattAddress = address
@@ -4283,6 +4469,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             htReadyAt = 0L
             htDisconnectedAt = 0L
             htUnexpectedDisconnect = false
+            htDisconnectStatus = null
             diagnosticLog.add(
                 SystemClock.elapsedRealtime(), DiagnosticSeverity.INFO,
                 "GATT_CONNECTED", "GATT verbunden: $address"
@@ -4304,7 +4491,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             reconnectAttempts = 0
             addLog(LogCategory.INFO, "Bereit: ${protocol.displayName}, MTU $mtu")
             if (::statusText.isInitialized) {
-                statusText.text = "Bereit: ${detectedModel.displayName} [${detectedConfidence.label}] (${protocol.displayName})"
+                // PHASE 16.3.2 (Teilziel D): NICHT mehr "Bereit: ..." — das las
+                // sich wie eine erfolgreiche Telemetrieverbindung. GATT steht,
+                // ueber Datenverkehr ist damit noch NICHTS gesagt.
+                // PHASE 16.3.4: Geraetename und Modell getrennt nennen.
+                val modelLabel = DeviceDisplayLabels.modelLabel(detectedModel, detectedConfidence)
+                statusText.text = "Verbunden: ${currentDeviceName()} \u00b7 " +
+                    "$modelLabel (${protocol.displayName}) \u2014 Telemetrie wird gepr\u00fcft\u2026"
             }
             lastConnectFailed = false
             // PHASE 12.7 A: zuletzt verwendeten Scooter merken (kein Auto-Connect).
@@ -4319,9 +4512,19 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
     }
 
+    override fun onDisconnectStatus(status: Int) {
+        // PHASE 16.3.4: rohen Statuscode speichern (wird VOR onDisconnected
+        // aufgerufen). Keine Interpretation, nur unveraenderte Ablage.
+        runOnUiThread { htDisconnectStatus = status }
+    }
+
     override fun onDisconnected(unexpected: Boolean) {
         runOnUiThread {
             engineReady = false
+            // PHASE 16.3.2: Diagnose-Schnappschuss der alten Verbindung
+            // verwerfen, damit die Statuszeile nicht mit alten Telemetrie-
+            // Zaehlern weiterrechnet.
+            lastDiagSnapshot = null
             // PHASE 16.3.1: aktive Identitaet endet mit der Verbindung. Der
             // GATT-Cache bleibt nur als Historie, ist aber an KEINE aktive
             // Verbindung mehr gebunden (htGattAddress = null).
@@ -4333,11 +4536,19 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             disconnectCount++
             if (unexpected) lastConnectFailed = true
             refreshConnectionStage()
-            hardwareTest.recordError(
-                HardwareErrorKind.DISCONNECT,
-                if (unexpected) "Verbindung unerwartet getrennt." else "Verbindung getrennt.",
-                htDisconnectedAt
-            )
+            // PHASE 16.3.2 (belegter Defekt R6): Ein BEWUSSTES Trennen ist kein
+            // Fehler. Vorher wurde hier IMMER ein DISCONNECT-Fehler in den
+            // Hardware-Testbericht geschrieben — auch wenn der Nutzer selbst
+            // getrennt hat. Das blaehte die Fehlerzahl kuenstlich auf und machte
+            // den Bericht uninterpretierbar (Jaynos "10 Fehler").
+            // Ein Fehler wird nur noch bei UNERWARTETEM Abbruch erfasst.
+            if (unexpected) {
+                hardwareTest.recordError(
+                    HardwareErrorKind.DISCONNECT,
+                    "Verbindung unerwartet getrennt.",
+                    htDisconnectedAt
+                )
+            }
             linkState = linkState.transition(BleLinkEvent.DISCONNECTED)
             // PHASE 8.1 FIX (Sicherheitsaudit, Punkt 2): Eine laufende Not-Aus-Rampe
             // muss beim Verbindungsabbruch sauber beendet werden. Bisher lief sie
@@ -4396,11 +4607,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
     }
 
-    override fun onRawNotification(bytes: ByteArray) {
+    override fun onRawNotification(bytes: ByteArray, characteristicUuid: String?) {
         val hex = ScooterFrames.toHex(bytes)
         runOnUiThread {
+            // PHASE 16.3.4: Quell-UUID der Notification im Bericht mitschreiben.
             hardwareTest.recordFrame(
-                FrameDirection.RX, hex, SystemClock.elapsedRealtime(), "notification"
+                FrameDirection.RX, hex, SystemClock.elapsedRealtime(),
+                "notification", characteristicUuid
             )
         }
     }
@@ -4416,6 +4629,10 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
 
     /** Schreibt einen Diagnose-Schnappschuss in die "Telemetrie-Empfang"-Karte. */
     private fun applyTelemetryDiagnostics(s: TelemetryDiagnosticsSnapshot) {
+        // PHASE 16.3.2: letzten Diagnose-Schnappschuss merken, damit die
+        // Statuszeile zwischen "GATT verbunden" und "Telemetrie fliesst"
+        // unterscheiden kann (Auftrag Teilziel D).
+        lastDiagSnapshot = s
         diagRxNotifications?.text = "${s.notifications}"
         diagRxBytes?.text = "${s.bytes} B"
         diagRxLast?.text = s.lastRxAtMs?.let { ms ->

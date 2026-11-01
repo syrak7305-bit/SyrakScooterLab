@@ -83,7 +83,13 @@ data class FrameRecord(
     val direction: FrameDirection,
     val hex: String,
     val atMs: Long,
-    val label: String = ""
+    val label: String = "",
+    /**
+     * PHASE 16.3.4: UUID der Characteristic, auf der ein RX-Frame empfangen
+     * wurde (nur UUID, keine MAC, kein Roh-Frame). null bei TX oder wenn die
+     * Quelle unbekannt ist. Belegt, welcher Kanal tatsaechlich Daten liefert.
+     */
+    val characteristicUuid: String? = null
 )
 
 enum class HardwareErrorKind {
@@ -133,7 +139,13 @@ data class ConnectionRecord(
     val mtu: Int = 0,
     val protocol: String = "",
     val adapterId: String = "",
-    val disconnectUnexpected: Boolean = false
+    val disconnectUnexpected: Boolean = false,
+    /**
+     * PHASE 16.3.4: GATT-Disconnect-Statuscode aus onConnectionStateChange
+     * (0 = GATT_SUCCESS, sonst Fehlercode). null = kein Disconnect beobachtet.
+     * Wird unveraendert gespeichert; keine Interpretation/Umdeutung.
+     */
+    val disconnectStatus: Int? = null
 ) {
     /** Zeit von Verbindungsaufbau bis "ready" (Service-Discovery + MTU). */
     val readyLatencyMs: Long?
@@ -194,7 +206,13 @@ data class NotifyDiagnosticsRecord(
     val descriptorCallbackSuccess: Boolean = false,
     val notificationsReceived: Long = 0,
     val notifyActive: Boolean = false,
-    val issue: String? = null
+    val issue: String? = null,
+    /**
+     * PHASE 16.3.4: Empfangszähler je Characteristic-UUID. Leer, solange keine
+     * Notification mit bekannter UUID empfangen wurde. Belegt, WELCHER Kanal
+     * tatsaechlich Daten liefert \u2014 ohne eine Rolle zu unterstellen.
+     */
+    val notificationsByUuid: Map<String, Long> = emptyMap()
 ) {
     /** true NUR, wenn lokale UND entfernte Aktivierung belegt sind. */
     val chainComplete: Boolean
@@ -321,7 +339,8 @@ data class HardwareTestReport(
         append("    \"mtu\": ").append(connection.mtu).append(",\n")
         append("    \"protocol\": ").append(Json.quote(connection.protocol)).append(",\n")
         append("    \"adapterId\": ").append(Json.quote(connection.adapterId)).append(",\n")
-        append("    \"disconnectUnexpected\": ").append(connection.disconnectUnexpected).append("\n")
+        append("    \"disconnectUnexpected\": ").append(connection.disconnectUnexpected).append(",\n")
+        append("    \"disconnectStatus\": ").append(connection.disconnectStatus ?: "null").append("\n")
         append("  },\n")
 
         append("  \"identity\": ")
@@ -355,6 +374,12 @@ data class HardwareTestReport(
             append("    \"descriptorCallbackReceived\": ").append(nd.descriptorCallbackReceived).append(",\n")
             append("    \"descriptorCallbackSuccess\": ").append(nd.descriptorCallbackSuccess).append(",\n")
             append("    \"notificationsReceived\": ").append(nd.notificationsReceived).append(",\n")
+            append("    \"notificationsByUuid\": {")
+            nd.notificationsByUuid.entries.forEachIndexed { i, e ->
+                if (i > 0) append(", ")
+                append(Json.quote(e.key)).append(": ").append(e.value)
+            }
+            append("},\n")
             append("    \"notifyActive\": ").append(nd.notifyActive).append(",\n")
             append("    \"chainComplete\": ").append(nd.chainComplete).append(",\n")
             append("    \"issue\": ").append(Json.quoteOrNull(nd.issue)).append("\n")
@@ -402,6 +427,7 @@ data class HardwareTestReport(
             append(", \"hex\": ").append(Json.quote(f.hex))
             append(", \"atMs\": ").append(f.atMs)
             append(", \"label\": ").append(Json.quote(f.label))
+            append(", \"characteristicUuid\": ").append(Json.quoteOrNull(f.characteristicUuid))
             append("}")
         }
         append(if (frames.isEmpty()) "],\n" else "\n  ],\n")
@@ -476,6 +502,7 @@ data class HardwareTestReport(
         row("connection", "sessionDurationMs", connection.sessionDurationMs)
         row("connection", "mtu", connection.mtu)
         row("connection", "disconnectUnexpected", connection.disconnectUnexpected)
+        row("connection", "disconnectStatus", connection.disconnectStatus)
         identity?.let { id ->
             row("identity", "activeConnection", id.activeConnection)
             row("identity", "activeName", id.activeName)
@@ -495,6 +522,9 @@ data class HardwareTestReport(
             row("notify", "descriptorCallbackReceived", nd.descriptorCallbackReceived)
             row("notify", "descriptorCallbackSuccess", nd.descriptorCallbackSuccess)
             row("notify", "notificationsReceived", nd.notificationsReceived)
+            nd.notificationsByUuid.forEach { (uuid, count) ->
+                row("notify", "notificationsByUuid:$uuid", count)
+            }
             row("notify", "notifyActive", nd.notifyActive)
             row("notify", "chainComplete", nd.chainComplete)
             row("notify", "issue", nd.issue)
@@ -509,7 +539,7 @@ data class HardwareTestReport(
             }
         }
         frames.forEach { f ->
-            row("frame", f.direction.name, "${f.atMs}|${f.hex}|${f.label}")
+            row("frame", f.direction.name, "${f.atMs}|${f.hex}|${f.label}|${f.characteristicUuid ?: ""}")
         }
         errors.forEach { e ->
             row("error", e.kind.name, "${e.atMs}|${e.message}")
@@ -537,7 +567,8 @@ data class HardwareTestReport(
             "Verbindung: MTU ${connection.mtu} · ready-Latenz " +
                 "${connection.readyLatencyMs?.let { "$it ms" } ?: "—"} · " +
                 "Dauer ${connection.sessionDurationMs?.let { "$it ms" } ?: "—"}" +
-                if (connection.disconnectUnexpected) " · UNERWARTETER DISCONNECT" else ""
+                (if (connection.disconnectUnexpected) " · UNERWARTETER DISCONNECT" else "") +
+                (connection.disconnectStatus?.let { " · Status=$it" } ?: "")
         )
         identity?.let { id ->
             appendLine(
@@ -553,6 +584,13 @@ data class HardwareTestReport(
                     " \u00b7 callback=${if (nd.descriptorCallbackSuccess) "ok" else if (nd.descriptorCallbackReceived) "FEHLER" else "\u2014"}" +
                     " \u00b7 rx=${nd.notificationsReceived} \u00b7 Kette=${if (nd.chainComplete) "vollstaendig" else "unvollstaendig"}"
             )
+            if (nd.notificationsByUuid.isNotEmpty()) {
+                appendLine(
+                    "Notify je UUID: " + nd.notificationsByUuid.entries.joinToString(", ") {
+                        "${it.key}=${it.value}"
+                    }
+                )
+            }
         }
         appendLine("Scan-Treffer: ${scanResults.size}")
         appendLine("GATT: ${services.size} Services / ${services.sumOf { it.characteristics.size }} Characteristics")
@@ -590,9 +628,15 @@ class HardwareTestCollector(
     private val reads = ArrayDeque<ReadRecord>()
     private val rssi = ArrayDeque<RssiSample>()
 
-    fun recordFrame(direction: FrameDirection, hex: String, atMs: Long, label: String = "") {
+    fun recordFrame(
+        direction: FrameDirection,
+        hex: String,
+        atMs: Long,
+        label: String = "",
+        characteristicUuid: String? = null
+    ) {
         if (frames.size >= maxFrames) frames.removeFirst()
-        frames.addLast(FrameRecord(direction, hex, atMs, label))
+        frames.addLast(FrameRecord(direction, hex, atMs, label, characteristicUuid))
     }
 
     fun recordError(kind: HardwareErrorKind, message: String, atMs: Long) {
