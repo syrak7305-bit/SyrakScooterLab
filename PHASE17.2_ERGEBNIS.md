@@ -5,8 +5,8 @@
 **Basis-Branch:** `main`
 **Basis-Commit:** `e1be76693405dbe04e11458bf16bf70e04d16637`
 **Feature-Branch:** `feat/phase17.2-live-gatt-recognition`
-**Feature-Commit:** `FIXME_COMMIT`
-**Pull Request:** `FIXME_PR`
+**Feature-Commit:** `55cfc1e`
+**Pull Request:** `https://github.com/syrak7305-bit/SyrakScooterLab/pull/29`
 
 ---
 
@@ -298,14 +298,14 @@ Standardverhalten von AGP, keine Fehlermeldung.
 
 - Feature-Branch: `feat/phase17.2-live-gatt-recognition`
 - Basis: `e1be76693405dbe04e11458bf16bf70e04d16637` (`main`)
-- Feature-Commit: `FIXME_COMMIT`
+- Feature-Commit: `55cfc1e`
 - Kein direkter Commit auf `main`.
 
 ---
 
 ## 12. Pull Request (§12)
 
-`FIXME_PR`
+`https://github.com/syrak7305-bit/SyrakScooterLab/pull/29`
 
 ---
 

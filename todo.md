@@ -51,6 +51,6 @@
 
 ## 9. Git & Doku (§12, §13)
 - [x] Feature-Branch `feat/phase17.2-live-gatt-recognition`
-- [x] Commit + Push
-- [x] PR gegen `main`
+- [x] Commit `55cfc1e` + Push
+- [x] PR #29 gegen `main`
 - [x] `PHASE17.2_ERGEBNIS.md` (14-Punkte-Bericht)
