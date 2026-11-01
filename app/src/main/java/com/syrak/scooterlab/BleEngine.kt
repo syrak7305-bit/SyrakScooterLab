@@ -153,6 +153,14 @@ class BleEngine(
     @Volatile var adapter: ScooterProtocolAdapter = ProtocolAdapters.forProtocol(BleProtocol.NINEBOT)
         private set
 
+    /**
+     * PHASE 16.3: true, wenn [adapter] aus einem BEKANNTEN Service (FFE0/E003)
+     * abgeleitet wurde. false bedeutet: es ist nur der Default-Annahme-Adapter
+     * (Ninebot), es gibt KEINEN Beleg fuer das Protokoll. Die UI zeigt dann
+     * "(angenommen)" statt einer scheinbar bestaetigten Protokollangabe.
+     */
+    @Volatile private var adapterConfirmed = false
+
     /** Aktive Protokollfamilie (abgeleitet aus dem Adapter). */
     val protocol: BleProtocol get() = adapter.protocol
 
@@ -468,6 +476,9 @@ class BleEngine(
                         linkConnected = true
                         resetConnectionState()
                         listener.onConnected(g.device.address)
+                        // PHASE 16.3: sofort einen (leeren) Diagnose-Stand melden,
+                        // damit die UI nicht dauerhaft "—" zeigt.
+                        emitDiagnostics()
                         // FIX E: Rueckgabewert auswerten.
                         val started = try { g.discoverServices() } catch (_: Exception) { false }
                         if (!started) {
@@ -482,6 +493,7 @@ class BleEngine(
                         resetConnectionState()
                         failPendingWrites("disconnected")
                         listener.onDisconnected(status != BluetoothGatt.GATT_SUCCESS)
+                        emitDiagnostics()
                     }
                 }
             } catch (e: Exception) {
@@ -514,6 +526,7 @@ class BleEngine(
                 val naveeWrite = findChar(g, NAVEE_SERVICE, listOf(NAVEE_CHAR_WRITE, NAVEE_CHAR_WRITE_ALT))
                 if (naveeWrite != null) {
                     adapter = adapterForDiscovered(BleProtocol.NAVEE_BRIGHTWAY)
+                    adapterConfirmed = true
                     adapter.setUnlocked(false)
                     writeChar = naveeWrite.first
                     // FIX: Notify-Characteristic UNABHAENGIG vom Write-Characteristic waehlen.
@@ -530,6 +543,7 @@ class BleEngine(
                     val nbWrite = findChar(g, NINEBOT_SERVICE, listOf(NINEBOT_CHAR_WRITE, NINEBOT_CHAR_WRITE_ALT))
                     if (nbWrite != null) {
                         adapter = ProtocolAdapters.forProtocol(BleProtocol.NINEBOT)
+                        adapterConfirmed = true
                         writeChar = nbWrite.first
                         notifyChar = findNotifyChar(
                             g, NINEBOT_SERVICE,
@@ -542,12 +556,18 @@ class BleEngine(
                         val generic = firstWritable(g)
                         if (generic != null) {
                             writeChar = generic
+                            // PHASE 16.3: KEIN bekannter Service -> Adapter bleibt
+                            // Default-Annahme (Ninebot). Das ist KEIN Beleg fuer das
+                            // Protokoll; adapterConfirmed bleibt false.
+                            adapterConfirmed = false
                             val svc = generic.service?.uuid
                             notifyChar = if (svc != null) {
-                                findNotifyChar(g, svc, listOf(generic.uuid), generic)
+                                findNotifyChar(g, svc, listOf(generic.uuid), generic, searchAllServices = true)
                             } else generic
-                            listener.onLog("> gatt: kein bekanntes Service — generischer Write-Char ${generic.uuid}")
+                            listener.onLog("> gatt: kein bekanntes Service — generischer Write-Char ${generic.uuid} " +
+                                    "(Adapter '${adapter.id}' ist ANGENOMMEN, nicht belegt)")
                         } else {
+                            adapterConfirmed = false
                             listener.onLog("> gatt: KEIN writable Characteristic gefunden — Tuning nicht moeglich")
                         }
                     }
@@ -557,6 +577,12 @@ class BleEngine(
                 //     Damit laesst sich ein unbekanntes Geraet (z. B. GT3 Max mit
                 //     abweichendem Service) diagnostizieren, ohne UUIDs zu raten.
                 dumpGatt("Service-Discovery")
+
+                // PHASE 16.3: Discovery-Ergebnis fuer die Diagnose festhalten und
+                // sofort melden, damit die UI NICHT dauerhaft auf "—" stehen bleibt,
+                // auch wenn nie eine Notification eintrifft.
+                telemetryDiagnostics.recordDiscovery(adapterConfirmed)
+                emitDiagnostics()
 
                 // 1c) PHASE 16: lesbare Characteristics aus dem ECHTEN GATT-Baum
                 //     ermitteln. Das ist nur eine Bestandsaufnahme (Stufe 3),
@@ -664,9 +690,19 @@ class BleEngine(
         ) {
             if (!isCurrentGatt(g)) { closeStaleGatt(g); return }
             try {
-                if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
-                    notifyActive = true
-                    listener.onLog("> gatt: Notify real aktiv (CCCD-Descriptor-Write OK)")
+                if (descriptor.uuid == CCCD_UUID) {
+                    // PHASE 16.3: Ergebnis der CCCD-Aktivierung festhalten und
+                    // sofort melden (auch bei Fehler), damit die Diagnose den
+                    // Zustand "CCCD-Aktivierung fehlgeschlagen" kennt.
+                    telemetryDiagnostics.recordCccdResult(status)
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        notifyActive = true
+                        listener.onLog("> gatt: Notify real aktiv (CCCD-Descriptor-Write OK)")
+                    } else {
+                        notifyActive = false
+                        listener.onLog("> gatt: CCCD-Descriptor-Write FEHLGESCHLAGEN status=$status")
+                    }
+                    emitDiagnostics()
                 }
             } catch (e: Exception) {
                 listener.onLog("> gatt: Exception in onDescriptorWrite: ${e.message}")
@@ -759,7 +795,22 @@ class BleEngine(
             }
 
             // Notifications aktivieren (CCCD 0x2902)
+            // PHASE 16.3: Die gesamte Aktivierungs-Kette wird fuer die Diagnose
+            // festgehalten (Notify-Char gefunden? CCCD vorhanden? writeDescriptor
+            // angenommen?), damit die UI exakt zwischen den Fehlerzustaenden
+            // unterscheiden kann.
             val nChar = notifyChar
+            val anyNotifiable = g.services.any { svc ->
+                svc.characteristics.any { ch ->
+                    val p = ch.properties
+                    (p and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) ||
+                        (p and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0)
+                }
+            }
+            var cccdPresent = false
+            var cccdWriteRequested = false
+            var cccdWriteAccepted = false
+            var setupIssue: String? = null
             if (nChar != null) {
                 val props = nChar.properties
                 val canNotify = props and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
@@ -768,21 +819,38 @@ class BleEngine(
                     g.setCharacteristicNotification(nChar, true)
                     val cccd = nChar.getDescriptor(CCCD_UUID)
                     if (cccd != null) {
+                        cccdPresent = true
                         val enable = if (canIndicate && !canNotify)
                             BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
                         else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                         @Suppress("DEPRECATION")
                         cccd.value = enable
                         @Suppress("DEPRECATION")
-                        val ok = g.writeDescriptor(cccd)
-                        listener.onLog("> gatt: Notify aktiviert (CCCD 0x2902) — ok=$ok")
+                        cccdWriteRequested = true
+                        cccdWriteAccepted = try { g.writeDescriptor(cccd) } catch (_: Exception) { false }
+                        listener.onLog("> gatt: Notify aktiviert (CCCD 0x2902) — ok=$cccdWriteAccepted")
                     } else {
+                        setupIssue = "kein CCCD-Descriptor (0x2902) an ${nChar.uuid}"
                         listener.onLog("> gatt: kein CCCD-Descriptor an ${nChar.uuid} — Notify evtl. inaktiv")
                     }
                 } else {
+                    setupIssue = "Char ${nChar.uuid} unterstuetzt kein Notify/Indicate" +
+                        if (anyNotifiable) " (andere notifiable Char vorhanden, aber nicht gewaehlt)" else ""
                     listener.onLog("> gatt: Char ${nChar.uuid} unterstuetzt kein Notify/Indicate")
                 }
+            } else {
+                setupIssue = if (anyNotifiable) "keine Notify-Char ausgewaehlt" else "kein Notify-Char vorhanden"
+                listener.onLog("> gatt: kein Notify-Characteristic ermittelt")
             }
+            telemetryDiagnostics.recordNotifySetup(
+                notifyCharFound = anyNotifiable,
+                notifyCharUuid = nChar?.uuid?.toString() ?: "",
+                cccdPresent = cccdPresent,
+                cccdWriteRequested = cccdWriteRequested,
+                cccdWriteAccepted = cccdWriteAccepted,
+                issue = setupIssue
+            )
+            emitDiagnostics()
 
             // Unlock-Handshake (adapter-getrieben): Der Scooter gilt erst als
             // entsperrt, wenn der Handshake quittiert wurde. Vor jedem Tuning-Befehl
@@ -844,12 +912,17 @@ class BleEngine(
         g: BluetoothGatt,
         serviceUuid: UUID,
         preferredUuids: List<UUID>,
-        fallback: BluetoothGattCharacteristic?
+        fallback: BluetoothGattCharacteristic?,
+        searchAllServices: Boolean = false
     ): BluetoothGattCharacteristic? {
         val candidates = ArrayList<GattCharacteristicSelector.Candidate>()
         val byUuid = HashMap<String, BluetoothGattCharacteristic>()
         for (s: BluetoothGattService in g.services) {
-            if (s.uuid != serviceUuid) continue
+            // PHASE 16.3: Bei unbekanntem Service-Layout (generischer Zweig) im
+            // GESAMTEN GATT-Baum nach einer notifiable Characteristic suchen,
+            // statt nur im Service des Write-Characteristics. Sonst bleibt eine
+            // Notify-Char in einem zweiten Service unentdeckt.
+            if (!searchAllServices && s.uuid != serviceUuid) continue
             for (ch: BluetoothGattCharacteristic in s.characteristics) {
                 val p = ch.properties
                 val notifiable =
