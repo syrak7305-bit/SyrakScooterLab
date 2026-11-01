@@ -193,6 +193,8 @@ class BleEngine(
     }
 
     @Volatile private var notifyActive = false
+    /** PHASE 16.3.1: Rueckgabe von setCharacteristicNotification() — lokale Registrierung. */
+    @Volatile private var localNotifyRegistered = false
     @Volatile private var lastRxMillis = 0L
     @Volatile private var linkConnected = false
 
@@ -401,6 +403,7 @@ class BleEngine(
         naveeHandshakeSent = false
         adapter.setUnlocked(false)
         notifyActive = false
+        localNotifyRegistered = false
         lastRxMillis = 0L
         reassembler.reset()
         telemetryDiagnostics.reset()
@@ -695,9 +698,15 @@ class BleEngine(
                     // sofort melden (auch bei Fehler), damit die Diagnose den
                     // Zustand "CCCD-Aktivierung fehlgeschlagen" kennt.
                     telemetryDiagnostics.recordCccdResult(status)
-                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                    if (status == BluetoothGatt.GATT_SUCCESS && localNotifyRegistered) {
                         notifyActive = true
-                        listener.onLog("> gatt: Notify real aktiv (CCCD-Descriptor-Write OK)")
+                        listener.onLog("> gatt: Notify real aktiv (CCCD-Descriptor-Write OK, lokal registriert)")
+                    } else if (status == BluetoothGatt.GATT_SUCCESS) {
+                        // Descriptor-Write OK, aber die lokale Registrierung schlug fehl:
+                        // ohne lokale Registrierung kommen keine Notifications an.
+                        notifyActive = false
+                        listener.onLog("> gatt: CCCD-Write OK, aber lokale Notify-Registrierung " +
+                            "fehlgeschlagen — Notify bleibt inaktiv")
                     } else {
                         notifyActive = false
                         listener.onLog("> gatt: CCCD-Descriptor-Write FEHLGESCHLAGEN status=$status")
@@ -811,12 +820,25 @@ class BleEngine(
             var cccdWriteRequested = false
             var cccdWriteAccepted = false
             var setupIssue: String? = null
+            var localAttempted = false
+            var localRegistered = false
+            // PHASE 16.3.1: notifyCharFound beschreibt jetzt die AUSGEWAEHLTE
+            // Characteristic, nicht mehr "irgendeine notifiable im Baum".
+            var selectedNotifyCharFound = false
             if (nChar != null) {
                 val props = nChar.properties
                 val canNotify = props and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
                 val canIndicate = props and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
                 if (canNotify || canIndicate) {
-                    g.setCharacteristicNotification(nChar, true)
+                    selectedNotifyCharFound = true
+                    localAttempted = true
+                    localRegistered = try {
+                        g.setCharacteristicNotification(nChar, true)
+                    } catch (_: Exception) { false }
+                    if (!localRegistered) {
+                        listener.onLog("> gatt: setCharacteristicNotification(${nChar.uuid}) " +
+                            "lieferte FALSE — lokale Notify-Registrierung fehlgeschlagen")
+                    }
                     val cccd = nChar.getDescriptor(CCCD_UUID)
                     if (cccd != null) {
                         cccdPresent = true
@@ -842,13 +864,17 @@ class BleEngine(
                 setupIssue = if (anyNotifiable) "keine Notify-Char ausgewaehlt" else "kein Notify-Char vorhanden"
                 listener.onLog("> gatt: kein Notify-Characteristic ermittelt")
             }
+            localNotifyRegistered = localRegistered
             telemetryDiagnostics.recordNotifySetup(
-                notifyCharFound = anyNotifiable,
+                notifyCharFound = selectedNotifyCharFound,
                 notifyCharUuid = nChar?.uuid?.toString() ?: "",
                 cccdPresent = cccdPresent,
                 cccdWriteRequested = cccdWriteRequested,
                 cccdWriteAccepted = cccdWriteAccepted,
-                issue = setupIssue
+                issue = setupIssue,
+                localNotifyRegistrationAttempted = localAttempted,
+                localNotifyRegistered = localRegistered,
+                anyNotifiablePresent = anyNotifiable
             )
             emitDiagnostics()
 

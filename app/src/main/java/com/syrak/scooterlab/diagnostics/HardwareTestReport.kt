@@ -153,6 +153,106 @@ data class ConnectionRecord(
 }
 
 /**
+ * PHASE 16.3.1: strikt getrennte Geraeteidentitaet.
+ *
+ * [activeConnection] ist NUR true, wenn eine echte GATT-Verbindung besteht.
+ * Ein Scan-Treffer oder ein zuletzt genutztes Geraet ist KEINE aktive
+ * Verbindung. [lastUsed*] beschreibt ausschliesslich die letzte erfolgreiche
+ * Sitzung und wird nie als aktive Identitaet ausgegeben.
+ */
+data class DeviceIdentityRecord(
+    val activeConnection: Boolean = false,
+    val activeName: String? = null,
+    val activeAddress: String? = null,
+    val lastUsedName: String? = null,
+    val lastUsedAddress: String? = null
+)
+
+/**
+ * PHASE 16.3.1: vollstaendige Notify-Aktivierungs-Kette einer Verbindung.
+ *
+ * Die sieben Schritte sind bewusst getrennt:
+ *  1. lokale Registrierung versucht ([localRegistrationAttempted])
+ *  2. lokale Registrierung erfolgreich ([localRegistrationSucceeded])
+ *  3. CCCD vorhanden ([cccdPresent])
+ *  4. CCCD-Write angefordert ([cccdWriteRequested])
+ *  5. CCCD-Write lokal angenommen ([cccdWriteAccepted])
+ *  6. Descriptor-Callback empfangen ([descriptorCallbackReceived])
+ *  7. Descriptor-Callback erfolgreich ([descriptorCallbackSuccess])
+ * plus die tatsaechlich empfangenen Notifications ([notificationsReceived]).
+ */
+data class NotifyDiagnosticsRecord(
+    val selectedNotifyCharUuid: String = "",
+    val selectedNotifyCharFound: Boolean = false,
+    val anyNotifiablePresent: Boolean = false,
+    val localRegistrationAttempted: Boolean = false,
+    val localRegistrationSucceeded: Boolean = false,
+    val cccdPresent: Boolean = false,
+    val cccdWriteRequested: Boolean = false,
+    val cccdWriteAccepted: Boolean = false,
+    val descriptorCallbackReceived: Boolean = false,
+    val descriptorCallbackSuccess: Boolean = false,
+    val notificationsReceived: Long = 0,
+    val notifyActive: Boolean = false,
+    val issue: String? = null
+) {
+    /** true NUR, wenn lokale UND entfernte Aktivierung belegt sind. */
+    val chainComplete: Boolean
+        get() = localRegistrationSucceeded && cccdWriteAccepted && descriptorCallbackSuccess
+}
+
+/**
+ * PHASE 16.3.1: reine, testbare Aufloesung der Geraeteidentitaet.
+ *
+ * Ein Scan-Treffer darf NIEMALS als aktive GATT-Verbindung erscheinen. Die
+ * aktive Identitaet stammt ausschliesslich aus der realen Verbindung; fehlt
+ * sie, wird sie als unbekannt ("—") gekennzeichnet. Der GATT-Schnappschuss
+ * wird nur verwendet, wenn er zu DERSELBEN Adresse gehoert wie die aktive
+ * Verbindung.
+ */
+object HardwareReportIdentity {
+
+    const val UNKNOWN_ADDRESS = "—"
+
+    data class Inputs(
+        val activeAddress: String?,
+        val activeName: String?,
+        val connected: Boolean,
+        val lastUsedAddress: String?,
+        val lastUsedName: String?,
+        val cachedGattAddress: String?,
+        val hasCachedGatt: Boolean
+    )
+
+    data class Result(
+        val deviceName: String?,
+        val address: String,
+        val identity: DeviceIdentityRecord,
+        val useCachedGatt: Boolean
+    )
+
+    fun resolve(i: Inputs): Result {
+        val activeAddr = i.activeAddress?.takeIf { it.isNotBlank() && i.connected }
+        val activeName = if (activeAddr != null) i.activeName?.takeIf { it.isNotBlank() } else null
+        val identity = DeviceIdentityRecord(
+            activeConnection = activeAddr != null,
+            activeName = activeName,
+            activeAddress = activeAddr,
+            lastUsedName = i.lastUsedName?.takeIf { it.isNotBlank() },
+            lastUsedAddress = i.lastUsedAddress?.takeIf { it.isNotBlank() }
+        )
+        val useGatt = activeAddr != null && i.hasCachedGatt &&
+            i.cachedGattAddress != null && i.cachedGattAddress == activeAddr
+        return Result(
+            deviceName = activeName,
+            address = activeAddr ?: UNKNOWN_ADDRESS,
+            identity = identity,
+            useCachedGatt = useGatt
+        )
+    }
+}
+
+/**
  * Vollstaendiger, exportierbarer Hardware-Testbericht einer Sitzung.
  *
  * @param readOnly true, wenn fuer dieses Geraet ausschliesslich gelesen wurde /
@@ -172,6 +272,10 @@ data class HardwareTestReport(
     val protocol: String,
     val adapterId: String,
     val connection: ConnectionRecord = ConnectionRecord(),
+    /** PHASE 16.3.1: aktive vs. zuletzt genutzte Identitaet (strikt getrennt). */
+    val identity: DeviceIdentityRecord? = null,
+    /** PHASE 16.3.1: vollstaendige Notify-Diagnose der aktuellen Verbindung. */
+    val notifyDiagnostics: NotifyDiagnosticsRecord? = null,
     val scanResults: List<ScanRecord> = emptyList(),
     val services: List<GattServiceRecord> = emptyList(),
     val frames: List<FrameRecord> = emptyList(),
@@ -219,6 +323,43 @@ data class HardwareTestReport(
         append("    \"adapterId\": ").append(Json.quote(connection.adapterId)).append(",\n")
         append("    \"disconnectUnexpected\": ").append(connection.disconnectUnexpected).append("\n")
         append("  },\n")
+
+        append("  \"identity\": ")
+        val id = identity
+        if (id == null) {
+            append("null,\n")
+        } else {
+            append("{\n")
+            append("    \"activeConnection\": ").append(id.activeConnection).append(",\n")
+            append("    \"activeName\": ").append(Json.quoteOrNull(id.activeName)).append(",\n")
+            append("    \"activeAddress\": ").append(Json.quoteOrNull(id.activeAddress)).append(",\n")
+            append("    \"lastUsedName\": ").append(Json.quoteOrNull(id.lastUsedName)).append(",\n")
+            append("    \"lastUsedAddress\": ").append(Json.quoteOrNull(id.lastUsedAddress)).append("\n")
+            append("  },\n")
+        }
+
+        append("  \"notifyDiagnostics\": ")
+        val nd = notifyDiagnostics
+        if (nd == null) {
+            append("null,\n")
+        } else {
+            append("{\n")
+            append("    \"selectedNotifyCharUuid\": ").append(Json.quote(nd.selectedNotifyCharUuid)).append(",\n")
+            append("    \"selectedNotifyCharFound\": ").append(nd.selectedNotifyCharFound).append(",\n")
+            append("    \"anyNotifiablePresent\": ").append(nd.anyNotifiablePresent).append(",\n")
+            append("    \"localRegistrationAttempted\": ").append(nd.localRegistrationAttempted).append(",\n")
+            append("    \"localRegistrationSucceeded\": ").append(nd.localRegistrationSucceeded).append(",\n")
+            append("    \"cccdPresent\": ").append(nd.cccdPresent).append(",\n")
+            append("    \"cccdWriteRequested\": ").append(nd.cccdWriteRequested).append(",\n")
+            append("    \"cccdWriteAccepted\": ").append(nd.cccdWriteAccepted).append(",\n")
+            append("    \"descriptorCallbackReceived\": ").append(nd.descriptorCallbackReceived).append(",\n")
+            append("    \"descriptorCallbackSuccess\": ").append(nd.descriptorCallbackSuccess).append(",\n")
+            append("    \"notificationsReceived\": ").append(nd.notificationsReceived).append(",\n")
+            append("    \"notifyActive\": ").append(nd.notifyActive).append(",\n")
+            append("    \"chainComplete\": ").append(nd.chainComplete).append(",\n")
+            append("    \"issue\": ").append(Json.quoteOrNull(nd.issue)).append("\n")
+            append("  },\n")
+        }
 
         append("  \"scanResults\": [")
         scanResults.forEachIndexed { i, s ->
@@ -335,6 +476,29 @@ data class HardwareTestReport(
         row("connection", "sessionDurationMs", connection.sessionDurationMs)
         row("connection", "mtu", connection.mtu)
         row("connection", "disconnectUnexpected", connection.disconnectUnexpected)
+        identity?.let { id ->
+            row("identity", "activeConnection", id.activeConnection)
+            row("identity", "activeName", id.activeName)
+            row("identity", "activeAddress", id.activeAddress)
+            row("identity", "lastUsedName", id.lastUsedName)
+            row("identity", "lastUsedAddress", id.lastUsedAddress)
+        }
+        notifyDiagnostics?.let { nd ->
+            row("notify", "selectedNotifyCharUuid", nd.selectedNotifyCharUuid)
+            row("notify", "selectedNotifyCharFound", nd.selectedNotifyCharFound)
+            row("notify", "anyNotifiablePresent", nd.anyNotifiablePresent)
+            row("notify", "localRegistrationAttempted", nd.localRegistrationAttempted)
+            row("notify", "localRegistrationSucceeded", nd.localRegistrationSucceeded)
+            row("notify", "cccdPresent", nd.cccdPresent)
+            row("notify", "cccdWriteRequested", nd.cccdWriteRequested)
+            row("notify", "cccdWriteAccepted", nd.cccdWriteAccepted)
+            row("notify", "descriptorCallbackReceived", nd.descriptorCallbackReceived)
+            row("notify", "descriptorCallbackSuccess", nd.descriptorCallbackSuccess)
+            row("notify", "notificationsReceived", nd.notificationsReceived)
+            row("notify", "notifyActive", nd.notifyActive)
+            row("notify", "chainComplete", nd.chainComplete)
+            row("notify", "issue", nd.issue)
+        }
         scanResults.forEach { s ->
             row("scan", "device", "${s.address}|${s.name ?: ""}|rssi=${s.rssi}|brand=${s.brand}|model=${s.detectedModel}|conf=${s.confidence}|seen=${s.seenCount}")
         }
@@ -375,6 +539,21 @@ data class HardwareTestReport(
                 "Dauer ${connection.sessionDurationMs?.let { "$it ms" } ?: "—"}" +
                 if (connection.disconnectUnexpected) " · UNERWARTETER DISCONNECT" else ""
         )
+        identity?.let { id ->
+            appendLine(
+                "Identitaet: aktiv=${if (id.activeConnection) (id.activeAddress ?: "\u2014") else "unbekannt"}" +
+                    " \u00b7 zuletzt=${id.lastUsedAddress ?: "\u2014"}"
+            )
+        }
+        notifyDiagnostics?.let { nd ->
+            appendLine(
+                "Notify: lokal=${if (nd.localRegistrationSucceeded) "ok" else if (nd.localRegistrationAttempted) "FEHLER" else "\u2014"}" +
+                    " \u00b7 CCCD=${if (nd.cccdPresent) "vorhanden" else "fehlt"}" +
+                    " \u00b7 write=${if (nd.cccdWriteAccepted) "ok" else if (nd.cccdWriteRequested) "abgelehnt" else "\u2014"}" +
+                    " \u00b7 callback=${if (nd.descriptorCallbackSuccess) "ok" else if (nd.descriptorCallbackReceived) "FEHLER" else "\u2014"}" +
+                    " \u00b7 rx=${nd.notificationsReceived} \u00b7 Kette=${if (nd.chainComplete) "vollstaendig" else "unvollstaendig"}"
+            )
+        }
         appendLine("Scan-Treffer: ${scanResults.size}")
         appendLine("GATT: ${services.size} Services / ${services.sumOf { it.characteristics.size }} Characteristics")
         appendLine("Frames: ${frames.size} (TX ${frames.count { it.direction == FrameDirection.TX }}, RX ${frames.count { it.direction == FrameDirection.RX }})")
