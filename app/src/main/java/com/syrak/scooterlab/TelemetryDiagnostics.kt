@@ -56,6 +56,12 @@ data class TelemetryDiagnosticsSnapshot(
     val notifications: Long = 0,
     val bytes: Long = 0,
     val lastRxAtMs: Long? = null,
+    /**
+     * PHASE 16.3.4: Empfangszähler je Characteristic-UUID. Leer, solange keine
+     * Notification mit bekannter UUID empfangen wurde. Belegt, welcher Kanal
+     * tatsaechlich Daten liefert — ohne eine Rolle zu unterstellen.
+     */
+    val notificationsByUuid: Map<String, Long> = emptyMap(),
     val framesDetected: Long = 0,
     val invalidFrames: Long = 0,
     val decodeSuccess: Long = 0,
@@ -109,6 +115,13 @@ data class TelemetryDiagnosticsSnapshot(
         if (activeAdapter.isNotBlank() && !adapterConfirmed) append(" (angenommen)")
         append(" \u00b7 Notify=").append(if (notifyActive) "aktiv" else "inaktiv")
         if (notifyCharUuid.isNotBlank()) append(" \u00b7 NotifyChar=").append(notifyCharUuid)
+        // PHASE 16.3.4: belegbarer Empfang je Characteristic-UUID.
+        if (notificationsByUuid.isNotEmpty()) {
+            append(" \u00b7 rx/Char=")
+            append(
+                notificationsByUuid.entries.joinToString(", ") { "${it.key}=${it.value}" }
+            )
+        }
         append(" \u00b7 CCCD=").append(
             when {
                 cccdWriteStatus != null && cccdWriteStatus != TelemetryDiagnostics.GATT_SUCCESS ->
@@ -231,6 +244,14 @@ class TelemetryDiagnostics {
     private var notifications = 0L
     private var bytes = 0L
     private var lastRxAtMs: Long? = null
+
+    /**
+     * PHASE 16.3.4: Empfangszähler JE Characteristic-UUID.
+     *
+     * Damit ist belegbar, WELCHE Characteristic die Daten tatsaechlich liefert.
+     * Es wird ausschliesslich die UUID gespeichert (kein Roh-Frame, keine MAC).
+     */
+    private val notificationsByUuid = LinkedHashMap<String, Long>()
     private var framesDetected = 0L
     private var invalidFrames = 0L
     private var decodeSuccess = 0L
@@ -253,11 +274,21 @@ class TelemetryDiagnostics {
     private var descriptorCallbackReceived = false
     private var descriptorCallbackSuccess = false
 
+    /**
+     * PHASE 16.3.4: [characteristicUuid] ist die UUID der Characteristic, auf der
+     * die Notification tatsaechlich ankam. Sie wird pro UUID mitgezaehlt, damit
+     * der Bericht belegen kann, welcher Kanal Daten liefert. Der Parameter ist
+     * optional, damit bestehende Aufrufer/Tests unveraendert bleiben.
+     */
     @Synchronized
-    fun recordChunk(byteCount: Int, atMs: Long) {
+    fun recordChunk(byteCount: Int, atMs: Long, characteristicUuid: String? = null) {
         notifications += 1
         if (byteCount > 0) bytes += byteCount
         lastRxAtMs = atMs
+        val uuid = characteristicUuid?.trim()
+        if (!uuid.isNullOrEmpty()) {
+            notificationsByUuid[uuid] = (notificationsByUuid[uuid] ?: 0L) + 1L
+        }
     }
 
     @Synchronized
@@ -331,6 +362,7 @@ class TelemetryDiagnostics {
         decodeSuccess = 0L
         decodeFailure = 0L
         lastError = null
+        notificationsByUuid.clear()
         adapterConfirmed = false
         discoveryDone = false
         notifyCharFound = false
@@ -357,6 +389,7 @@ class TelemetryDiagnostics {
         notifications = notifications,
         bytes = bytes,
         lastRxAtMs = lastRxAtMs,
+        notificationsByUuid = LinkedHashMap(notificationsByUuid),
         framesDetected = framesDetected,
         invalidFrames = invalidFrames,
         decodeSuccess = decodeSuccess,
