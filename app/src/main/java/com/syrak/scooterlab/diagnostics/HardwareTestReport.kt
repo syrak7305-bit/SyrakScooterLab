@@ -529,7 +529,27 @@ data class HardwareTestReport(
             append("      \"stillMissing\": ").append(Json.stringArray(rec.stillMissing)).append(",\n")
             append("      \"scanObservedAtMs\": ").append(rec.scanObservedAtMs ?: "null").append(",\n")
             append("      \"gattObservedAtMs\": ").append(rec.gattObservedAtMs ?: "null").append("\n")
-            append("    }\n")
+            append("    },\n")
+            // PHASE 17.3: getrennte Hardware-Validierung / Fingerprint-Qualitaet.
+            append("    \"hardwareValidation\": ")
+            val hv = rec.hardwareValidation
+            if (hv == null) {
+                append("null\n")
+            } else {
+                append("{\n")
+                append("      \"fingerprintId\": ").append(Json.quoteOrNull(hv.fingerprintId)).append(",\n")
+                append("      \"fingerprintModelName\": ").append(Json.quoteOrNull(hv.fingerprintModelName)).append(",\n")
+                append("      \"declaredStatus\": ").append(Json.quote(hv.declaredStatus)).append(",\n")
+                append("      \"maturity\": ").append(Json.quote(hv.maturity)).append(",\n")
+                append("      \"maturityConfirmed\": ").append(hv.maturityConfirmed).append(",\n")
+                append("      \"testCount\": ").append(hv.testCount).append(",\n")
+                append("      \"confirmingTestIds\": ").append(Json.stringArray(hv.confirmingTestIds)).append(",\n")
+                append("      \"contradictoryTestIds\": ").append(Json.stringArray(hv.contradictoryTestIds)).append(",\n")
+                append("      \"missingEvidence\": ").append(Json.stringArray(hv.missingEvidence)).append(",\n")
+                append("      \"deviations\": ").append(Json.stringArray(hv.deviations)).append(",\n")
+                append("      \"upgradePending\": ").append(hv.upgradePending).append("\n")
+                append("    }\n")
+            }
             append("  }\n")
         }
         append("}\n")
@@ -598,6 +618,19 @@ data class HardwareTestReport(
             row("recognition_compare", "stillMissing", rec.stillMissing.joinToString(";"))
             row("recognition_compare", "scanObservedAtMs", rec.scanObservedAtMs)
             row("recognition_compare", "gattObservedAtMs", rec.gattObservedAtMs)
+            rec.hardwareValidation?.let { hv ->
+                row("hardware_validation", "fingerprintId", hv.fingerprintId)
+                row("hardware_validation", "fingerprintModelName", hv.fingerprintModelName)
+                row("hardware_validation", "declaredStatus", hv.declaredStatus)
+                row("hardware_validation", "maturity", hv.maturity)
+                row("hardware_validation", "maturityConfirmed", hv.maturityConfirmed)
+                row("hardware_validation", "testCount", hv.testCount)
+                row("hardware_validation", "confirmingTestIds", hv.confirmingTestIds.joinToString(";"))
+                row("hardware_validation", "contradictoryTestIds", hv.contradictoryTestIds.joinToString(";"))
+                row("hardware_validation", "missingEvidence", hv.missingEvidence.joinToString(";"))
+                row("hardware_validation", "deviations", hv.deviations.joinToString(";"))
+                row("hardware_validation", "upgradePending", hv.upgradePending)
+            }
         }
         row("connection", "connectedAtMs", connection.connectedAtMs)
         row("connection", "readyAtMs", connection.readyAtMs)
