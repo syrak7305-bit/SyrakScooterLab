@@ -17,6 +17,7 @@ import android.os.SystemClock
 import com.syrak.scooterlab.diagnostics.GattCharacteristicRecord
 import com.syrak.scooterlab.diagnostics.GattProperty
 import com.syrak.scooterlab.diagnostics.GattServiceRecord
+import com.syrak.scooterlab.recognition.GattDiscoveryStatus
 import java.util.UUID
 
 /* ============================================================================
@@ -163,6 +164,19 @@ class BleEngine(
      * sobald die neue GATT aktiv ist — auch beim Reconnect auf DASSELBE Geraet.
      */
     @Volatile private var connectionGeneration = 0
+
+    /**
+     * PHASE 17.2: echter Status der GATT-Service-Discovery der AKTUELLEN
+     * Verbindung. Wird ausschliesslich aus tatsaechlichen Callbacks gesetzt.
+     * Ein leerer Snapshot gilt NICHT automatisch als COMPLETE.
+     */
+    @Volatile private var discoveryStatus: GattDiscoveryStatus = GattDiscoveryStatus.NOT_ATTEMPTED
+
+    /** PHASE 17.2: Rohtext des Discovery-Fehlers (null = keiner). */
+    @Volatile private var discoveryError: String? = null
+
+    /** PHASE 17.2: Generation, zu der [discoveryStatus] gehoert. */
+    @Volatile private var discoveryGeneration = -1
 
     /** Der aktive Protokoll-Adapter. Wird bei der Service-Discovery gesetzt. */
     @Volatile var adapter: ScooterProtocolAdapter = ProtocolAdapters.forProtocol(BleProtocol.NINEBOT)
@@ -505,6 +519,10 @@ class BleEngine(
                         listener.onLog("> link: CONNECTED ${g.device.address} — discoverServices()")
                         linkConnected = true
                         resetConnectionState()
+                        // PHASE 17.2: neue Verbindung -> Discovery-Status zuruecksetzen.
+                        discoveryStatus = GattDiscoveryStatus.NOT_ATTEMPTED
+                        discoveryError = null
+                        discoveryGeneration = connectionGeneration
                         listener.onConnected(g.device.address)
                         // PHASE 16.3: sofort einen (leeren) Diagnose-Stand melden,
                         // damit die UI nicht dauerhaft "—" zeigt.
@@ -550,11 +568,28 @@ class BleEngine(
                     // onConnectionStateChange). Der Connect-Timeout bleibt als
                     // Sicherheitsnetz weiterhin scharf.
                     listener.onLog("> gatt: Service-Discovery FEHLGESCHLAGEN status=$status \u2014 Verbindung wird abgebrochen")
+                    // PHASE 17.2: Fehlschlag explizit festhalten. Er darf NIE als
+                    // "keine Services vorhanden" oder als unbekanntes Profil gelten.
+                    discoveryStatus = GattDiscoveryStatus.FAILED
+                    discoveryError = "Service-Discovery fehlgeschlagen (status=$status)"
+                    discoveryGeneration = connectionGeneration
                     failPendingWrites("service discovery failed")
                     listener.onDisconnected(true)
                     return
                 }
                 listener.onLog("> gatt: ${g.services.size} Services gefunden")
+
+                // PHASE 17.2: Ein erfolgreicher Callback mit LEEREM Service-Baum ist
+                // kein vollstaendiger Fingerprint -> INCOMPLETE, nicht COMPLETE.
+                discoveryStatus = if (g.services.isNullOrEmpty()) {
+                    GattDiscoveryStatus.INCOMPLETE
+                } else {
+                    GattDiscoveryStatus.COMPLETE
+                }
+                discoveryError = if (g.services.isNullOrEmpty()) {
+                    "Discovery erfolgreich, aber keine Services gemeldet"
+                } else null
+                discoveryGeneration = connectionGeneration
 
                 // 1) Protokoll anhand vorhandener Services bestimmen + Adapter setzen
                 val naveeWrite = findChar(g, NAVEE_SERVICE, listOf(NAVEE_CHAR_WRITE, NAVEE_CHAR_WRITE_ALT))
@@ -1108,6 +1143,25 @@ class BleEngine(
         } catch (e: Exception) {
             listener.onLog("> gatt-dump: Exception: ${e.message}")
         }
+    }
+
+    /**
+     * PHASE 17.2: Momentaufnahme der AKTUELLEN GATT-Instanz inklusive echtem
+     * Discovery-Status. Wird nur geliefert, wenn eine GATT-Instanz existiert.
+     * Der Aufrufer MUSS [address] und [generation] gegen seine eigene
+     * Verbindungsidentitaet pruefen, bevor er die Daten verwendet.
+     */
+    fun liveGattSnapshot(): GattLiveSnapshot? {
+        val g = synchronized(writeLock) { gatt } ?: return null
+        val address = try { g.device.address } catch (_: Exception) { return null }
+        return GattLiveSnapshot(
+            address = address,
+            generation = connectionGeneration,
+            services = gattSnapshot(),
+            discoveryStatus = discoveryStatus,
+            discoveryError = discoveryError,
+            discoveryGeneration = discoveryGeneration
+        )
     }
 
     /**
@@ -1676,4 +1730,49 @@ class BleEngine(
 
     private fun hexOf(frame: ByteArray) =
         frame.joinToString(" ") { "%02X".format(it) }
+}
+
+/**
+ * PHASE 17.2 — Momentaufnahme der aktiven GATT-Instanz.
+ *
+ * Enthaelt ausschliesslich tatsaechlich gemeldete Daten. [discoveryStatus]
+ * stammt aus echten Discovery-Callbacks; ein leerer [services]-Baum ist
+ * ausdruecklich NICHT gleichbedeutend mit einer erfolgreichen Discovery.
+ *
+ * [generation] und [discoveryGeneration] erlauben dem Aufrufer zu erkennen,
+ * ob die Daten zu seiner aktuellen Verbindung gehoeren (Schutz vor spaeten
+ * Callbacks einer alten Verbindung).
+ */
+data class GattLiveSnapshot(
+    val address: String,
+    val generation: Int,
+    val services: List<GattServiceRecord>,
+    val discoveryStatus: GattDiscoveryStatus,
+    val discoveryError: String?,
+    val discoveryGeneration: Int
+) {
+    /**
+     * true, wenn der Discovery-Status zu DIESER Verbindungsgeneration gehoert.
+     * Ein spaeter Callback einer alten Verbindung darf keinen Status liefern.
+     */
+    val discoveryIsFresh: Boolean get() = discoveryGeneration == generation
+
+    /**
+     * Discovery-Status, der fuer die Erkennung gelten darf. Nicht-frische
+     * Daten gelten ausdruecklich als NICHT VERSUCHT (keine positive Evidenz).
+     */
+    val effectiveDiscoveryStatus: GattDiscoveryStatus
+        get() = if (discoveryIsFresh) discoveryStatus else GattDiscoveryStatus.NOT_ATTEMPTED
+
+    /** Fehlertext nur, wenn er zur aktuellen Verbindung gehoert. */
+    val effectiveDiscoveryError: String?
+        get() = if (discoveryIsFresh) discoveryError else null
+
+    /** Services nur, wenn der Discovery-Status zur aktuellen Verbindung gehoert. */
+    val effectiveServices: List<GattServiceRecord>
+        get() = if (discoveryIsFresh) services else emptyList()
+
+    /** true, wenn der Snapshot zu [otherAddress] gehoert. */
+    fun matchesAddress(otherAddress: String?): Boolean =
+        otherAddress != null && address.equals(otherAddress, ignoreCase = true)
 }

@@ -64,8 +64,17 @@ enum class RecognitionConfidence {
             UNKNOWN -> "UNBEKANNT"
         }
 
-    /** Rang fuer deterministische Vergleiche (hoeher = staerker). */
-    val rank: Int get() = ordinal
+    /**
+     * Rang fuer deterministische Vergleiche (hoeher = staerker).
+     *
+     * PHASE 17.2: Bewusst NICHT [ordinal]. Die Deklarationsreihenfolge ist
+     * absteigend (CONFIRMED zuerst), [ordinal] waere also genau umgekehrt.
+     * Vorher fuehrte das dazu, dass die Engine beim Vergleich mehrerer
+     * Profile das SCHWAECHSTE waehlte und die Widerspruchsbegrenzung nie
+     * griff. [rank] ist jetzt monoton steigend mit der Aussagekraft:
+     * UNKNOWN=0, FAMILY_ONLY=1, PROBABLE=2, CONFIRMED=3.
+     */
+    val rank: Int get() = entries.size - 1 - ordinal
 }
 
 /**
@@ -175,6 +184,10 @@ enum class RecognitionReasonCode {
     GATT_PROPERTY_MATCH,
     GATT_INCOMPLETE,
     GATT_NOT_ATTEMPTED,
+    /** PHASE 17.2: GATT-Daten haben die Bewertung tatsaechlich gestuetzt. */
+    GATT_EVIDENCE_ADDED,
+    /** PHASE 17.2: GATT-Daten vorhanden, aber ohne belastbare Evidenz. */
+    GATT_NO_EVIDENCE,
     CONTRADICTION_BRAND,
     CONTRADICTION_SERVICE,
     CONTRADICTION_NAME,

@@ -1,73 +1,56 @@
-# PHASE 12 — TODO (Stand: abgeschlossen)
+# PHASE 17.2 — LIVE GATT RECOGNITION & DEVICE SESSION INTEGRATION
 
-## 0. Vorarbeiten
-- [x] Repository-Stand geprueft (PR #16 war noch OFFEN, CI gruen, gemerged -> main 5f82f5c)
-- [x] Branch `feat/phase12-professional-ui` erstellt
-- [x] Bestandsaufnahme: echte UI ist klassisches Android-View-Layout in `MainActivity`, nicht Compose
-- [x] Git-Historie nach verschwundenen Funktionen durchsucht (75 Commits, `git log -S`)
+## 1. Repository-Audit
+- [x] main-Commit, git status, offene PRs, CI verifizieren
+- [x] Phase-17.1-Implementierung lesen (Engine, Session, GattFeatures, Fingerprints)
+- [x] BleEngine, MainActivity, HardwareTestReport, Tests lesen
+- [x] Ist-Bericht erstellen (`PHASE17.2_IST_BERICHT.md`)
 
-## 12.1 Wiederherstellung
-- [x] Vollstaendiger Haftungsausschluss (7 Abschnitte) aus Commit `2d7638e` wiederhergestellt
-- [x] Haftungsausschluss scrollbar, 6-s-Bestaetigungssperre, Persistenz (`disclaimersAccepted`)
-- [x] Trip-Timer wiederhergestellt (Live-Anzeige "Fahrtzeit", `TripClock`)
-- [x] Servo-Start: in der gesamten Historie NICHT vorhanden -> dokumentiert, nicht erfunden
-- [x] Laender-Hinweise mit Quelle + Stand (`CountryLegalCatalog`)
-- [x] Manuelle Landauswahl + neutraler Hinweis fuer unbekannte Laender
-- [x] Keine erfundenen Gesetze/Geschwindigkeitsgrenzen
+## 2. Live-GATT-Anbindung (§3)
+- [x] discoveryStatus / discoveryError / discoveryGeneration in BleEngine
+- [x] Status aus echten Callbacks (CONNECTED / onServicesDiscovered / Fehler)
+- [x] Leerer Snapshot = INCOMPLETE, nicht COMPLETE
+- [x] `liveGattSnapshot()` + `GattLiveSnapshot` mit Stale-/Adressprüfung
+- [x] `gattSnapshot()` und bestehende Diagnose unverändert
 
-## 12.2 Redesign
-- [x] Palette: Anthrazit + Cyan, Rot nur Gefahr, Gruen bestaetigt, Orange Warnung
-- [x] Buttons 44 dp, einheitliche Radien, Abstaende 8/16/24
-- [x] Monospace/tabellarische Messwerte
-- [x] Fuenf Tabs mit aktivem Label
+## 3. Session-Management (§5)
+- [x] Scan-Ergebnisse pro Adresse (`scanResults`)
+- [x] Getrennter Slot für aktive Verbindung (`activeResult`/`activeAddress`)
+- [x] Getrennte Historie (`lastActiveResult`/`lastActiveAddress`)
+- [x] `bindActive()` mit Adressprüfung, `archiveActive()`, `displayResult()`
+- [x] 17.1-Kompatibilität (`observe`, `current`, `hasResultFor`)
 
-## 12.3 Bluetooth
-- [x] Klassifikation bekannter/wahrscheinlicher Scooter, unbekannte getrennt
-- [x] Hersteller + Modell + Erkennungsguete, Signalstaerke als Balken + Text
-- [x] "Alle Geraete"-Umschalter, Herstellerfilter, Scan-Abbruch, Scan-Status
-- [x] Unbekanntes Geraet wird nicht als Scooter behandelt ("Mi Band 7"-Fix)
-- [x] Granulare Verbindungsstufen (`connectionStage()`)
+## 4. RecognitionEngine (§6)
+- [x] GATT nur bei COMPLETE als positive Evidenz
+- [x] `GATT_EVIDENCE_ADDED` / `GATT_NO_EVIDENCE`
+- [x] `RecognitionConfidence.rank` korrigiert (höher = stärker)
+- [x] Widersprüche begrenzen Konfidenz tatsächlich
+- [x] Keine Prozentwerte, Nutzerprofil bleibt getrennt
 
-## 12.4 BLE-Fehler
-- [x] Poll-Fehlerflut behoben (`PollGate`, `hasWriteCharacteristic()`, stille Polls)
-- [x] Polling stoppt bei fehlenden Voraussetzungen und bei Disconnect
-- [x] GATT-Struktur mit Properties (R/W/N/I) in der UI
-- [x] RSSI/MTU/Dauer/Abbrueche/Fehler angezeigt
-- [x] Systemstatus-Kategorien (7 Zeilen mit OK/OFFEN)
-- [x] UUID-Widerspruch `BleConstants` vs. `BleEngine` dokumentiert (nicht geraten)
-- [x] JSON/CSV-Export erhalten
+## 5. UI (§7)
+- [x] SCAN-ERKENNUNG
+- [x] LIVE-HARDWARE-ERKENNUNG (inkl. Discovery-Status, Services, Fehler)
+- [x] ERGEBNISVERGLEICH (vor/nach, neue Evidenz, fehlend, Widerspruch)
+- [x] Hinweis bei fehlender GATT-Discovery, Historie-Kennzeichnung
 
-## 12.5 Cockpit
-- [x] Halbkreis-Tacho (`CockpitGaugeView`)
-- [x] Verlaufsgraphen (`SparklineView`), Min/Max
-- [x] "Nicht verfuegbar" statt Platzhalter, DEMO-Kennzeichnung
+## 6. Export (§8)
+- [x] RecognitionExport additiv erweitert
+- [x] HardwareTestReport JSON `comparison`
+- [x] HardwareTestReport CSV `recognition_compare`
+- [x] schemaVersion 1, MAC maskiert, keine Seriennummer
 
-## 12.6 Tools
-- [x] Alle Slider/Schalter erhalten, Min/Max-Zeile, Einheit in einer Zeile
-- [x] Fahrprofile als kompaktes Segmented Control
-- [x] Erweiterte Einstellungen ein-/ausklappbar
-- [x] Gefahr-Kennzeichnung
-- [x] Polizei-Modus: ein Tap, Voraussetzungen geprueft, kein Erfolgston ohne Freigabe
+## 7. Tests (§9)
+- [x] 27 neue Tests, alle 20 Szenarien abgedeckt
+- [x] Phase171RecognitionTest unverändert grün
+- [x] Kein Test entfernt oder übersprungen
 
-## 12.7 Verbesserungen
-- [x] A: Schnellzugriff auf zuletzt verwendeten Scooter (kein Auto-Connect)
-- [x] B: Diagnose-Historie lokal + Vergleich zweier Berichte
-- [x] C: Verbindungsqualitaet (Signal, MTU, Dauer, Abbrueche, Instabilitaetshinweis)
-- [x] D: Systemstatus-Uebersicht
-- [x] E: Onboarding beim ersten Start (ersetzt den Haftungsausschluss nicht)
-- [x] F: Barrierefreiheit (Statuswort statt nur Farbe, grosse Touch-Ziele)
+## 8. Build & QA (§11)
+- [x] `./gradlew testDebugUnitTest --offline` → 573 Tests, 0 Fehler, 0 skipped
+- [x] `./gradlew assembleDebug --offline` → BUILD SUCCESSFUL, 19.251.428 Bytes
+- [x] Warnungen dokumentiert (1 vorbestehende Deprecation)
 
-## 12.8 Sicherheit
-- [x] `TuningSafetyGate`, `WriteGuard`, `AutoHandshakePolicy` unveraendert aktiv
-- [x] Read-only-Default fuer unbekannte Geraete erhalten
-
-## 12.9 Tests
-- [x] Unit-Tests fuer alle neuen Logikbausteine (`Phase12SupportTest`)
-- [x] Alle Unit-Tests: 268 Tests, 0 Fehler
-- [x] `assembleDebug` erfolgreich
-- [x] Regressionspruefung (bestehende Tests unveraendert gruen)
-
-## Abschluss
-- [x] `PHASE12_BERICHT.md` geschrieben
-- [x] Commit + Push auf `feat/phase12-professional-ui`
-- [x] PR erstellt
+## 9. Git & Doku (§12, §13)
+- [x] Feature-Branch `feat/phase17.2-live-gatt-recognition`
+- [x] Commit `55cfc1e` + Push
+- [x] PR #29 gegen `main`
+- [x] `PHASE17.2_ERGEBNIS.md` (14-Punkte-Bericht)

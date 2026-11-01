@@ -157,8 +157,15 @@ class RecognitionEngine(
         val advServices = adv?.specificServiceUuids.orEmpty().toSet()
         val advServiceData = adv?.specificServiceDataUuids.orEmpty().toSet()
         val advCompanyIds = adv?.manufacturerIds.orEmpty().toSet()
-        val gattServices = gatt?.specificServiceUuids.orEmpty().toSet()
-        val allServices = advServices + gattServices
+
+        // PHASE 17.2: GATT-Daten zaehlen NUR bei tatsaechlich vollstaendiger
+        // Discovery als positive Evidenz. Ein fehlgeschlagener oder
+        // unvollstaendiger Vorgang darf die Konfidenz niemals erhoehen.
+        val gattComplete = gatt != null && gatt.discoveryStatus == GattDiscoveryStatus.COMPLETE
+        val gattServicesRaw = gatt?.specificServiceUuids.orEmpty().toSet()
+        val gattServices = if (gattComplete) gattServicesRaw else emptySet()
+        val gattForScoring = if (gattComplete) gatt else null
+        val allServices = advServices + gattServicesRaw
 
         if (adv != null) {
             val genericCount = adv.serviceUuids.count { GenericUuids.isGeneric(it) }
@@ -270,7 +277,7 @@ class RecognitionEngine(
         val scores = mutableListOf<ProfileScore>()
         if (family != BrandFamily.UNKNOWN) {
             for (profile in database.all().filter { it.brandFamily == family }) {
-                scores += scoreProfile(profile, deviceName, nameBrand, advServices, advServiceData, advCompanyIds, gattServices, gatt)
+                scores += scoreProfile(profile, deviceName, nameBrand, advServices, advServiceData, advCompanyIds, gattServices, gattForScoring)
             }
         }
 
@@ -376,6 +383,27 @@ class RecognitionEngine(
             probableModel = null
             detectedModelFamily = null
             matchedProfileId = null
+        }
+
+        // PHASE 17.2: GATT-Beitrag ehrlich benennen (keine stille Aufwertung).
+        if (gatt != null && (gatt.hasAnyData || gatt.discoveryStatus != GattDiscoveryStatus.NOT_ATTEMPTED)) {
+            val gattKinds = matchedFeatures.filter {
+                it.kind.startsWith("GATT_") && it.grade.countsTowardModel
+            }
+            when {
+                gattComplete && gattKinds.isNotEmpty() -> reasons += RecognitionReason(
+                    RecognitionReasonCode.GATT_EVIDENCE_ADDED,
+                    gattKinds.joinToString(",") { it.value }
+                )
+                else -> reasons += RecognitionReason(
+                    RecognitionReasonCode.GATT_NO_EVIDENCE,
+                    if (!gattComplete) {
+                        "Discovery ${gatt.discoveryStatus.displayName} \u2014 keine positive Evidenz"
+                    } else {
+                        "keine passenden GATT-Merkmale"
+                    }
+                )
+            }
         }
 
         val unknownFeatures = buildList {

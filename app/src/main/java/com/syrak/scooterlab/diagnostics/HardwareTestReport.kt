@@ -519,6 +519,16 @@ data class HardwareTestReport(
             append("      \"contradictoryFeatures\": ").append(Json.stringArray(rec.contradictoryFeatures)).append(",\n")
             append("      \"unknownFeatures\": ").append(Json.stringArray(rec.unknownFeatures)).append(",\n")
             append("      \"errors\": ").append(Json.stringArray(rec.errors)).append("\n")
+            append("    },\n")
+            // PHASE 17.2: getrennter Vergleich Scan -> GATT.
+            append("    \"comparison\": {\n")
+            append("      \"scanConfidence\": ").append(Json.quoteOrNull(rec.scanConfidence)).append(",\n")
+            append("      \"finalConfidence\": ").append(Json.quoteOrNull(rec.finalConfidence)).append(",\n")
+            append("      \"gattDiscoveryStatus\": ").append(Json.quote(rec.gattDiscoveryStatus)).append(",\n")
+            append("      \"gattEvidenceAdded\": ").append(Json.stringArray(rec.gattEvidenceAdded)).append(",\n")
+            append("      \"stillMissing\": ").append(Json.stringArray(rec.stillMissing)).append(",\n")
+            append("      \"scanObservedAtMs\": ").append(rec.scanObservedAtMs ?: "null").append(",\n")
+            append("      \"gattObservedAtMs\": ").append(rec.gattObservedAtMs ?: "null").append("\n")
             append("    }\n")
             append("  }\n")
         }
@@ -580,6 +590,14 @@ data class HardwareTestReport(
             row("recognition_reason", "contradictoryFeatures", rec.contradictoryFeatures.joinToString(";"))
             row("recognition_reason", "unknownFeatures", rec.unknownFeatures.joinToString(";"))
             row("recognition_reason", "errors", rec.errors.joinToString(";"))
+            // PHASE 17.2: Vergleich Scan -> GATT.
+            row("recognition_compare", "scanConfidence", rec.scanConfidence)
+            row("recognition_compare", "finalConfidence", rec.finalConfidence)
+            row("recognition_compare", "gattDiscoveryStatus", rec.gattDiscoveryStatus)
+            row("recognition_compare", "gattEvidenceAdded", rec.gattEvidenceAdded.joinToString(";"))
+            row("recognition_compare", "stillMissing", rec.stillMissing.joinToString(";"))
+            row("recognition_compare", "scanObservedAtMs", rec.scanObservedAtMs)
+            row("recognition_compare", "gattObservedAtMs", rec.gattObservedAtMs)
         }
         row("connection", "connectedAtMs", connection.connectedAtMs)
         row("connection", "readyAtMs", connection.readyAtMs)

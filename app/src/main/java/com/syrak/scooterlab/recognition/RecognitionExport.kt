@@ -49,14 +49,41 @@ data class RecognitionExport(
     val missingFeatures: List<String>,
     val contradictoryFeatures: List<String>,
     val unknownFeatures: List<String>,
-    val errors: List<String>
+    val errors: List<String>,
+    // --- PHASE 17.2: Vergleich Scan -> GATT (additiv, rueckwaertskompatibel) ---
+    /** Konfidenz des reinen Advertisement-Ergebnisses (vor GATT). */
+    val scanConfidence: String? = null,
+    /** Konfidenz des endgueltigen Ergebnisses (nach GATT). */
+    val finalConfidence: String? = null,
+    /** Merkmale, die erst durch die GATT-Discovery hinzukamen. */
+    val gattEvidenceAdded: List<String> = emptyList(),
+    /** Informationen, die auch nach GATT weiterhin fehlen. */
+    val stillMissing: List<String> = emptyList(),
+    /** Zeitpunkt des Advertisement-Ergebnisses (elapsedRealtime). */
+    val scanObservedAtMs: Long? = null,
+    /** Zeitpunkt des GATT-Ergebnisses (elapsedRealtime). */
+    val gattObservedAtMs: Long? = null
 ) {
     companion object {
 
         /** Baut den Exportblock aus einem Ergebnis und dem Nutzerprofil. */
-        fun from(result: RecognitionResult, profile: RiderScooterProfile?): RecognitionExport {
+        fun from(
+            result: RecognitionResult,
+            profile: RiderScooterProfile?,
+            scanResult: RecognitionResult? = null,
+            scanObservedAtMs: Long? = null,
+            gattObservedAtMs: Long? = null
+        ): RecognitionExport {
             val adv = result.advertisement
             val gatt = result.gatt
+            // PHASE 17.2: Nur GATT-Merkmale, die im reinen Scan-Ergebnis noch
+            // nicht vorhanden waren, gelten als neu hinzugekommene Evidenz.
+            val scanLabels = scanResult?.matchedFeatures?.map { it.label() }?.toSet().orEmpty()
+            val gattAdded = result.matchedFeatures
+                .filter { it.kind.startsWith("GATT_") }
+                .map { it.label() }
+                .filterNot { it in scanLabels }
+                .distinct()
             return RecognitionExport(
                 userProfileBrand = profile?.brand?.displayName ?: "—",
                 userProfileModel = when {
@@ -91,7 +118,13 @@ data class RecognitionExport(
                 missingFeatures = result.missingFeatures,
                 contradictoryFeatures = result.contradictoryFeatures,
                 unknownFeatures = result.unknownFeatures,
-                errors = gatt?.errors.orEmpty()
+                errors = gatt?.errors.orEmpty(),
+                scanConfidence = scanResult?.confidence?.name,
+                finalConfidence = result.confidence.name,
+                gattEvidenceAdded = gattAdded,
+                stillMissing = result.missingFeatures,
+                scanObservedAtMs = scanObservedAtMs,
+                gattObservedAtMs = gattObservedAtMs
             )
         }
 
