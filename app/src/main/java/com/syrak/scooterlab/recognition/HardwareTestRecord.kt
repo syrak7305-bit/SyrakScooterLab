@@ -174,14 +174,14 @@ data class HardwareTestRecord(
     val observedRecognition: HardwareRecognitionSnapshot? = null,
     val notes: String? = null
 ) {
-    /** true, wenn [testDate] ein plausibles ISO-Datum ist. */
+    /**
+     * true, wenn [testDate] ein echtes Kalenderdatum im Format `yyyy-MM-dd` ist.
+     *
+     * PHASE 17.4: Die fruehere Pruefung (Monat 1..12, Tag 1..31) akzeptierte
+     * unmoegliche Tage wie 2026-02-31. Jetzt wird gegen [IsoDate] geprueft.
+     */
     val hasValidTestDate: Boolean
-        get() {
-            val m = ISO_DATE.matchEntire(testDate.trim()) ?: return false
-            val month = m.groupValues[2].toIntOrNull() ?: return false
-            val day = m.groupValues[3].toIntOrNull() ?: return false
-            return month in 1..12 && day in 1..31
-        }
+        get() = IsoDate.isValid(testDate)
 
     /** Welche Pflichtangaben fehlen, um diesen Test als Beleg zu verwerten. */
     val missingFields: List<String>
@@ -196,10 +196,6 @@ data class HardwareTestRecord(
 
     /** Nur vollstaendige Datensaetze koennen einen Fingerprint bestaetigen. */
     val isComplete: Boolean get() = missingFields.isEmpty()
-
-    companion object {
-        private val ISO_DATE = Regex("""^(\d{4})-(\d{2})-(\d{2})$""")
-    }
 }
 
 /**
