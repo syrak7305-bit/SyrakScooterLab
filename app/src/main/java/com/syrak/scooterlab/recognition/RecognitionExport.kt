@@ -62,7 +62,10 @@ data class RecognitionExport(
     /** Zeitpunkt des Advertisement-Ergebnisses (elapsedRealtime). */
     val scanObservedAtMs: Long? = null,
     /** Zeitpunkt des GATT-Ergebnisses (elapsedRealtime). */
-    val gattObservedAtMs: Long? = null
+    val gattObservedAtMs: Long? = null,
+    // --- PHASE 17.3: Hardware-Validierung / Fingerprint-Qualitaet (additiv) ---
+    /** Berechneter Fingerprint-Reifegrad und Testbelege; null = kein Bezug. */
+    val hardwareValidation: HardwareValidationExport? = null
 ) {
     companion object {
 
@@ -72,7 +75,8 @@ data class RecognitionExport(
             profile: RiderScooterProfile?,
             scanResult: RecognitionResult? = null,
             scanObservedAtMs: Long? = null,
-            gattObservedAtMs: Long? = null
+            gattObservedAtMs: Long? = null,
+            hardwareValidation: HardwareValidationExport? = null
         ): RecognitionExport {
             val adv = result.advertisement
             val gatt = result.gatt
@@ -124,7 +128,8 @@ data class RecognitionExport(
                 gattEvidenceAdded = gattAdded,
                 stillMissing = result.missingFeatures,
                 scanObservedAtMs = scanObservedAtMs,
-                gattObservedAtMs = gattObservedAtMs
+                gattObservedAtMs = gattObservedAtMs,
+                hardwareValidation = hardwareValidation
             )
         }
 
@@ -138,5 +143,55 @@ data class RecognitionExport(
             if (parts.size != 6) return "—"
             return "${parts[0]}:${parts[1]}:**:**:${parts[4]}:${parts[5]}"
         }
+    }
+}
+
+/* ============================================================================
+ *  PHASE 17.3 — HARDWARE-VALIDIERUNGS-EXPORT (additiv)
+ *  ---------------------------------------------------------------------------
+ *  Trennt sichtbar:
+ *   • deklarierter Teststatus des Profils (declaredStatus),
+ *   • aus Testbelegen berechneter Reifegrad (maturity).
+ *  Es werden KEINE Roh-MACs und KEINE Seriennummern exportiert.
+ * ==========================================================================*/
+data class HardwareValidationExport(
+    val fingerprintId: String?,
+    val fingerprintModelName: String?,
+    val declaredStatus: String,
+    val maturity: String,
+    val maturityConfirmed: Boolean,
+    val testCount: Int,
+    val confirmingTestIds: List<String> = emptyList(),
+    val contradictoryTestIds: List<String> = emptyList(),
+    val missingEvidence: List<String> = emptyList(),
+    val deviations: List<String> = emptyList(),
+    val upgradePending: Boolean = false
+) {
+    companion object {
+        /** Baut den Block aus einem Qualitaetsbericht. */
+        fun from(report: FingerprintQualityReport): HardwareValidationExport =
+            HardwareValidationExport(
+                fingerprintId = report.fingerprintId,
+                fingerprintModelName = report.modelName,
+                declaredStatus = report.declaredStatus.name,
+                maturity = report.maturity.name,
+                maturityConfirmed = report.maturity.isHardwareConfirmed,
+                testCount = report.testCount,
+                confirmingTestIds = report.confirmingTestIds,
+                contradictoryTestIds = report.contradictoryTestIds,
+                missingEvidence = report.missingEvidence,
+                deviations = report.deviations.map { it.label() },
+                upgradePending = report.upgradePending
+            )
+
+        /** Explizit "keine Hardware-Validierung vorhanden". */
+        fun none(): HardwareValidationExport = HardwareValidationExport(
+            fingerprintId = null,
+            fingerprintModelName = null,
+            declaredStatus = HardwareTestStatus.NOT_TESTED.name,
+            maturity = FingerprintMaturity.DOCUMENTED.name,
+            maturityConfirmed = false,
+            testCount = 0
+        )
     }
 }

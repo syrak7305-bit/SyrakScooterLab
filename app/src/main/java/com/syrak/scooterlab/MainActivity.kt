@@ -62,8 +62,14 @@ import com.syrak.scooterlab.diagnostics.HardwareReportIdentity
 import com.syrak.scooterlab.diagnostics.NotifyDiagnosticsRecord
 import com.syrak.scooterlab.diagnostics.ScanRecord
 import com.syrak.scooterlab.recognition.AdvertisementFeatures
+import com.syrak.scooterlab.recognition.BuiltInModelFingerprints
+import com.syrak.scooterlab.recognition.FingerprintMaturity
+import com.syrak.scooterlab.recognition.FingerprintQualityAudit
+import com.syrak.scooterlab.recognition.FingerprintQualityReport
 import com.syrak.scooterlab.recognition.GattDiscoveryStatus
 import com.syrak.scooterlab.recognition.GattFeatures
+import com.syrak.scooterlab.recognition.HardwareTestRegistry
+import com.syrak.scooterlab.recognition.HardwareValidationExport
 import com.syrak.scooterlab.recognition.RecognitionConfidence
 import com.syrak.scooterlab.recognition.RecognitionEngine
 import com.syrak.scooterlab.recognition.RecognitionExport
@@ -183,6 +189,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /** PHASE 17.2: Zeitpunkte der letzten Scan- bzw. GATT-Bewertung (Export). */
     private val recognitionScanObservedAt = mutableMapOf<String, Long>()
     private var recognitionGattObservedAtMs = 0L
+    /**
+     * PHASE 17.3: dokumentierte Hardware-Tests. Bewusst LEER — solange keine
+     * echten Geraetetests vorliegen, wird kein Fingerprint hochgestuft.
+     */
+    private val hardwareTestRegistry = HardwareTestRegistry.empty()
     // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
     // Geraete bleiben optional sichtbar (nicht verstecken).
     private var showAllDevices = false
@@ -1043,7 +1054,8 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                     profile = repository.riderScooterProfile,
                     scanResult = scan,
                     scanObservedAtMs = recognitionScanObservedAt[result.address],
-                    gattObservedAtMs = recognitionGattObservedAtMs.takeIf { it > 0 }
+                    gattObservedAtMs = recognitionGattObservedAtMs.takeIf { it > 0 },
+                    hardwareValidation = hardwareValidationFor(result)
                 )
             },
             notes = buildList {
@@ -2268,6 +2280,18 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         })
     }
 
+    /**
+     * PHASE 17.3: berechnet den Hardware-Validierungsblock fuer ein Ergebnis.
+     * Liefert null, wenn keinem Fingerprint zugeordnet — dann gibt es nichts
+     * zu validieren.
+     */
+    private fun hardwareValidationFor(result: RecognitionResult?): HardwareValidationExport? {
+        val fingerprintId = result?.matchedProfileId ?: return null
+        val fingerprint = BuiltInModelFingerprints.byId(fingerprintId) ?: return null
+        val report = FingerprintQualityAudit.auditOne(fingerprint, hardwareTestRegistry)
+        return HardwareValidationExport.from(report)
+    }
+
     private fun renderRecognitionSection() {
         tabContent.addView(makeSectionLabel("ERKENNUNG"))
         val card = makeCard()
@@ -2413,6 +2437,77 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 if (shown.contradictoryFeatures.isEmpty()) Palette.TEXT_PRIMARY else Palette.WARNING
             )
             recognitionRow(card, "Begruendung", shown.summarySentence())
+        }
+
+        /* ============ FINGERPRINT-QUALITAET & HARDWARE-TEST ============ */
+        card.addView(recognitionSubLabel("FINGERPRINT-QUALITAET & HARDWARE-TEST"))
+        val qualityFingerprintId = shown?.matchedProfileId
+        val qualityFingerprint = qualityFingerprintId?.let { BuiltInModelFingerprints.byId(it) }
+        val qualityReport: FingerprintQualityReport? =
+            qualityFingerprint?.let { FingerprintQualityAudit.auditOne(it, hardwareTestRegistry) }
+        if (qualityReport == null) {
+            recognitionRow(
+                card, "Status",
+                "Keinem Fingerprint zugeordnet \u2014 keine Qualitaetsaussage moeglich.",
+                Palette.TEXT_SECONDARY
+            )
+        } else {
+            recognitionRow(
+                card, "Fingerprint",
+                "${qualityReport.fingerprintId} \u00b7 ${qualityReport.modelName}"
+            )
+            recognitionRow(
+                card, "Deklarierter Teststatus",
+                qualityReport.declaredStatus.displayName
+            )
+            recognitionRow(
+                card, "Berechneter Reifegrad",
+                qualityReport.maturity.displayName,
+                when (qualityReport.maturity) {
+                    FingerprintMaturity.HARDWARE_CONFIRMED -> Palette.SUCCESS
+                    FingerprintMaturity.TESTED -> Palette.WARNING
+                    FingerprintMaturity.DOCUMENTED -> Palette.TEXT_SECONDARY
+                }
+            )
+            recognitionRow(
+                card, "Hardware-Testbelege",
+                qualityReport.testCount.toString(),
+                if (qualityReport.testCount > 0) Palette.TEXT_PRIMARY else Palette.WARNING
+            )
+            recognitionRow(
+                card, "Fehlende Testbelege",
+                if (qualityReport.missingEvidence.isEmpty()) "keine"
+                else qualityReport.missingEvidence.take(6).joinToString("\n"),
+                if (qualityReport.missingEvidence.isEmpty()) Palette.SUCCESS else Palette.WARNING
+            )
+            if (qualityReport.deviations.isNotEmpty()) {
+                recognitionRow(
+                    card, "Erkannte Abweichungen",
+                    qualityReport.deviations.take(6).joinToString("\n") { it.label() },
+                    Palette.WARNING
+                )
+            }
+            if (qualityReport.hasContradictions) {
+                recognitionRow(
+                    card, "Widerspruechliche Tests",
+                    qualityReport.contradictoryTestIds.joinToString(", "),
+                    Palette.DANGER
+                )
+            }
+            if (qualityReport.upgradePending) {
+                recognitionRow(
+                    card, "Hinweis",
+                    "Testbelege deuten auf Bestaetigung \u2014 Profil wird NICHT automatisch hochgestuft.",
+                    Palette.WARNING
+                )
+            }
+            val theoretical = !qualityReport.maturity.isHardwareConfirmed
+            recognitionRow(
+                card, "Einordnung",
+                if (theoretical) "THEORETISCHE ERKENNUNG \u2014 keine reale Hardware-Bestaetigung."
+                else "AUF HARDWARE BESTAETIGT.",
+                if (theoretical) Palette.WARNING else Palette.SUCCESS
+            )
         }
 
         tabContent.addView(card, cardParams())
