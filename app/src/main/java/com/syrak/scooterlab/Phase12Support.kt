@@ -161,7 +161,19 @@ data class ScanClassification(
     val brandLabel: String,
     val modelLabel: String,
     val confidenceLabel: String,
-    val manufacturerKnown: Boolean
+    val manufacturerKnown: Boolean,
+    /**
+     * PHASE 16.3.2: menschenlesbare Begruendung, WORAUS die Einordnung stammt
+     * (Name, Advertisement-Service-UUID, Company-ID, Service-Data oder nichts).
+     * Leer bei der rein namensbasierten Alt-Signatur — dort gibt es keine
+     * zusaetzliche Quelle zu benennen.
+     */
+    val evidenceLabel: String = "",
+    /**
+     * PHASE 16.3.2: Herkunft des angezeigten Namens. NONE bedeutet: es liegt
+     * KEIN Name vor (nicht: "das Geraet heisst Unknown Device").
+     */
+    val nameSource: DeviceNameSource = DeviceNameSource.NONE
 ) {
     val isScooterLike: Boolean get() = category != ScanCategory.UNKNOWN_DEVICE
 }
@@ -202,6 +214,71 @@ object ScanClassifier {
             modelLabel = modelLabel,
             confidenceLabel = det.confidence.label,
             manufacturerKnown = manufacturerKnown
+        )
+    }
+
+    /**
+     * PHASE 16.3.2: Einordnung auf Basis einer vollstaendigen Scan-Beobachtung.
+     *
+     * Neu gegenueber [classify] ist die Auswertung der Advertisement-Daten.
+     * Die Regeln bleiben bewusst konservativ:
+     *
+     *   • Ein bekanntes MODELL kommt weiterhin NUR aus dem Namen. Aus einer
+     *     Service-UUID laesst sich kein Modell ableiten — das waere geraten.
+     *   • Ein Advertisement-Hinweis kann ein Geraet hoechstens zu
+     *     [ScanCategory.PROBABLE_SCOOTER] machen, niemals zu KNOWN_SCOOTER.
+     *   • Ein schwacher Hinweis (z. B. Xiaomi fe95) rechtfertigt KEINEN
+     *     Kandidatenstatus — er wird nur als Begruendung angezeigt.
+     *   • Ohne jeden Hinweis bleibt es [ScanCategory.UNKNOWN_DEVICE].
+     *
+     * Damit kann ein Fremdgeraet (Kopfhoerer, Fitnessband, TV) nicht allein
+     * durch eine zufaellig passende UUID als Scooter erscheinen: dafuer ist
+     * eine transportspezifische UUID (STRONG) oder ein Name noetig.
+     */
+    fun classify(observation: ScanObservation): ScanClassification {
+        val resolved = DeviceNameResolver.resolve(observation)
+        val nameBased = classify(resolved.name, observation.address)
+        val evidence = AdvertisementAnalyzer.analyze(observation)
+
+        // Ein bekanntes Modell aus dem Namen hat immer Vorrang.
+        if (nameBased.category == ScanCategory.KNOWN_SCOOTER) {
+            return nameBased.copy(
+                evidenceLabel = evidence.description,
+                nameSource = resolved.source
+            )
+        }
+
+        // Name-basierter Hersteller-/Namenshinweis: bleibt PROBABLE.
+        if (nameBased.isScooterLike) {
+            return nameBased.copy(
+                evidenceLabel = evidence.description,
+                nameSource = resolved.source
+            )
+        }
+
+        // Ab hier: der Name allein reicht nicht. Advertisement pruefen.
+        if (evidence.justifiesCandidate) {
+            val brandLabel = if (evidence.manufacturer.isKnown) {
+                evidence.manufacturer.displayName
+            } else {
+                "unbekannt"
+            }
+            return ScanClassification(
+                category = ScanCategory.PROBABLE_SCOOTER,
+                brandLabel = brandLabel,
+                modelLabel = "unbekannt",
+                // Bewusst NICHT "bestaetigt": es ist ein Hinweis, kein Beweis.
+                confidenceLabel = "Hinweis (Advertisement)",
+                manufacturerKnown = evidence.manufacturer.isKnown,
+                evidenceLabel = evidence.description,
+                nameSource = resolved.source
+            )
+        }
+
+        // Kein ausreichender Hinweis -> ehrlich unbekannt.
+        return nameBased.copy(
+            evidenceLabel = evidence.description,
+            nameSource = resolved.source
         )
     }
 }

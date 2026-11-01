@@ -6,14 +6,34 @@ import java.util.Locale
 /* ---------------------------------------------------------------------------
  *  DATENMODELLE
  * ------------------------------------------------------------------------- */
+/**
+ * PHASE 16.3.2: [name] ist jetzt NULLABLE.
+ *
+ * Vorher war `name: String` mit dem Literal "Unknown Device" als Ersatzwert.
+ * Damit war "es liegt kein Name vor" strukturell nicht mehr darstellbar, und
+ * ein spaeterer Scan-Callback konnte einen bekannten Namen mit dem Platzhalter
+ * ueberschreiben (belegte Namens-Regression R3).
+ *
+ * [nameSource] sagt, WOHER der Name stammt. Beides zusammen erlaubt der UI,
+ * ehrlich zwischen "Name vorhanden" und "Name nicht verfuegbar" zu trennen
+ * (Auftrag Teilziel B).
+ */
 data class ScooterDevice(
     val device: BluetoothDevice?,
-    val name: String,
+    val name: String?,
     val address: String,
     val rssi: Int,
     val isScooterCandidate: Boolean,
-    val isDemo: Boolean = false
-)
+    val isDemo: Boolean = false,
+    val nameSource: DeviceNameSource = DeviceNameSource.NONE
+) {
+    /** Anzeigename mit ehrlichem Fallback statt Pseudo-Namen. */
+    fun displayName(fallback: String = "Name nicht verfuegbar"): String =
+        name?.takeIf { it.isNotBlank() } ?: fallback
+
+    /** true, wenn ein tatsaechlich empfangener Name vorliegt. */
+    val hasRealName: Boolean get() = nameSource.isReal && !name.isNullOrBlank()
+}
 
 enum class Region(val code: String, val displayName: String, val legalSpeedKmh: Int) {
     DE("DE", "Deutschland", 20),
@@ -288,7 +308,7 @@ enum class ScooterModel(
          * wird derzeit bewusst NICHT ausgewertet \u2014 es werden keine Werte erfunden.
          */
         @Suppress("UNUSED_PARAMETER")
-        fun detect(name: String, address: String): ScooterModel =
+        fun detect(name: String?, address: String): ScooterModel =
             detectDetailed(name, address).model
 
         /**
@@ -306,8 +326,8 @@ enum class ScooterModel(
          * eingestuft - "navee" allein ist kein Modellmerkmal.
          */
         @Suppress("UNUSED_PARAMETER")
-        fun detectDetailed(name: String, address: String): DetectionResult {
-            val n = name.lowercase(Locale.ROOT).trim()
+        fun detectDetailed(name: String?, address: String): DetectionResult {
+            val n = name?.lowercase(Locale.ROOT)?.trim() ?: ""
             if (n.isEmpty() || n == "unknown device") {
                 return DetectionResult(
                     UNKNOWN, DetectionConfidence.UNKNOWN, "kein Geraetename",

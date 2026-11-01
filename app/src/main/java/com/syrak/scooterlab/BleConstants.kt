@@ -42,7 +42,24 @@ object BleConstants {
     /** Service UUIDs used as scan filters (Legacy-Pfad). */
     val SCAN_SERVICE_FILTERS: List<UUID> = listOf(UART_SERVICE, XIAOMI_SERVICE)
 
-    /** Advertised-name prefixes used for client-side brand classification. */
+    /**
+     * Advertised-name prefixes used for client-side brand classification.
+     *
+     * STATUS: LEGACY_UNCONFIRMED (Phase 16.3.2).
+     *
+     * Diese Liste wird NUR noch vom alten [BleManager]-Scanpfad benutzt, der
+     * vom aktiven [BleEngine] nicht verwendet wird. Sie ist bewusst NICHT
+     * geloescht (Regel 1: bestehende Funktionen nicht ohne Grund entfernen),
+     * aber ausdruecklich als ungeprueft markiert:
+     *
+     *  - Die kurzen Eintraege "ES", "F", "D" sind extrem unspezifisch und
+     *    wuerden bei einem Substring-Vergleich fast jedes Geraet treffen.
+     *  - Kein Eintrag ist gegen echte Hardware oder eine Herstellerquelle
+     *    verifiziert.
+     *
+     * Der aktive Erkennungspfad nutzt stattdessen [ScooterManufacturer] +
+     * [ScooterCandidateFilter] + [AdvertisementAnalyzer].
+     */
     val NAME_PREFIXES: List<String> = listOf(
         "Mi Scooter", "MIScooter", "Mi Electric", "Ninebot", "Segway", "NAVEE", "Navee",
         "M365", "1S", "Pro 2", "ES", "MAX", "F", "G30", "D", "P65",
