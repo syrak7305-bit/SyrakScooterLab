@@ -61,6 +61,11 @@ import com.syrak.scooterlab.diagnostics.HardwareTestReport
 import com.syrak.scooterlab.diagnostics.HardwareReportIdentity
 import com.syrak.scooterlab.diagnostics.NotifyDiagnosticsRecord
 import com.syrak.scooterlab.diagnostics.ScanRecord
+import com.syrak.scooterlab.recognition.RecognitionConfidence
+import com.syrak.scooterlab.recognition.RecognitionEngine
+import com.syrak.scooterlab.recognition.RecognitionExport
+import com.syrak.scooterlab.recognition.RecognitionResult
+import com.syrak.scooterlab.recognition.RecognitionSession
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -163,6 +168,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      * des Namens, sondern mit denselben Advertisement-Daten wie der Scan-Callback.
      */
     private val scanObservations = linkedMapOf<String, ScanObservation>()
+    /**
+     * PHASE 17.1: Reine Erkennungs-Engine (UI-unabhaengig, siehe recognition/).
+     * Sie bewertet ausschliesslich die tatsaechlich empfangenen Advertisement-
+     * und GATT-Merkmale. Das Nutzerprofil wird hier bewusst NICHT uebergeben.
+     */
+    private val recognitionEngine = RecognitionEngine()
+    /** PHASE 17.1: letzte Hardware-Erkennung; wird bei Geraetewechsel zurueckgesetzt. */
+    private val recognitionSession = RecognitionSession()
     // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
     // Geraete bleiben optional sichtbar (nicht verstecken).
     private var showAllDevices = false
@@ -518,6 +531,12 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 // PHASE 16.3.4: vollstaendige Beobachtung fuer die Listen-
                 // Klassifizierung merken (nicht nur den Namen).
                 scanObservations[address] = observation
+
+                // PHASE 17.1: Hardware-Erkennung auf Basis der vollstaendigen
+                // Beobachtung. Die Session verwirft ein altes Ergebnis
+                // automatisch, sobald eine andere Adresse beobachtet wird.
+                val recognition = recognitionEngine.recognize(observation)
+                recognitionSession.observe(address, recognition)
 
                 // Kandidatenstatus aus der VOLLSTAENDIGEN Beobachtung, nicht
                 // mehr nur aus dem Namen.
@@ -1001,6 +1020,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             errors = hardwareTest.errors(),
             reads = hardwareTest.reads(),
             rssiSamples = hardwareTest.rssiSamples(),
+            // PHASE 17.1: Erkennungsdaten werden getrennt vom Nutzerprofil
+            // exportiert. Seriennummer wird NICHT uebernommen, MAC maskiert.
+            recognition = recognitionSession.current?.let {
+                RecognitionExport.from(it, repository.riderScooterProfile)
+            },
             notes = buildList {
                 add("Reine Beobachtungsdaten. Keine erfundenen UUIDs, Kommandos oder Decoder-Offsets.")
                 if (!detectedModel.isKnown) {
@@ -2192,6 +2216,157 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     /*  INFO / SCAN / VERBINDUNG                                          */
     /* ================================================================== */
 
+    /* ------------------------------------------------------------------ */
+    /*  PHASE 17.1 — ERKENNUNGSANSICHT                                     */
+    /*  Nutzerprofil und Hardware-Erkennung werden STRIKT getrennt         */
+    /*  dargestellt. Es werden nur tatsaechlich beobachtete Merkmale       */
+    /*  gezeigt — keine erfundenen Werte, keine Prozentangaben.            */
+    /* ------------------------------------------------------------------ */
+    private fun recognitionConfidenceColor(c: RecognitionConfidence): Int = when (c) {
+        RecognitionConfidence.CONFIRMED -> Palette.SUCCESS
+        RecognitionConfidence.PROBABLE -> Palette.WARNING
+        RecognitionConfidence.FAMILY_ONLY -> Palette.ACCENT_BLUE
+        RecognitionConfidence.UNKNOWN -> Palette.TEXT_MUTED
+    }
+
+    private fun recognitionSubLabel(value: String): TextView =
+        makeText(value, 10f, Palette.TEXT_MUTED, true).apply {
+            letterSpacing = 0.12f
+            setPadding(0, dp(12), 0, dp(3))
+        }
+
+    private fun recognitionRow(
+        card: LinearLayout,
+        label: String,
+        value: String,
+        valueColor: Int = Palette.TEXT_PRIMARY
+    ) {
+        card.addView(makeText(label, 10.5f, Palette.TEXT_MUTED))
+        card.addView(makeText(value, 13f, valueColor, true).apply {
+            setPadding(0, 0, 0, dp(3))
+        })
+    }
+
+    private fun renderRecognitionSection() {
+        tabContent.addView(makeSectionLabel("ERKENNUNG"))
+        val card = makeCard()
+        val profile = repository.riderScooterProfile
+        val result = recognitionSession.current
+
+        /* ---- NUTZERPROFIL (vom Nutzer gewaehlt, NICHT erkannt) ---- */
+        card.addView(recognitionSubLabel("NUTZERPROFIL"))
+        val profileBrand = profile?.brand?.takeIf { it.isKnown }?.displayName ?: "nicht gesetzt"
+        val profileModel = profile?.effectiveModel()?.takeIf { it.isKnown }?.displayName
+            ?: if (profile?.modelNotListed == true) "nicht gelistet" else "nicht gesetzt"
+        recognitionRow(card, "Gewaehlte Marke", profileBrand)
+        recognitionRow(card, "Gewaehltes Modell", profileModel)
+
+        /* ---- HARDWARE-ERKENNUNG (tatsaechlich beobachtet) ---- */
+        card.addView(recognitionSubLabel("HARDWARE-ERKENNUNG"))
+        if (result == null) {
+            recognitionRow(
+                card, "Status", "Noch kein Bluetooth-Geraet beobachtet.",
+                Palette.TEXT_SECONDARY
+            )
+        } else {
+            recognitionRow(
+                card, "Bluetooth-Geraetename",
+                result.deviceName?.takeIf { it.isNotBlank() } ?: "ohne Namen"
+            )
+            recognitionRow(
+                card, "Erkannte Marke",
+                if (result.detectedBrand.isKnown) result.detectedBrand.displayName else "UNBEKANNT"
+            )
+            recognitionRow(
+                card, "Erkannte Modellfamilie",
+                result.detectedModelFamily ?: "UNBEKANNT"
+            )
+            recognitionRow(
+                card, "Erkanntes Modell",
+                result.confirmedModel ?: result.probableModel ?: "UNKNOWN",
+                if (result.confirmedModel != null) Palette.SUCCESS else Palette.TEXT_SECONDARY
+            )
+            recognitionRow(
+                card, "Konfidenz-Status",
+                result.confidence.displayName,
+                recognitionConfidenceColor(result.confidence)
+            )
+        }
+
+        /* ---- TECHNISCHE DATEN ---- */
+        card.addView(recognitionSubLabel("TECHNISCHE DATEN"))
+        if (result == null) {
+            recognitionRow(card, "Merkmale", "keine Daten", Palette.TEXT_SECONDARY)
+        } else {
+            val adv = result.advertisement
+            val gatt = result.gatt
+            val services = (gatt?.serviceUuids ?: emptyList())
+                .ifEmpty { adv?.specificServiceUuids ?: emptyList() }
+            recognitionRow(
+                card, "Erkannte Services",
+                if (services.isEmpty()) "keine" else services.joinToString(", ")
+            )
+            recognitionRow(
+                card, "Charakteristik-Anzahl",
+                gatt?.characteristicCount?.toString() ?: "0"
+            )
+            recognitionRow(
+                card, "Advertisement-Merkmale",
+                adv?.summary() ?: "keine"
+            )
+            recognitionRow(
+                card, "GATT-Ergebnis",
+                gatt?.discoveryStatus?.displayName ?: "nicht versucht"
+            )
+        }
+
+        /* ---- ERKENNUNGSBEGRUENDUNG ---- */
+        card.addView(recognitionSubLabel("ERKENNUNGSBEGRUENDUNG"))
+        card.addView(makeText(
+            result?.summarySentence() ?: "Bluetooth-Geraet gefunden? Noch kein Scan-Ergebnis vorhanden.",
+            12.5f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, 0, 0, dp(6)) })
+        if (result != null) {
+            if (result.matchedFeatures.isNotEmpty()) {
+                recognitionRow(
+                    card, "Passende Merkmale",
+                    result.matchedFeatures.take(6).joinToString("\n") { it.label() }
+                )
+            }
+            if (result.missingFeatures.isNotEmpty()) {
+                recognitionRow(
+                    card, "Fehlende Merkmale",
+                    result.missingFeatures.take(6).joinToString(", ")
+                )
+            }
+            if (result.contradictoryFeatures.isNotEmpty()) {
+                recognitionRow(
+                    card, "Widerspruechliche Merkmale",
+                    result.contradictoryFeatures.take(6).joinToString(", "),
+                    Palette.WARNING
+                )
+            }
+            if (result.unknownFeatures.isNotEmpty()) {
+                recognitionRow(
+                    card, "Unbekannte Merkmale",
+                    result.unknownFeatures.take(6).joinToString(", ")
+                )
+            }
+            if (result.confidence == RecognitionConfidence.UNKNOWN ||
+                result.confidence == RecognitionConfidence.FAMILY_ONLY
+            ) {
+                recognitionRow(
+                    card, "Grund fuer UNKNOWN",
+                    "Die verfuegbaren technischen Merkmale reichen fuer eine " +
+                        "Modellbestaetigung nicht aus.",
+                    Palette.TEXT_SECONDARY
+                )
+            }
+        }
+
+        tabContent.addView(card, cardParams())
+    }
+
     private fun renderInfo() {
         // PHASE 13: Branding-Kopf mit neuem Logo (INFO-Bereich).
         val brand = LinearLayout(this).apply {
@@ -2273,6 +2448,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         card.addView(deviceListContainer)
         tabContent.addView(card, cardParams())
         updateDeviceList()
+
+        // PHASE 17.1: professionelle Erkennungsansicht (Nutzerprofil vs. Hardware).
+        renderRecognitionSection()
 
         // ---- PHASE 12.7 A: SCHNELLZUGRIFF AUF ZULETZT VERWENDETEN SCOOTER ----
         // Bewusst KEIN automatischer Verbindungsaufbau: der Nutzer tippt, und

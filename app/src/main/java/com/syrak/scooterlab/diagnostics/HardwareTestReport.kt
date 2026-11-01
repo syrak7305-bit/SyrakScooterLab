@@ -1,5 +1,7 @@
 package com.syrak.scooterlab.diagnostics
 
+import com.syrak.scooterlab.recognition.RecognitionExport
+
 /* ============================================================================
  *  PHASE 11 — HARDWARE-TEST- UND BLE-DIAGNOSE-EXPORT
  *  ---------------------------------------------------------------------------
@@ -302,7 +304,13 @@ data class HardwareTestReport(
     val reads: List<ReadRecord> = emptyList(),
     /** PHASE 16: RSSI-Zeitreihe waehrend der Sitzung. */
     val rssiSamples: List<RssiSample> = emptyList(),
-    val notes: List<String> = emptyList()
+    val notes: List<String> = emptyList(),
+    /**
+     * PHASE 17.1: getrennte Erkennungsdiagnose (Nutzerprofil vs.
+     * Hardware-Erkennung, Advertisement, GATT, Begruendung). Additiv — der
+     * bestehende `schemaVersion = 1` bleibt gueltig.
+     */
+    val recognition: RecognitionExport? = null
 ) {
     /** Anzahl erfolgreicher Reads (echter Callback mit Bytes). */
     val successfulReads: Int get() = reads.count { it.success }
@@ -465,7 +473,55 @@ data class HardwareTestReport(
         }
         append(if (rssiSamples.isEmpty()) "],\n" else "\n  ],\n")
 
-        append("  \"notes\": ").append(Json.stringArray(notes)).append("\n")
+        append("  \"notes\": ").append(Json.stringArray(notes)).append(",\n")
+
+        append("  \"recognition\": ")
+        val rec = recognition
+        if (rec == null) {
+            append("null\n")
+        } else {
+            append("{\n")
+            append("    \"userProfile\": {\n")
+            append("      \"brand\": ").append(Json.quote(rec.userProfileBrand)).append(",\n")
+            append("      \"model\": ").append(Json.quote(rec.userProfileModel)).append(",\n")
+            append("      \"modelCode\": ").append(Json.quote(rec.userProfileModelCode)).append(",\n")
+            append("      \"modelNotListed\": ").append(rec.userProfileModelNotListed).append(",\n")
+            append("      \"identificationConfidence\": ")
+                .append(Json.quote(rec.userProfileIdentificationConfidence)).append("\n")
+            append("    },\n")
+            append("    \"hardwareDetection\": {\n")
+            append("      \"deviceName\": ").append(Json.quoteOrNull(rec.deviceName)).append(",\n")
+            append("      \"deviceAddressMasked\": ").append(Json.quote(rec.deviceAddressMasked)).append(",\n")
+            append("      \"detectedBrand\": ").append(Json.quote(rec.detectedBrand)).append(",\n")
+            append("      \"detectedBrandFamily\": ").append(Json.quote(rec.detectedBrandFamily)).append(",\n")
+            append("      \"detectedModelFamily\": ").append(Json.quoteOrNull(rec.detectedModelFamily)).append(",\n")
+            append("      \"confirmedModel\": ").append(Json.quoteOrNull(rec.confirmedModel)).append(",\n")
+            append("      \"probableModel\": ").append(Json.quoteOrNull(rec.probableModel)).append(",\n")
+            append("      \"confidence\": ").append(Json.quote(rec.confidence)).append(",\n")
+            append("      \"matchedProfileId\": ").append(Json.quoteOrNull(rec.matchedProfileId)).append("\n")
+            append("    },\n")
+            append("    \"advertisement\": {\n")
+            append("      \"serviceUuids\": ").append(Json.stringArray(rec.advertisementServiceUuids)).append(",\n")
+            append("      \"manufacturerIds\": ").append(Json.stringArray(rec.advertisementManufacturerIds)).append(",\n")
+            append("      \"serviceDataUuids\": ").append(Json.stringArray(rec.advertisementServiceDataUuids)).append(",\n")
+            append("      \"rssi\": ").append(rec.advertisementRssi ?: "null").append("\n")
+            append("    },\n")
+            append("    \"gatt\": {\n")
+            append("      \"discoveryStatus\": ").append(Json.quote(rec.gattDiscoveryStatus)).append(",\n")
+            append("      \"serviceUuids\": ").append(Json.stringArray(rec.gattServiceUuids)).append(",\n")
+            append("      \"characteristicCount\": ").append(rec.gattCharacteristicCount).append(",\n")
+            append("      \"characteristics\": ").append(Json.stringArray(rec.gattCharacteristics)).append("\n")
+            append("    },\n")
+            append("    \"reasoning\": {\n")
+            append("      \"reasons\": ").append(Json.stringArray(rec.reasons)).append(",\n")
+            append("      \"matchedFeatures\": ").append(Json.stringArray(rec.matchedFeatures)).append(",\n")
+            append("      \"missingFeatures\": ").append(Json.stringArray(rec.missingFeatures)).append(",\n")
+            append("      \"contradictoryFeatures\": ").append(Json.stringArray(rec.contradictoryFeatures)).append(",\n")
+            append("      \"unknownFeatures\": ").append(Json.stringArray(rec.unknownFeatures)).append(",\n")
+            append("      \"errors\": ").append(Json.stringArray(rec.errors)).append("\n")
+            append("    }\n")
+            append("  }\n")
+        }
         append("}\n")
     }
 
@@ -495,6 +551,36 @@ data class HardwareTestReport(
         row("device", "readOnly", readOnly)
         row("device", "protocol", protocol)
         row("device", "adapterId", adapterId)
+        recognition?.let { rec ->
+            row("recognition_user", "brand", rec.userProfileBrand)
+            row("recognition_user", "model", rec.userProfileModel)
+            row("recognition_user", "modelCode", rec.userProfileModelCode)
+            row("recognition_user", "modelNotListed", rec.userProfileModelNotListed)
+            row("recognition_user", "identificationConfidence", rec.userProfileIdentificationConfidence)
+            row("recognition_hw", "deviceName", rec.deviceName)
+            row("recognition_hw", "deviceAddressMasked", rec.deviceAddressMasked)
+            row("recognition_hw", "detectedBrand", rec.detectedBrand)
+            row("recognition_hw", "detectedBrandFamily", rec.detectedBrandFamily)
+            row("recognition_hw", "detectedModelFamily", rec.detectedModelFamily)
+            row("recognition_hw", "confirmedModel", rec.confirmedModel)
+            row("recognition_hw", "probableModel", rec.probableModel)
+            row("recognition_hw", "confidence", rec.confidence)
+            row("recognition_hw", "matchedProfileId", rec.matchedProfileId)
+            row("recognition_adv", "serviceUuids", rec.advertisementServiceUuids.joinToString(";"))
+            row("recognition_adv", "manufacturerIds", rec.advertisementManufacturerIds.joinToString(";"))
+            row("recognition_adv", "serviceDataUuids", rec.advertisementServiceDataUuids.joinToString(";"))
+            row("recognition_adv", "rssi", rec.advertisementRssi)
+            row("recognition_gatt", "discoveryStatus", rec.gattDiscoveryStatus)
+            row("recognition_gatt", "serviceUuids", rec.gattServiceUuids.joinToString(";"))
+            row("recognition_gatt", "characteristicCount", rec.gattCharacteristicCount)
+            row("recognition_gatt", "characteristics", rec.gattCharacteristics.joinToString(";"))
+            row("recognition_reason", "reasons", rec.reasons.joinToString(";"))
+            row("recognition_reason", "matchedFeatures", rec.matchedFeatures.joinToString(";"))
+            row("recognition_reason", "missingFeatures", rec.missingFeatures.joinToString(";"))
+            row("recognition_reason", "contradictoryFeatures", rec.contradictoryFeatures.joinToString(";"))
+            row("recognition_reason", "unknownFeatures", rec.unknownFeatures.joinToString(";"))
+            row("recognition_reason", "errors", rec.errors.joinToString(";"))
+        }
         row("connection", "connectedAtMs", connection.connectedAtMs)
         row("connection", "readyAtMs", connection.readyAtMs)
         row("connection", "disconnectedAtMs", connection.disconnectedAtMs)
