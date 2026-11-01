@@ -34,6 +34,6 @@
 - [x] Warnungen dokumentiert
 
 ## 7. Git & Doku
-- [ ] Commit(s) + Push
-- [ ] PR gegen `main`
-- [ ] `PHASE17.3_ERGEBNIS.md` (geänderte Dateien, neue Funktionen, Testergebnis, Build, offene Punkte, manuelle Hardware-Tests)
+- [x] Commit `f2f92a5` + Push
+- [x] PR #30 gegen `main`, gemerged als `8dd4e97`
+- [x] `PHASE17.3_ERGEBNIS.md` (geänderte Dateien, neue Funktionen, Testergebnis, Build, offene Punkte, manuelle Hardware-Tests)
