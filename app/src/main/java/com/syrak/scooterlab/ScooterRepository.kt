@@ -80,6 +80,56 @@ class ScooterRepository(context: Context) {
         set(value) = prefs.edit().putString(KEY_ADAPTER_ID, value).apply()
 
     /* ------------------------------------------------------------------ */
+    /*  PHASE 17.0: NUTZER- & SCOOTER-PROFIL (Onboarding)                  */
+    /* ------------------------------------------------------------------ */
+    /**
+     * Nutzerprofil (Anzeigename, Sprache, Land, Setup-Status).
+     * Wird im SELBEN SharedPreferences-Store abgelegt — kein zweites
+     * Speichersystem. Der Codec [ProfileCodec] ist rein und testbar.
+     */
+    val userProfile: UserProfile
+        get() = ProfileCodec.decodeUser(profileMap())
+
+    fun saveUserProfile(profile: UserProfile) {
+        val map = ProfileCodec.encodeUser(profile)
+        prefs.edit().apply {
+            putString(ProfileCodec.KEY_NAME, map[ProfileCodec.KEY_NAME])
+            putString(ProfileCodec.KEY_LANGUAGE, map[ProfileCodec.KEY_LANGUAGE])
+            putString(ProfileCodec.KEY_COUNTRY, map[ProfileCodec.KEY_COUNTRY])
+            putString(ProfileCodec.KEY_SETUP_COMPLETED, map[ProfileCodec.KEY_SETUP_COMPLETED])
+        }.apply()
+    }
+
+    /** Scooter-Identitaet (Marke/Modell/Code/optional Seriennummer). */
+    val riderScooterProfile: RiderScooterProfile
+        get() = ProfileCodec.decodeScooter(profileMap())
+
+    fun saveRiderScooterProfile(profile: RiderScooterProfile) {
+        val map = ProfileCodec.encodeScooter(profile)
+        prefs.edit().apply {
+            putString(ProfileCodec.KEY_BRAND, map[ProfileCodec.KEY_BRAND])
+            putString(ProfileCodec.KEY_MODEL, map[ProfileCodec.KEY_MODEL])
+            putString(ProfileCodec.KEY_MODEL_CODE, map[ProfileCodec.KEY_MODEL_CODE])
+            putString(ProfileCodec.KEY_SERIAL, map[ProfileCodec.KEY_SERIAL])
+            putString(ProfileCodec.KEY_MODEL_NOT_LISTED, map[ProfileCodec.KEY_MODEL_NOT_LISTED])
+            putString(ProfileCodec.KEY_CONFIDENCE, map[ProfileCodec.KEY_CONFIDENCE])
+        }.apply()
+    }
+
+    /** Roh-Map der Profil-Schluessel fuer den Codec. */
+    private fun profileMap(): Map<String, String> {
+        val keys = listOf(
+            ProfileCodec.KEY_NAME, ProfileCodec.KEY_LANGUAGE, ProfileCodec.KEY_COUNTRY,
+            ProfileCodec.KEY_SETUP_COMPLETED, ProfileCodec.KEY_BRAND, ProfileCodec.KEY_MODEL,
+            ProfileCodec.KEY_MODEL_CODE, ProfileCodec.KEY_SERIAL,
+            ProfileCodec.KEY_MODEL_NOT_LISTED, ProfileCodec.KEY_CONFIDENCE
+        )
+        val out = HashMap<String, String>(keys.size)
+        for (k in keys) prefs.getString(k, null)?.let { out[k] = it }
+        return out
+    }
+
+    /* ------------------------------------------------------------------ */
     /*  WEGFAHRSPERRE (PIN, PBKDF2)                                        */
     /* ------------------------------------------------------------------ */
     var isLocked: Boolean

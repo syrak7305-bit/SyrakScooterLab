@@ -131,8 +131,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      * die Landessprache, sonst Englisch. Sprache und Land bleiben getrennt:
      * die Sprache bestimmt nur die Darstellung, das Land den Inhalt.
      */
-    private fun noticeLanguage(): AppLanguage =
-        LanguageResolver.resolve(Locale.getDefault().toLanguageTag(), repository.region.code)
+    private fun noticeLanguage(): AppLanguage {
+        // PHASE 17.0: Sobald ein vollstaendiges Nutzerprofil existiert, gilt die
+        // dort gewaehlte Sprache appweit (auch fuer Rechts-/Laendertexte).
+        val stored = repository.userProfile
+        if (stored.setupCompleted) return stored.language
+        return LanguageResolver.resolve(Locale.getDefault().toLanguageTag(), repository.region.code)
+    }
 
     /** PHASE 16.3.2: letzter Telemetrie-Diagnosezustand (fuer die Statuszeile). */
     private var lastDiagSnapshot: TelemetryDiagnosticsSnapshot? = null
@@ -196,6 +201,21 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
      */
     private var hardwareVerified = false
     private var reconnectAttempts = 0
+
+    /* ---- PHASE 17.0: Onboarding-Wizard-Zustand (nicht persistiert) ---- */
+    private var wizardStep: OnboardingGate.Step = OnboardingGate.Step.USER
+    private var wizardEditing = false
+    private var wizardName: String = ""
+    private var wizardLanguage: AppLanguage = AppLanguage.DE
+    private var wizardCountry: Region = Region.WORLD
+    private var wizardBrand: ScooterManufacturer = ScooterManufacturer.UNKNOWN
+    private var wizardModel: ScooterModel = ScooterModel.UNKNOWN
+    private var wizardModelCode: String = ""
+    private var wizardSerial: String = ""
+    private var wizardModelNotListed: Boolean = false
+    /** true, sobald ein Wizard-Schritt einen Eingabefehler anzeigen soll. */
+    private var wizardError: String? = null
+
     // ---- FIX 2: Reconnect-Backoff ---------------------------------------
     private var reconnectRunnable: Runnable? = null
     private val RECONNECT_BACKOFF_BASE_MS = 1000L
@@ -1117,6 +1137,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
                 !repository.disclaimersAccepted -> showDisclaimer()
                 !repository.countryNoticeAccepted -> showCountryDisclaimer()
                 !repository.onboardingSeen -> showOnboarding()
+                OnboardingGate.shouldShowWizard(repository.userProfile) -> startSetupWizard(editing = false)
                 repository.hasPin -> showPinDialog()
                 else -> enterMain()
             }
@@ -1377,7 +1398,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun continueAfterCountry() {
-        if (!repository.onboardingSeen) showOnboarding() else {
+        if (!repository.onboardingSeen) showOnboarding() else continueAfterOnboarding()
+    }
+
+    /** PHASE 17.0: Nach dem Willkommenstext ggf. der verpflichtende Setup-Wizard. */
+    private fun continueAfterOnboarding() {
+        if (OnboardingGate.shouldShowWizard(repository.userProfile)) {
+            startSetupWizard(editing = false)
+        } else {
             if (repository.hasPin) showPinDialog() else enterMain()
         }
     }
@@ -1569,11 +1597,482 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         }
         val go = makePrimaryButton("VERSTANDEN", Palette.ACCENT) {
             repository.onboardingSeen = true
-            if (repository.hasPin) showPinDialog() else enterMain()
+            continueAfterOnboarding()
         }
         col.addView(go, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, 0) })
         scroll.addView(col)
         rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
+    }
+
+    /* ================================================================== */
+    /*  PHASE 17.0: SETUP-WIZARD (Step A Nutzer / B Marke / C Modell)      */
+    /* ================================================================== */
+
+    /**
+     * Startet den Wizard. [editing] == true bedeutet: spaetere Aenderung aus
+     * den Einstellungen ("Mein Profil & Scooter") — danach Rueckkehr zu CONFIG.
+     * Ohne editing wird an der ersten offenen Stelle fortgesetzt (Resume).
+     */
+    private fun startSetupWizard(editing: Boolean) {
+        val user = repository.userProfile
+        val scooter = repository.riderScooterProfile
+        wizardEditing = editing
+        wizardName = user.displayName
+        wizardLanguage = if (user.setupCompleted) user.language else noticeLanguage()
+        wizardCountry = user.region
+        wizardBrand = scooter.brand
+        wizardModel = scooter.model
+        wizardModelCode = scooter.modelCode
+        wizardSerial = scooter.serialNumber ?: ""
+        wizardModelNotListed = scooter.modelNotListed
+        wizardError = null
+        wizardStep = if (editing) {
+            OnboardingGate.Step.USER
+        } else {
+            val resume = OnboardingGate.resumeStep(user, scooter)
+            if (resume == OnboardingGate.Step.DONE) OnboardingGate.Step.USER else resume
+        }
+        renderWizard()
+    }
+
+    private fun wizardStepIndex(step: OnboardingGate.Step): Int = when (step) {
+        OnboardingGate.Step.USER -> 0
+        OnboardingGate.Step.BRAND -> 1
+        OnboardingGate.Step.MODEL -> 2
+        OnboardingGate.Step.DONE -> 3
+    }
+
+    private fun renderWizard() {
+        rootContainer.removeAllViews()
+        val scroll = ScrollView(this)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Palette.BG)
+            setPadding(dp(20), dp(20), dp(20), dp(24))
+        }
+
+        // Kopf
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(10))
+        }
+        header.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_syrak_mark)
+            contentDescription = "Syrak ScooterLab Logo"
+        }, LinearLayout.LayoutParams(dp(40), dp(40)))
+        val headerText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        headerText.addView(makeText("SYRAK SCOOTERLAB", 15f, Palette.TEXT_PRIMARY, true).apply {
+            letterSpacing = 0.08f
+        })
+        headerText.addView(makeText(
+            if (wizardEditing) "PROFIL BEARBEITEN" else "EINRICHTUNG",
+            9.5f, Palette.TEXT_MUTED, true
+        ).apply { letterSpacing = 0.16f })
+        header.addView(headerText, LinearLayout.LayoutParams(0, WRAP, 1f))
+        col.addView(header)
+
+        // Fortschrittsanzeige (3 Schritte)
+        val idx = wizardStepIndex(wizardStep)
+        val progress = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(14))
+        }
+        for (i in 0..2) {
+            val active = i <= idx
+            progress.addView(View(this).apply {
+                setBackgroundColor(if (active) Palette.ACCENT else Palette.SURFACE_HIGH)
+            }, LinearLayout.LayoutParams(0, dp(4), 1f).apply {
+                setMargins(dp(2), 0, dp(2), 0)
+            })
+        }
+        col.addView(progress)
+        col.addView(makeText(
+            "Schritt ${idx + 1} von 3", 10.5f, Palette.TEXT_MUTED, true
+        ).apply { setPadding(0, 0, 0, dp(12)) })
+
+        when (wizardStep) {
+            OnboardingGate.Step.USER -> renderWizardUser(col)
+            OnboardingGate.Step.BRAND -> renderWizardBrand(col)
+            OnboardingGate.Step.MODEL -> renderWizardModel(col)
+            OnboardingGate.Step.DONE -> renderWizardSummary(col)
+        }
+
+        scroll.addView(col)
+        rootContainer.addView(scroll, LinearLayout.LayoutParams(MATCH, MATCH))
+    }
+
+    private fun renderWizardUser(col: LinearLayout) {
+        col.addView(makeText("WER BIST DU?", 18f, Palette.ACCENT, true))
+        col.addView(makeText(
+            "Dein Anzeigename erscheint im Dashboard. Sprache und Land steuern die " +
+                "Darstellung und die regionalen Hinweise. Es werden keine weiteren " +
+                "pers\u00f6nlichen Daten erhoben.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, dp(6), 0, dp(12)) })
+
+        col.addView(makeSectionLabel("ANZEIGENAME"))
+        val nameCard = makeCard()
+        val nameInput = EditText(this).apply {
+            hint = "z. B. Alex"
+            setSingleLine()
+            setText(wizardName)
+            setTextColor(Palette.TEXT_PRIMARY)
+            setHintTextColor(Palette.TEXT_MUTED)
+            setBackgroundColor(Palette.SURFACE_HIGH)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        nameCard.addView(nameInput, LinearLayout.LayoutParams(MATCH, WRAP))
+        col.addView(nameCard, cardParams())
+
+        col.addView(makeSectionLabel("APP-SPRACHE"))
+        val langCard = makeCard()
+        val langRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (lang in AppLanguage.values()) {
+            val sel = lang == wizardLanguage
+            langRow.addView(makePrimaryButton(
+                lang.displayName.uppercase(Locale.ROOT),
+                if (sel) Palette.ACCENT else Palette.SURFACE
+            ) {
+                wizardLanguage = lang
+                wizardName = nameInput.text.toString()
+                renderWizard()
+            }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
+        }
+        langCard.addView(langRow)
+        col.addView(langCard, cardParams())
+
+        col.addView(makeSectionLabel("LAND / REGION"))
+        val countryCard = makeCard()
+        val countryRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for (region in Region.values()) {
+            val sel = region == wizardCountry
+            countryRow.addView(makePrimaryButton(
+                "${region.displayName} (${region.code}) \u00b7 ${region.legalSpeedKmh} km/h",
+                if (sel) Palette.ACCENT_GREEN else Palette.SURFACE
+            ) {
+                wizardCountry = region
+                wizardName = nameInput.text.toString()
+                renderWizard()
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(2), 0, dp(2)) })
+        }
+        countryCard.addView(countryRow)
+        col.addView(countryCard, cardParams())
+
+        wizardError?.let {
+            col.addView(makeText(it, 12f, Palette.DANGER, true).apply { setPadding(0, dp(8), 0, 0) })
+        }
+
+        val next = makePrimaryButton("WEITER", Palette.ACCENT) {
+            wizardName = UserProfile.sanitizeName(nameInput.text.toString())
+            if (wizardName.isBlank()) {
+                wizardError = "Bitte einen Anzeigenamen eingeben."
+                renderWizard()
+            } else {
+                wizardError = null
+                wizardStep = OnboardingGate.Step.BRAND
+                renderWizard()
+            }
+        }
+        col.addView(next, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, 0) })
+
+        if (wizardEditing) {
+            col.addView(makeOutlineButton("ABBRECHEN", Palette.TEXT_MUTED) {
+                wizardEditing = false
+                enterMain()
+                showTab(Tab.CONFIG)
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
+        }
+    }
+
+    private fun renderWizardBrand(col: LinearLayout) {
+        col.addView(makeText("WELCHE MARKE?", 18f, Palette.ACCENT, true))
+        col.addView(makeText(
+            "Marken werden intern getrennt behandelt. Eine best\u00e4tigte Kompatibilit\u00e4t " +
+                "einer Marke bedeutet NICHT automatisch Kompatibilit\u00e4t einer anderen.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, dp(6), 0, dp(12)) })
+
+        for (brand in ScooterBrandModels.brandOptions()) {
+            val sel = brand == wizardBrand
+            val label = if (brand.isKnown) brand.displayName else "Andere / unbekannt"
+            val card = makeCard()
+            card.setBackgroundColor(if (sel) Palette.SURFACE_HIGH else Palette.SURFACE)
+            card.addView(makeText(label, 15f,
+                if (sel) Palette.ACCENT else Palette.TEXT_PRIMARY, true))
+            card.addView(makeText(
+                if (brand.isKnown) "Scooter dieser Marke" else "Marke unbekannt \u2014 nur generische Diagnose",
+                11f, Palette.TEXT_MUTED
+            ).apply { setPadding(0, dp(2), 0, 0) })
+            card.setOnClickListener {
+                if (wizardBrand != brand) {
+                    wizardBrand = brand
+                    // Modell nur behalten, wenn es zur neuen Marke passt.
+                    if (!ScooterBrandModels.modelBelongsToBrand(wizardModel, brand)) {
+                        wizardModel = ScooterModel.UNKNOWN
+                        wizardModelNotListed = false
+                    }
+                }
+                renderWizard()
+            }
+            col.addView(card, cardParams())
+        }
+
+        val navRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        navRow.addView(makeOutlineButton("ZUR\u00dcCK", Palette.TEXT_SECONDARY) {
+            wizardStep = OnboardingGate.Step.USER
+            renderWizard()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(0, 0, dp(4), 0) })
+        navRow.addView(makePrimaryButton("WEITER", Palette.ACCENT) {
+            if (!wizardBrand.isKnown) {
+                wizardError = "Bitte eine Marke w\u00e4hlen (oder \u201eAndere / unbekannt\u201c)."
+                renderWizard()
+            } else {
+                wizardError = null
+                wizardStep = OnboardingGate.Step.MODEL
+                renderWizard()
+            }
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+        col.addView(navRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, 0) })
+
+        wizardError?.let {
+            col.addView(makeText(it, 12f, Palette.DANGER, true).apply { setPadding(0, dp(8), 0, 0) })
+        }
+    }
+
+    private fun renderWizardModel(col: LinearLayout) {
+        col.addView(makeText("WELCHES MODELL?", 18f, Palette.ACCENT, true))
+        col.addView(makeText(
+            "Marke: ${wizardBrand.displayName}. Modelle werden nach Marke gefiltert. " +
+                "Eine Nutzer-Auswahl ist KEIN Kompatibilit\u00e4tsnachweis \u2014 unbestaetigte " +
+                "Diagnosefunktionen bleiben gesperrt.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, dp(6), 0, dp(12)) })
+
+        val models = ScooterBrandModels.modelsForBrand(wizardBrand)
+        if (models.isEmpty()) {
+            col.addView(makeText(
+                "F\u00fcr ${wizardBrand.displayName} sind noch keine Modelle hinterlegt. " +
+                    "Bitte \u201eMein Modell ist nicht gelistet\u201c w\u00e4hlen.",
+                12f, Palette.WARNING
+            ).apply { setPadding(0, 0, 0, dp(8)) })
+        }
+        for (model in models) {
+            val sel = model == wizardModel && !wizardModelNotListed
+            val card = makeCard()
+            card.setBackgroundColor(if (sel) Palette.SURFACE_HIGH else Palette.SURFACE)
+            card.addView(makeText(model.displayName, 14f,
+                if (sel) Palette.ACCENT else Palette.TEXT_PRIMARY, true))
+            card.setOnClickListener {
+                wizardModel = model
+                wizardModelNotListed = false
+                renderWizard()
+            }
+            col.addView(card, cardParams())
+        }
+
+        // "Mein Modell ist nicht gelistet"
+        val notListedCard = makeCard()
+        notListedCard.setBackgroundColor(if (wizardModelNotListed) Palette.SURFACE_HIGH else Palette.SURFACE)
+        notListedCard.addView(makeText("Mein Modell ist nicht gelistet", 14f,
+            if (wizardModelNotListed) Palette.ACCENT else Palette.TEXT_PRIMARY, true))
+        notListedCard.addView(makeText(
+            "Unbekanntes Modell bleibt nutzbar \u2014 nur generische Bluetooth-/GATT-Diagnose, " +
+                "keine unbestaetigten Status-/Steuerbefehle.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(2), 0, 0) })
+        notListedCard.setOnClickListener {
+            wizardModelNotListed = true
+            wizardModel = ScooterModel.UNKNOWN
+            renderWizard()
+        }
+        col.addView(notListedCard, cardParams())
+
+        col.addView(makeSectionLabel("OPTIONAL: MODELLNUMMER / SERIENNUMMER"))
+        val codeCard = makeCard()
+        val codeInput = EditText(this).apply {
+            hint = "Modellnummer (optional)"
+            setSingleLine(); setText(wizardModelCode)
+            setTextColor(Palette.TEXT_PRIMARY); setHintTextColor(Palette.TEXT_MUTED)
+            setBackgroundColor(Palette.SURFACE_HIGH)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        val serialInput = EditText(this).apply {
+            hint = "Seriennummer (optional, nicht erforderlich)"
+            setSingleLine(); setText(wizardSerial)
+            setTextColor(Palette.TEXT_PRIMARY); setHintTextColor(Palette.TEXT_MUTED)
+            setBackgroundColor(Palette.SURFACE_HIGH)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        codeCard.addView(codeInput, LinearLayout.LayoutParams(MATCH, WRAP))
+        codeCard.addView(serialInput, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(6), 0, 0) })
+        col.addView(codeCard, cardParams())
+
+        wizardError?.let {
+            col.addView(makeText(it, 12f, Palette.DANGER, true).apply { setPadding(0, dp(8), 0, 0) })
+        }
+
+        val navRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        navRow.addView(makeOutlineButton("ZUR\u00dcCK", Palette.TEXT_SECONDARY) {
+            wizardModelCode = codeInput.text.toString()
+            wizardSerial = serialInput.text.toString()
+            wizardStep = OnboardingGate.Step.BRAND
+            renderWizard()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(0, 0, dp(4), 0) })
+        navRow.addView(makePrimaryButton("WEITER", Palette.ACCENT) {
+            wizardModelCode = codeInput.text.toString()
+            wizardSerial = serialInput.text.toString()
+            if (!wizardModel.isKnown && !wizardModelNotListed) {
+                wizardError = "Bitte ein Modell w\u00e4hlen oder \u201eMein Modell ist nicht gelistet\u201c."
+                renderWizard()
+            } else {
+                wizardError = null
+                wizardStep = OnboardingGate.Step.DONE
+                renderWizard()
+            }
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+        col.addView(navRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, 0) })
+    }
+
+    private fun renderWizardSummary(col: LinearLayout) {
+        col.addView(makeText("ZUSAMMENFASSUNG", 18f, Palette.ACCENT, true))
+        col.addView(makeText(
+            "Pr\u00fcfe deine Angaben. Du kannst sie sp\u00e4ter jederzeit unter " +
+                "\u201eMein Profil & Scooter\u201c \u00e4ndern.",
+            12f, Palette.TEXT_MUTED
+        ).apply { setLineSpacing(dp(3).toFloat(), 1f); setPadding(0, dp(6), 0, dp(12)) })
+
+        val card = makeCard()
+        fun row(label: String, value: String) {
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            line.addView(makeText(label, 12f, Palette.TEXT_MUTED),
+                LinearLayout.LayoutParams(0, WRAP, 1f))
+            line.addView(makeText(value, 12f, Palette.TEXT_PRIMARY, true))
+            card.addView(line)
+        }
+        row("Anzeigename", wizardName.ifBlank { "\u2014" })
+        row("Sprache", wizardLanguage.displayName)
+        row("Land", "${wizardCountry.displayName} (${wizardCountry.code})")
+        row("Marke", if (wizardBrand.isKnown) wizardBrand.displayName else "Unbekannt")
+        row("Modell", when {
+            wizardModel.isKnown -> wizardModel.displayName
+            wizardModelNotListed -> "Nicht gelistet (unbekannt)"
+            else -> "Unbekannt"
+        })
+        if (wizardModelCode.isNotBlank()) row("Modellnummer", wizardModelCode)
+        if (wizardSerial.isNotBlank()) row("Seriennummer", wizardSerial)
+        col.addView(card, cardParams())
+
+        // Ehrliche Feature-Vorschau aus der bestehenden Adapter-Registry.
+        val preview = RiderScooterProfile(
+            brand = wizardBrand,
+            model = wizardModel,
+            modelCode = RiderScooterProfile.sanitizeCode(wizardModelCode),
+            serialNumber = RiderScooterProfile.sanitizeSerial(wizardSerial),
+            modelNotListed = wizardModelNotListed
+        )
+        col.addView(makeSectionLabel("VERF\u00dcGBARE FUNKTIONEN"))
+        val featCard = makeCard()
+        for (f in ScooterFeatureRegistry.availability(preview)) {
+            featCard.addView(makeText("\u2022  ${f.displayLabel()}", 11.5f,
+                when (f.status) {
+                    FeatureStatus.AVAILABLE -> Palette.SUCCESS
+                    FeatureStatus.EXPERIMENTAL -> Palette.WARNING
+                    else -> Palette.TEXT_MUTED
+                }
+            ).apply { setLineSpacing(dp(2).toFloat(), 1f); setPadding(0, dp(3), 0, dp(3)) })
+        }
+        col.addView(featCard, cardParams())
+
+        val navRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        navRow.addView(makeOutlineButton("ZUR\u00dcCK", Palette.TEXT_SECONDARY) {
+            wizardStep = OnboardingGate.Step.MODEL
+            renderWizard()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(0, 0, dp(4), 0) })
+        navRow.addView(makePrimaryButton(
+            if (wizardEditing) "PROFIL SPEICHERN" else "EINRICHTUNG ABSCHLIESSEN",
+            Palette.ACCENT_GREEN
+        ) {
+            finishSetupWizard()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+        col.addView(navRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(16), 0, 0) })
+    }
+
+    /**
+     * Persistiert das Profil und wendet es an. Bei einer spaeteren Aenderung
+     * (editing) wird die laufende Diagnose-Sitzung zurueckgesetzt, damit alte
+     * Messwerte NICHT dem neuen Roller zugeschrieben werden (Section 9).
+     */
+    private fun finishSetupWizard() {
+        val previous = repository.riderScooterProfile
+        val newScooter = RiderScooterProfile(
+            brand = wizardBrand,
+            model = if (wizardModelNotListed) ScooterModel.UNKNOWN else wizardModel,
+            modelCode = RiderScooterProfile.sanitizeCode(wizardModelCode),
+            serialNumber = RiderScooterProfile.sanitizeSerial(wizardSerial),
+            modelNotListed = wizardModelNotListed,
+            identificationConfidence = if (wizardModel.isKnown)
+                DetectionConfidence.PROBABLE else DetectionConfidence.UNKNOWN
+        )
+        val newUser = UserProfile(
+            displayName = UserProfile.sanitizeName(wizardName),
+            language = wizardLanguage,
+            countryCode = wizardCountry.code,
+            setupCompleted = true
+        )
+
+        repository.saveUserProfile(newUser)
+        repository.saveRiderScooterProfile(newScooter)
+        // Land/Region in den bestehenden Speicher uebernehmen (keine Doppelquelle).
+        repository.region = wizardCountry
+        currentRegion = wizardCountry
+
+        val changed = ProfileSessionGuard.mustResetSession(previous, newScooter)
+        if (changed) {
+            resetDiagnosticSessionForProfileChange()
+        }
+
+        addLog(LogCategory.INFO,
+            "Profil gespeichert: ${newUser.displayName} \u00b7 ${wizardLanguage.tag} \u00b7 " +
+                "${wizardCountry.code} \u00b7 ${newScooter.brand.displayName} / " +
+                (if (newScooter.model.isKnown) newScooter.model.displayName else "unbekannt"))
+
+        val wasEditing = wizardEditing
+        wizardEditing = false
+        if (wasEditing) {
+            enterMain(); showTab(Tab.CONFIG)
+        } else if (repository.hasPin) {
+            showPinDialog()
+        } else {
+            enterMain()
+        }
+    }
+
+    /**
+     * Setzt die laufende Diagnose-/Messsitzung zurueck, wenn der Scooter im
+     * Profil gewechselt wurde. Es werden KEINE Firmware-/BLE-Einstellungen
+     * veraendert — nur fluechtige Messwerte/Detektion, damit keine falsche
+     * Zuordnung entsteht.
+     */
+    private fun resetDiagnosticSessionForProfileChange() {
+        detectedModel = ScooterModel.UNKNOWN
+        detectedConfidence = DetectionConfidence.UNKNOWN
+        detectedManufacturer = ScooterManufacturer.UNKNOWN
+        detectionEvidence = ""
+        hardwareVerified = false
+        lastTelemetry = null
+        lastTelemetryDiag = null
+        lastDiagSnapshot = null
+        lastTelemetryAtElapsed = 0L
+        speedHistory.clear()
+        powerHistory.clear()
+        toast("Scooter-Profil ge\u00e4ndert \u2014 Diagnose-Sitzung zur\u00fcckgesetzt.")
     }
 
     private fun showPinDialog() {
@@ -3079,6 +3578,42 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun renderDashboard() {
+        // ---- PHASE 17.0: PERSONALISIERTER KOPF ---------------------------
+        // Zeigt das gespeicherte Profil und die daraus abgeleitete Feature-
+        // Verfuegbarkeit. Nicht verfuegbare Funktionen werden AUSGEWIESEN
+        // ("Fuer dieses Modell nicht verfuegbar"), nicht versteckt.
+        val profile = repository.riderScooterProfile
+        val user = repository.userProfile
+        tabContent.addView(makeSectionLabel("MEIN SCOOTER"))
+        val profileCard = makeCard()
+        profileCard.addView(makeText(
+            "Hallo ${user.displayName.ifBlank { "Fahrer" }}",
+            15f, Palette.ACCENT, true
+        ))
+        val declaredModel = when {
+            profile.model.isKnown -> profile.model.displayName
+            profile.modelNotListed -> "Modell nicht gelistet"
+            else -> "Modell unbekannt"
+        }
+        profileCard.addView(makeText(
+            "${if (profile.brand.isKnown) profile.brand.displayName else "Marke unbekannt"}  \u00b7  $declaredModel",
+            12f, Palette.TEXT_SECONDARY
+        ).apply { setPadding(0, dp(4), 0, dp(2)) })
+        profileCard.addView(makeText(
+            "Angabe aus deinem Profil (Nutzer-Auswahl, kein Hardware-Nachweis).",
+            10.5f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, 0, 0, dp(8)) })
+        for (f in ScooterFeatureRegistry.availability(profile)) {
+            profileCard.addView(makeText("\u2022  ${f.displayLabel()}", 11f,
+                when (f.status) {
+                    FeatureStatus.AVAILABLE -> Palette.SUCCESS
+                    FeatureStatus.EXPERIMENTAL -> Palette.WARNING
+                    else -> Palette.TEXT_MUTED
+                }
+            ).apply { setLineSpacing(dp(2).toFloat(), 1f); setPadding(0, dp(2), 0, dp(2)) })
+        }
+        tabContent.addView(profileCard, cardParams())
+
         // ---- PHASE 12.5: COCKPIT -------------------------------------------
         // Der Tacho zeigt ausschliesslich echte Messwerte. Ohne Daten steht
         // dort "Nicht verfuegbar" - es gibt keine erfundene Anzeige.
@@ -3952,6 +4487,36 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         )
 
     private fun renderConfig() {
+        // ---- PHASE 17.0: MEIN PROFIL & SCOOTER --------------------------
+        // Spaetere Aenderung von Name, Sprache, Land, Marke und Modell.
+        // Marken-/Modellwechsel setzt die Diagnose-Sitzung zurueck (keine
+        // falsche Zuordnung alter Messwerte) und veraendert KEINE Firmware/BLE.
+        tabContent.addView(makeSectionLabel("MEIN PROFIL & SCOOTER"))
+        val myProfileCard = makeCard()
+        val user = repository.userProfile
+        val scooter = repository.riderScooterProfile
+        myProfileCard.addView(makeText(
+            user.displayName.ifBlank { "Kein Profil eingerichtet" },
+            15f, Palette.TEXT_PRIMARY, true
+        ))
+        myProfileCard.addView(makeText(
+            "Sprache: ${user.language.displayName}  \u00b7  Land: ${user.region.displayName}",
+            11.5f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(4), 0, 0) })
+        val modelText = when {
+            scooter.model.isKnown -> scooter.model.displayName
+            scooter.modelNotListed -> "nicht gelistet (unbekannt)"
+            else -> "unbekannt"
+        }
+        myProfileCard.addView(makeText(
+            "Scooter: ${if (scooter.brand.isKnown) scooter.brand.displayName else "Unbekannt"}  \u00b7  $modelText",
+            11.5f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(2), 0, dp(8)) })
+        myProfileCard.addView(makePrimaryButton("PROFIL & SCOOTER BEARBEITEN", Palette.ACCENT) {
+            startSetupWizard(editing = true)
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+        tabContent.addView(myProfileCard, cardParams())
+
         tabContent.addView(makeSectionLabel("REGION / LIMIT"))
         val regionCard = makeCard()
         regionCard.addView(makeText(

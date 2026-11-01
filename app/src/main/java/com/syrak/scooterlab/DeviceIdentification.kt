@@ -41,6 +41,8 @@ enum class ScooterManufacturer(
     SEGWAY("Segway", listOf("segway")),
     KUKIRIN("KuKirin", listOf("kukirin", "ku kirin")),
     SOFLOW("SoFlow", listOf("soflow")),
+    /** PHASE 17.0: additiv ergaenzt (Auftrag Section 5). Noch keine Modelle/Protokolle gefuehrt. */
+    INMOTION("InMotion", listOf("inmotion", "in motion")),
     UNKNOWN("Unbekannt", emptyList());
 
     val isKnown: Boolean get() = this != UNKNOWN
@@ -61,7 +63,7 @@ enum class ScooterManufacturer(
             if (n.isEmpty()) return UNKNOWN
             // Feste Prioritaetsliste (nicht von der Enum-Reihenfolge abhaengig,
             // damit ein spaeteres Umsortieren der Enum nichts aendert).
-            val priority = listOf(KUKIRIN, NAVEE, XIAOMI, NINEBOT, SEGWAY, SOFLOW)
+            val priority = listOf(KUKIRIN, NAVEE, XIAOMI, NINEBOT, SEGWAY, SOFLOW, INMOTION)
             for (brand in priority) {
                 if (brand.keywords.any { n.contains(it) }) return brand
             }
