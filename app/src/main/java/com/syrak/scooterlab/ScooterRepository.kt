@@ -154,6 +154,15 @@ class ScooterRepository(context: Context) {
     ): com.syrak.scooterlab.recognition.HardwareTestSaveResult =
         hardwareTestStore.save(records)
 
+    /**
+     * PHASE 17.4.1: schreibt einen aus dem Backup wiederhergestellten Stand
+     * zurueck, ohne das Backup zu ueberschreiben.
+     */
+    fun saveRecoveredHardwareTests(
+        records: List<com.syrak.scooterlab.recognition.HardwareTestRecord>
+    ): com.syrak.scooterlab.recognition.HardwareTestSaveResult =
+        hardwareTestStore.saveRecovered(records)
+
     /* ------------------------------------------------------------------ */
     /*  WEGFAHRSPERRE (PIN, PBKDF2)                                        */
     /* ------------------------------------------------------------------ */

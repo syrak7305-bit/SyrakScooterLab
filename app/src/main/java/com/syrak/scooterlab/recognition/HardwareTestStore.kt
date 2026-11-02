@@ -31,6 +31,16 @@ interface HardwareTestPersistence {
     fun read(): String?
     fun readBackup(): String?
     fun write(payload: String): Boolean
+
+    /**
+     * PHASE 17.4.1: schreibt ausschliesslich den Hauptstand und laesst das
+     * Backup unveraendert. Wird verwendet, wenn ein aus dem Backup
+     * wiederhergestellter Stand zurueckgeschrieben werden soll \u2014 sonst wuerde
+     * der (defekte) Hauptstand das noch gute Backup ueberschreiben.
+     *
+     * Standardmaessig identisch zu [write]; Speicher koennen es ueberschreiben.
+     */
+    fun writePrimaryOnly(payload: String): Boolean = write(payload)
 }
 
 /** Ergebniszustand eines Ladevorgangs. */
@@ -152,7 +162,17 @@ class HardwareTestStore(private val persistence: HardwareTestPersistence) {
      * Bei einem Schreibfehler bleibt der alte Stand erhalten; es wird eine
      * verstaendliche Meldung zurueckgegeben.
      */
-    fun save(records: List<HardwareTestRecord>): HardwareTestSaveResult {
+    fun save(records: List<HardwareTestRecord>): HardwareTestSaveResult =
+        write(records, keepBackup = false)
+
+    /**
+     * PHASE 17.4.1: schreibt einen aus dem Backup wiederhergestellten Stand
+     * zurueck, ohne das Backup zu ueberschreiben.
+     */
+    fun saveRecovered(records: List<HardwareTestRecord>): HardwareTestSaveResult =
+        write(records, keepBackup = true)
+
+    private fun write(records: List<HardwareTestRecord>, keepBackup: Boolean): HardwareTestSaveResult {
         val payload = try {
             HardwareTestJson.encode(records)
         } catch (t: Throwable) {
@@ -163,7 +183,7 @@ class HardwareTestStore(private val persistence: HardwareTestPersistence) {
         }
 
         val written = try {
-            persistence.write(payload)
+            if (keepBackup) persistence.writePrimaryOnly(payload) else persistence.write(payload)
         } catch (t: Throwable) {
             return HardwareTestSaveResult(
                 success = false,
