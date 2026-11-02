@@ -67,5 +67,5 @@
 - [x] `testDebugUnitTest`: 41 Suites / 688 Tests / 0 Fehler / 0 Errors / 0 Skipped
 - [x] `assembleDebug`: BUILD SUCCESSFUL, APK 18.904.330 Bytes
 - [x] `PHASE17.4.2_ERGEBNIS.md` mit Abschnitten A–G
-- [ ] Branch `feat/phase17.4.2-device-qa`, Commit, Push
-- [ ] PR gegen `main` öffnen (nicht selbst mergen)
+- [x] Branch `feat/phase17.4.2-device-qa`, Commit `01beb7a`, Push
+- [x] PR #33 gegen `main` geöffnet (nicht selbst gemergt)
