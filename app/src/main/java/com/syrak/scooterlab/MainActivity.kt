@@ -212,6 +212,17 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var hardwareTestNotice: String? = null
     private val hardwareTestRegistry: HardwareTestRegistry
         get() = HardwareTestRegistry(hardwareTests)
+
+    /**
+     * PHASE 17.4.1: aktiver Filterzustand der Hardware-Testuebersicht.
+     * Der Filter wirkt ausschliesslich auf die Anzeige und veraendert niemals
+     * gespeicherte Datensaetze.
+     */
+    private var hardwareTestFilter: HardwareTestFilter = HardwareTestFilter()
+    /** PHASE 17.4.1: Filterbereich ein-/ausgeklappt. */
+    private var hardwareTestFilterExpanded: Boolean = false
+    /** PHASE 17.4.1: Stand wurde beim Start aus dem Backup wiederhergestellt. */
+    private var hardwareTestRecoveredFromBackup: Boolean = false
     // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
     // Geraete bleiben optional sichtbar (nicht verstecken).
     private var showAllDevices = false
@@ -672,6 +683,7 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         // Stand wird NICHT geloescht; die Meldung erscheint in der Uebersicht.
         val hardwareLoad = repository.loadHardwareTests()
         hardwareTests = hardwareLoad.records
+        hardwareTestRecoveredFromBackup = hardwareLoad.usedBackup
         hardwareTestNotice = when (hardwareLoad.status) {
             HardwareTestLoadStatus.CORRUPT, HardwareTestLoadStatus.IO_ERROR -> hardwareLoad.message
             HardwareTestLoadStatus.LOADED -> if (hardwareLoad.usedBackup) hardwareLoad.message else null
@@ -4909,14 +4921,62 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             })
         }
 
+        // PHASE 17.4.1: Nach einer Wiederherstellung aus dem Backup kann der
+        // gute Stand als Hauptstand gesichert werden, ohne das Backup zu
+        // ueberschreiben.
+        if (hardwareTestRecoveredFromBackup && hardwareTests.isNotEmpty()) {
+            card.addView(makeOutlineButton("WIEDERHERGESTELLTEN STAND SICHERN", Palette.SUCCESS) {
+                val result = repository.saveRecoveredHardwareTests(hardwareTests)
+                hardwareTestNotice = if (result.success) {
+                    hardwareTestRecoveredFromBackup = false
+                    "Wiederhergestellter Stand wurde als Hauptstand gesichert."
+                } else {
+                    result.message
+                }
+                toast(result.message)
+                renderConfig()
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, 0, 0, dp(6)) })
+        }
+
+        if (hardwareTests.isNotEmpty()) {
+            card.addView(renderHardwareTestFilter())
+        }
+
         if (hardwareTests.isEmpty()) {
             card.addView(makeText(
                 "Noch keine Hardware-Tests erfasst.",
                 12f, Palette.TEXT_SECONDARY
             ))
         } else {
-            for (record in hardwareTests.sortedByDescending { it.testDate }) {
-                card.addView(hardwareTestRow(record))
+            // PHASE 17.4.1: Filter anwenden, Sortierung nach Datum bleibt erhalten.
+            val visible = HardwareTestFilter.apply(hardwareTests, hardwareTestFilter)
+                .sortedByDescending { it.testDate }
+            if (hardwareTestFilter.isEmpty) {
+                card.addView(makeText(
+                    "${visible.size} Test(s) \u2014 neueste zuerst",
+                    10.5f, Palette.TEXT_MUTED
+                ).apply { setPadding(0, dp(6), 0, dp(2)) })
+            } else {
+                card.addView(makeText(
+                    "${visible.size} von ${hardwareTests.size} Test(s) entsprechen dem Filter",
+                    10.5f, Palette.TEXT_MUTED
+                ).apply { setPadding(0, dp(6), 0, dp(2)) })
+            }
+            if (visible.isEmpty()) {
+                card.addView(makeText(
+                    "Kein Test entspricht den aktuellen Filtern. " +
+                        "Setze die Filter zurueck, um wieder alle Datensaetze zu sehen.",
+                    12f, Palette.TEXT_SECONDARY
+                ).apply { setPadding(0, dp(4), 0, dp(4)) })
+                card.addView(makeOutlineButton("FILTER ZURUECKSETZEN", Palette.ACCENT_BLUE) {
+                    hardwareTestFilter = HardwareTestFilter()
+                    hardwareTestFilterExpanded = false
+                    renderConfig()
+                }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(4), 0, 0) })
+            } else {
+                for (record in visible) {
+                    card.addView(hardwareTestRow(record))
+                }
             }
         }
 
@@ -4947,6 +5007,172 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             qualityCard.addView(renderFingerprintQuality(report))
         }
         parent.addView(qualityCard, cardParams())
+    }
+
+    /**
+     * PHASE 17.4.1: interaktiver Filterbereich der Hardware-Testuebersicht.
+     * Alle Kriterien sind kombinierbar (UND-Verknuepfung). Der Filter wirkt nur
+     * auf die Anzeige; gespeicherte Datensaetze werden nie veraendert.
+     */
+    private fun renderHardwareTestFilter(): View {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, dp(2))
+        }
+
+        val summary = when {
+            hardwareTestFilter.isEmpty -> "ALLE"
+            else -> "AKTIV"
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, dp(4))
+            setOnClickListener {
+                hardwareTestFilterExpanded = !hardwareTestFilterExpanded
+                renderConfig()
+            }
+        }
+        header.addView(makeText(
+            if (hardwareTestFilterExpanded) "FILTER AUSBLENDEN" else "FILTER",
+            11f, Palette.TEXT_PRIMARY, true
+        ), LinearLayout.LayoutParams(0, WRAP, 1f))
+        header.addView(makeText(summary, 10f,
+            if (hardwareTestFilter.isEmpty) Palette.TEXT_MUTED else Palette.ACCENT_BLUE, true))
+        container.addView(header)
+
+        if (!hardwareTestFilterExpanded) return container
+
+        // --- Hersteller ---
+        val manufacturers = listOf<ScooterManufacturer?>(null) + ScooterManufacturer.values().toList()
+        val manufacturerSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                manufacturers.map { it?.displayName ?: "Alle Marken" }
+            )
+            setSelection(manufacturers.indexOf(hardwareTestFilter.manufacturer).coerceAtLeast(0))
+        }
+        container.addView(filterLabel("MARKE"))
+        container.addView(manufacturerSpinner)
+
+        // --- Modell (Teilstring, Gross-/Kleinschreibung egal) ---
+        val modelInput = EditText(this).apply {
+            hint = "Modell enthaelt \u2026"
+            setSingleLine(true)
+            setText(hardwareTestFilter.modelQuery)
+        }
+        container.addView(filterLabel("MODELL"))
+        container.addView(modelInput)
+
+        // --- Fingerprint ---
+        val fingerprints = BuiltInModelFingerprints.all()
+        val fingerprintLabels = listOf("Alle Fingerprints") + fingerprints.map { "${it.modelName} [${it.id}]" }
+        val fingerprintSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                fingerprintLabels
+            )
+            val index = fingerprints.indexOfFirst { it.id == hardwareTestFilter.fingerprintId }
+            setSelection(if (index >= 0) index + 1 else 0)
+        }
+        container.addView(filterLabel("FINGERPRINT"))
+        container.addView(fingerprintSpinner)
+
+        // --- Reifegrad ---
+        val maturities = listOf<FingerprintMaturity?>(null) + FingerprintMaturity.values().toList()
+        val maturitySpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                maturities.map { it?.displayName ?: "Alle Reifegrade" }
+            )
+            setSelection(maturities.indexOf(hardwareTestFilter.maturity).coerceAtLeast(0))
+        }
+        container.addView(filterLabel("REIFEGRAD"))
+        container.addView(maturitySpinner)
+
+        // --- Datumsbereich ---
+        // Bewusst untereinander: auf schmalen Displays wuerden zwei Datumsfelder
+        // nebeneinander ihre Hinweise abschneiden.
+        val dateFromInput = EditText(this).apply {
+            hint = "von yyyy-MM-dd (optional)"
+            setSingleLine(true)
+            setText(hardwareTestFilter.dateFrom ?: "")
+        }
+        val dateToInput = EditText(this).apply {
+            hint = "bis yyyy-MM-dd (optional)"
+            setSingleLine(true)
+            setText(hardwareTestFilter.dateTo ?: "")
+        }
+        container.addView(filterLabel("ZEITRAUM"))
+        container.addView(dateFromInput)
+        container.addView(dateToInput, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(0, dp(4), 0, 0)
+        })
+
+        val buttonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        buttonRow.addView(makePrimaryButton("ANWENDEN", Palette.ACCENT) {
+            applyHardwareTestFilter(
+                manufacturer = manufacturers[manufacturerSpinner.selectedItemPosition],
+                modelQuery = modelInput.text?.toString().orEmpty(),
+                fingerprintId = fingerprints.getOrNull(fingerprintSpinner.selectedItemPosition - 1)?.id,
+                maturity = maturities[maturitySpinner.selectedItemPosition],
+                dateFrom = dateFromInput.text?.toString().orEmpty(),
+                dateTo = dateToInput.text?.toString().orEmpty()
+            )
+        }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        buttonRow.addView(makeOutlineButton("ZURUECKSETZEN", Palette.ACCENT_BLUE) {
+            hardwareTestFilter = HardwareTestFilter()
+            renderConfig()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(6), 0, 0, 0) })
+        container.addView(buttonRow, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(0, dp(8), 0, 0)
+        })
+
+        return container
+    }
+
+    private fun filterLabel(value: String) =
+        makeText(value, 10f, Palette.TEXT_MUTED, true).apply { setPadding(0, dp(8), 0, 0) }
+
+    /**
+     * PHASE 17.4.1: uebernimmt die Filtereingaben. Ungueltige Datumseingaben
+     * werden nicht stillschweigend verworfen, sondern sichtbar gemeldet und
+     * der Filter bleibt unveraendert.
+     */
+    private fun applyHardwareTestFilter(
+        manufacturer: ScooterManufacturer?,
+        modelQuery: String,
+        fingerprintId: String?,
+        maturity: FingerprintMaturity?,
+        dateFrom: String,
+        dateTo: String
+    ) {
+        val from = dateFrom.trim().ifBlank { null }
+        val to = dateTo.trim().ifBlank { null }
+        if (from != null && !IsoDate.isValid(from)) {
+            Toast.makeText(this, "Ungueltiges Startdatum. Erwartet: yyyy-MM-dd", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (to != null && !IsoDate.isValid(to)) {
+            Toast.makeText(this, "Ungueltiges Enddatum. Erwartet: yyyy-MM-dd", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (from != null && to != null && IsoDate.compare(from, to) > 0) {
+            Toast.makeText(this, "Startdatum liegt nach dem Enddatum.", Toast.LENGTH_LONG).show()
+            return
+        }
+        hardwareTestFilter = HardwareTestFilter(
+            manufacturer = manufacturer,
+            modelQuery = modelQuery.trim(),
+            fingerprintId = fingerprintId,
+            maturity = maturity,
+            dateFrom = from,
+            dateTo = to
+        )
+        renderConfig()
     }
 
     /** Eine Zeile der Testuebersicht; oeffnet die Detailansicht. */

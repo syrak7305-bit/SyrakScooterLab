@@ -36,6 +36,17 @@ class SharedPreferencesHardwareTestPersistence(
         }
     }
 
+    /**
+     * PHASE 17.4.1: schreibt nur den Hauptstand. Das Backup bleibt unberuehrt,
+     * damit ein aus dem Backup wiederhergestellter Stand das gute Backup nicht
+     * durch den defekten Hauptstand ersetzt.
+     */
+    override fun writePrimaryOnly(payload: String): Boolean = try {
+        prefs.edit().putString(KEY_PRIMARY, payload).commit()
+    } catch (_: Throwable) {
+        false
+    }
+
     companion object {
         const val KEY_PRIMARY = "hardware_tests_json"
         const val KEY_BACKUP = "hardware_tests_json_backup"
