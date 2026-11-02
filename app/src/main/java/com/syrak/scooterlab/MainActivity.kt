@@ -28,7 +28,9 @@ import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -37,6 +39,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -68,8 +71,18 @@ import com.syrak.scooterlab.recognition.FingerprintQualityAudit
 import com.syrak.scooterlab.recognition.FingerprintQualityReport
 import com.syrak.scooterlab.recognition.GattDiscoveryStatus
 import com.syrak.scooterlab.recognition.GattFeatures
+import com.syrak.scooterlab.recognition.HardwareGattSnapshot
+import com.syrak.scooterlab.recognition.HardwareRecognitionSnapshot
+import com.syrak.scooterlab.recognition.HardwareScanSnapshot
+import com.syrak.scooterlab.recognition.HardwareTestEvaluator
+import com.syrak.scooterlab.recognition.HardwareTestFilter
+import com.syrak.scooterlab.recognition.HardwareTestImporter
+import com.syrak.scooterlab.recognition.HardwareTestJson
+import com.syrak.scooterlab.recognition.HardwareTestLoadStatus
+import com.syrak.scooterlab.recognition.HardwareTestRecord
 import com.syrak.scooterlab.recognition.HardwareTestRegistry
 import com.syrak.scooterlab.recognition.HardwareValidationExport
+import com.syrak.scooterlab.recognition.IsoDate
 import com.syrak.scooterlab.recognition.RecognitionConfidence
 import com.syrak.scooterlab.recognition.RecognitionEngine
 import com.syrak.scooterlab.recognition.RecognitionExport
@@ -83,6 +96,7 @@ import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /* ==========================================================================
  *  SYRAK SCOOTERLAB  —  MainActivity.kt  (v7 "Modular Protocol Engine")
@@ -190,10 +204,14 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private val recognitionScanObservedAt = mutableMapOf<String, Long>()
     private var recognitionGattObservedAtMs = 0L
     /**
-     * PHASE 17.3: dokumentierte Hardware-Tests. Bewusst LEER — solange keine
-     * echten Geraetetests vorliegen, wird kein Fingerprint hochgestuft.
+     * PHASE 17.4: dokumentierte Hardware-Tests. Werden beim Start aus dem
+     * bestehenden SharedPreferences-Store geladen. Es wird NICHTS automatisch
+     * hochgestuft — die Registry ist nur die ehrliche Belegsammlung.
      */
-    private val hardwareTestRegistry = HardwareTestRegistry.empty()
+    private var hardwareTests: List<HardwareTestRecord> = emptyList()
+    private var hardwareTestNotice: String? = null
+    private val hardwareTestRegistry: HardwareTestRegistry
+        get() = HardwareTestRegistry(hardwareTests)
     // PHASE 12.3: Scan-Ansicht — standardmaessig nur Scooter, unbekannte
     // Geraete bleiben optional sichtbar (nicht verstecken).
     private var showAllDevices = false
@@ -279,6 +297,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     private var loadedFirmwareBytes: ByteArray? = null
     /** FIX 7: hartes Limit gegen ZIP-Bomben / uebergrosse Firmware-Dateien. */
     private val MAX_FIRMWARE_BYTES = FirmwareValidator.MAX_FIRMWARE_BYTES
+
+    /** PHASE 17.4: Obergrenze fuer JSON-Importe von Hardware-Tests. */
+    private val MAX_HARDWARE_TEST_IMPORT_BYTES = 2 * 1024 * 1024
 
     private var flashMode: FlashMode = FlashMode.SOFT_PATCH
     private var overspeedAlarmMuted = false
@@ -489,6 +510,11 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? -> if (uri != null) handleSelectedFirmware(uri) }
 
+    /** PHASE 17.4: JSON-Import von Hardware-Tests (SAF, keine neue Navigation). */
+    private val hardwareTestImporter = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? -> if (uri != null) handleHardwareTestImport(uri) }
+
     private val leScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result ?: return
@@ -642,6 +668,15 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
         repository = ScooterRepository(this)
         currentRegion = repository.region
         autoReconnectEnabled = repository.autoReconnect
+        // PHASE 17.4: Hardware-Tests beim Start wiederherstellen. Ein defekter
+        // Stand wird NICHT geloescht; die Meldung erscheint in der Uebersicht.
+        val hardwareLoad = repository.loadHardwareTests()
+        hardwareTests = hardwareLoad.records
+        hardwareTestNotice = when (hardwareLoad.status) {
+            HardwareTestLoadStatus.CORRUPT, HardwareTestLoadStatus.IO_ERROR -> hardwareLoad.message
+            HardwareTestLoadStatus.LOADED -> if (hardwareLoad.usedBackup) hardwareLoad.message else null
+            HardwareTestLoadStatus.EMPTY -> null
+        }
 
         window.statusBarColor = Palette.BG
         window.navigationBarColor = Palette.BG
@@ -4810,6 +4845,481 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             expectedSha256 = selectedFirmware?.expectedSha256
         )
 
+    /* ================================================================== */
+    /*  PHASE 17.4: HARDWARE-TEST-VERWALTUNG                              */
+    /*  ------------------------------------------------------------------ */
+    /*  Bewusst in die bestehende CONFIG-Navigation eingebettet — keine    */
+    /*  zweite Hauptnavigation. Alle Daten stammen aus echten Erfassungen. */
+    /* ================================================================== */
+
+    /** Speichert die aktuelle Testliste atomar; bei Fehler bleibt der alte Stand. */
+    private fun persistHardwareTests() {
+        val result = repository.saveHardwareTests(hardwareTests)
+        if (!result.success) {
+            toast(result.message)
+            addLog(LogCategory.ERROR, result.message)
+        }
+    }
+
+    /** Scan-Snapshot der aktuellen bzw. zuletzt aktiven Sitzung (oder null). */
+    private fun currentScanSnapshot(): HardwareScanSnapshot? {
+        val address = recognitionSession.activeAddress
+            ?: recognitionSession.lastActiveAddress
+            ?: return null
+        val observation = scanObservations[address] ?: return null
+        return HardwareScanSnapshot.from(AdvertisementFeatures.from(observation))
+    }
+
+    /** GATT-Snapshot der aktuellen bzw. zuletzt aktiven Sitzung (oder null). */
+    private fun currentGattSnapshot(): HardwareGattSnapshot? {
+        val address = recognitionSession.activeAddress
+            ?: recognitionSession.lastActiveAddress
+            ?: return null
+        val snap = bleEngine?.liveGattSnapshot() ?: return null
+        if (!snap.matchesAddress(address)) return null
+        val features = GattFeatures.from(
+            records = snap.effectiveServices,
+            discoveryStatus = snap.effectiveDiscoveryStatus,
+            errors = listOfNotNull(snap.effectiveDiscoveryError)
+        )
+        return HardwareGattSnapshot.from(features)
+    }
+
+    /** Erkenntnis-Snapshot der aktuellen Sitzung (oder null). */
+    private fun currentRecognitionSnapshot(): HardwareRecognitionSnapshot? =
+        HardwareRecognitionSnapshot.from(recognitionSession.displayResult())
+
+    /** Uebersicht + Fingerprint-Qualitaet, eingebettet in den CONFIG-Tab. */
+    private fun renderHardwareTestSection(parent: LinearLayout) {
+        parent.addView(makeSectionLabel("HARDWARE-TESTS & FINGERPRINT-QUALITAET"))
+        val card = makeCard()
+        card.addView(makeText(
+            "${hardwareTests.size} dokumentierte(r) Test(s)",
+            14f, Palette.TEXT_PRIMARY, true
+        ))
+        card.addView(makeText(
+            "Ein Test gilt nur dann als Beleg, wenn Scan-, GATT- und Erkenntnisdaten " +
+                "vorliegen. Es wird NICHTS automatisch hochgestuft.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(3), 0, dp(8)) })
+
+        hardwareTestNotice?.let { notice ->
+            card.addView(makeText(notice, 11f, Palette.ACCENT_YELLOW).apply {
+                setPadding(0, 0, 0, dp(6))
+            })
+        }
+
+        if (hardwareTests.isEmpty()) {
+            card.addView(makeText(
+                "Noch keine Hardware-Tests erfasst.",
+                12f, Palette.TEXT_SECONDARY
+            ))
+        } else {
+            for (record in hardwareTests.sortedByDescending { it.testDate }) {
+                card.addView(hardwareTestRow(record))
+            }
+        }
+
+        card.addView(makePrimaryButton("NEUEN TEST ANLEGEN", Palette.ACCENT) {
+            showHardwareTestForm(null)
+        }, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
+
+        val ioRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        ioRow.addView(makeOutlineButton("JSON EXPORT", Palette.ACCENT_BLUE) {
+            exportHardwareTests()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        ioRow.addView(makeOutlineButton("JSON IMPORT", Palette.ACCENT_BLUE) {
+            hardwareTestImporter.launch(arrayOf("application/json", "text/plain", "*/*"))
+        }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { setMargins(dp(6), 0, 0, 0) })
+        card.addView(ioRow, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(0, dp(6), 0, 0)
+        })
+        parent.addView(card, cardParams())
+
+        parent.addView(makeSectionLabel("FINGERPRINT-QUALITAET"))
+        val qualityCard = makeCard()
+        qualityCard.addView(makeText(
+            "Belegt = aus dokumentierten Tests abgeleitet. Deklariert = im Profil hinterlegt. " +
+                "Eine Bestaetigung wird nur gemeldet, nie automatisch uebernommen.",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, 0, 0, dp(4)) })
+        for (report in FingerprintQualityAudit.audit(BuiltInModelFingerprints, hardwareTestRegistry)) {
+            qualityCard.addView(renderFingerprintQuality(report))
+        }
+        parent.addView(qualityCard, cardParams())
+    }
+
+    /** Eine Zeile der Testuebersicht; oeffnet die Detailansicht. */
+    private fun hardwareTestRow(record: HardwareTestRecord): View {
+        val fingerprint = record.expectedFingerprintId?.let { BuiltInModelFingerprints.byId(it) }
+        val assessment = fingerprint?.let { HardwareTestEvaluator.assess(record, it) }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+            setOnClickListener { showHardwareTestDetail(record.id) }
+        }
+        row.addView(makeText(
+            "${record.manufacturer.displayName} \u00b7 ${record.modelName}",
+            13f, Palette.TEXT_PRIMARY, true
+        ))
+        row.addView(makeText(
+            "${record.testDate} \u00b7 ${record.expectedFingerprintId ?: "kein Fingerprint"}",
+            11f, Palette.TEXT_MUTED
+        ).apply { setPadding(0, dp(2), 0, 0) })
+        val status = buildString {
+            append(if (record.isComplete) "vollstaendig" else "unvollstaendig (${record.missingFields.size} fehlt)")
+            if (assessment != null) {
+                append(" \u00b7 kritisch ").append(assessment.criticalCount)
+                append(" \u00b7 Warnung ").append(assessment.warningCount)
+            }
+        }
+        row.addView(makeText(
+            status, 11f,
+            if (record.isComplete) Palette.TEXT_SECONDARY else Palette.ACCENT_YELLOW
+        ).apply { setPadding(0, dp(2), 0, 0) })
+        return row
+    }
+
+    /** Qualitaetszeile eines Fingerprints (nur Anzeige, kein Upgrade). */
+    private fun renderFingerprintQuality(report: FingerprintQualityReport): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        box.addView(makeText(report.modelName, 12.5f, Palette.TEXT_PRIMARY, true))
+        val color = when (report.maturity) {
+            FingerprintMaturity.HARDWARE_CONFIRMED -> Palette.ACCENT_GREEN
+            FingerprintMaturity.TESTED -> Palette.ACCENT_YELLOW
+            FingerprintMaturity.DOCUMENTED -> Palette.TEXT_MUTED
+        }
+        box.addView(makeText(
+            "belegt: ${report.maturity.displayName} \u00b7 deklariert: ${report.declaredStatus.displayName}",
+            11f, color
+        ))
+        box.addView(makeText(
+            "Tests: ${report.testCount} \u00b7 bestaetigend: ${report.confirmingTestIds.size} \u00b7 " +
+                "widerspruechlich: ${report.contradictoryTestIds.size} \u00b7 " +
+                "fehlende Belege: ${report.missingEvidence.size}",
+            10.5f, Palette.TEXT_MUTED
+        ))
+        if (report.upgradePending) {
+            box.addView(makeText(
+                "Hinweis: Belege erlauben eine Bestaetigung \u2014 das Profil wird NICHT automatisch hochgestuft.",
+                10.5f, Palette.ACCENT_YELLOW
+            ))
+        }
+        if (report.hasContradictions) {
+            box.addView(makeText(
+                "Widerspruechliche Tests: ${report.contradictoryTestIds.joinToString(", ")}",
+                10.5f, Palette.ACCENT_RED
+            ))
+        }
+        return box
+    }
+
+    /** Detailansicht eines Tests mit Bearbeiten/Loeschen. */
+    private fun showHardwareTestDetail(id: String) {
+        val record = hardwareTests.firstOrNull { it.id == id } ?: return
+        val fingerprint = record.expectedFingerprintId?.let { BuiltInModelFingerprints.byId(it) }
+        val assessment = fingerprint?.let { HardwareTestEvaluator.assess(record, it) }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(4), dp(16), dp(8))
+        }
+        fun line(label: String, value: String, color: Int = Palette.TEXT_SECONDARY) {
+            body.addView(makeText(label, 10f, Palette.TEXT_MUTED, true).apply {
+                setPadding(0, dp(8), 0, 0)
+            })
+            body.addView(makeText(value, 12.5f, color))
+        }
+
+        line("MARKE / MODELL", "${record.manufacturer.displayName} \u00b7 ${record.modelName}")
+        line(
+            "TESTDATUM",
+            record.testDate + if (record.hasValidTestDate) "" else " (ungueltig)",
+            if (record.hasValidTestDate) Palette.TEXT_SECONDARY else Palette.ACCENT_RED
+        )
+        line("TESTER", record.tester?.takeIf { it.isNotBlank() } ?: "\u2014")
+        line("ADRESSE (MASKIERT)", record.addressMasked ?: "\u2014")
+        line("ERWARTETER FINGERPRINT", record.expectedFingerprintId ?: "\u2014")
+        line(
+            "STATUS",
+            if (record.isComplete) "vollstaendig"
+            else "unvollstaendig: ${record.missingFields.joinToString(", ")}",
+            if (record.isComplete) Palette.ACCENT_GREEN else Palette.ACCENT_YELLOW
+        )
+        record.scan?.let {
+            line(
+                "SCAN",
+                "Name: ${it.deviceName ?: "\u2014"} \u00b7 Services: ${it.serviceUuids.size} \u00b7 " +
+                    "Hersteller-IDs: ${it.manufacturerIds.size} \u00b7 RSSI: ${it.rssi ?: "\u2014"}"
+            )
+        }
+        record.gatt?.let {
+            line(
+                "GATT",
+                "Discovery: ${it.discoveryStatus.name} \u00b7 Services: ${it.serviceUuids.size} \u00b7 " +
+                    "Characteristics: ${it.characteristicCount}"
+            )
+        }
+        record.observedRecognition?.let {
+            line(
+                "ERKENNUNG",
+                "${it.confidence.name} \u00b7 ${it.detectedBrand.displayName} \u00b7 " +
+                    it.detectedBrandFamily.name + (it.probableModel?.let { m -> " \u00b7 $m" } ?: "")
+            )
+        }
+        assessment?.let {
+            line(
+                "BEWERTUNG", it.summary(),
+                if (it.isContradictory) Palette.ACCENT_RED else Palette.TEXT_SECONDARY
+            )
+            if (it.deviations.isNotEmpty()) {
+                line("ABWEICHUNGEN", it.deviations.joinToString("\n") { d -> d.label() })
+            }
+        }
+        record.notes?.takeIf { it.isNotBlank() }?.let { line("NOTIZEN", it) }
+
+        val scroll = ScrollView(this).apply { addView(body) }
+        AlertDialog.Builder(this)
+            .setTitle("Hardware-Test")
+            .setView(scroll)
+            .setPositiveButton("BEARBEITEN") { _, _ -> showHardwareTestForm(record) }
+            .setNeutralButton("LOESCHEN") { _, _ -> confirmDeleteHardwareTest(record.id) }
+            .setNegativeButton("SCHLIESSEN", null)
+            .show()
+    }
+
+    /** Formular zum Anlegen/Bearbeiten. Es werden keine Werte erfunden. */
+    private fun showHardwareTestForm(existing: HardwareTestRecord?) {
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(4), dp(16), dp(8))
+        }
+
+        val manufacturers = ScooterManufacturer.values().toList()
+        val manufacturerSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                manufacturers.map { it.displayName }
+            )
+            setSelection(
+                manufacturers.indexOf(existing?.manufacturer ?: ScooterManufacturer.UNKNOWN)
+                    .coerceAtLeast(0)
+            )
+        }
+        body.addView(makeText("MARKE", 10f, Palette.TEXT_MUTED, true))
+        body.addView(manufacturerSpinner)
+
+        val modelInput = EditText(this).apply {
+            hint = "Modellname"
+            setText(existing?.modelName ?: "")
+        }
+        body.addView(makeText("MODELL", 10f, Palette.TEXT_MUTED, true).apply {
+            setPadding(0, dp(8), 0, 0)
+        })
+        body.addView(modelInput)
+
+        val dateInput = EditText(this).apply {
+            hint = "yyyy-MM-dd"
+            setText(existing?.testDate ?: "")
+        }
+        body.addView(makeText("TESTDATUM (yyyy-MM-dd)", 10f, Palette.TEXT_MUTED, true).apply {
+            setPadding(0, dp(8), 0, 0)
+        })
+        body.addView(dateInput)
+
+        val testerInput = EditText(this).apply {
+            hint = "Tester (optional)"
+            setText(existing?.tester ?: "")
+        }
+        body.addView(makeText("TESTER", 10f, Palette.TEXT_MUTED, true).apply {
+            setPadding(0, dp(8), 0, 0)
+        })
+        body.addView(testerInput)
+
+        val fingerprints = BuiltInModelFingerprints.all()
+        val fingerprintLabels = listOf("(keiner)") + fingerprints.map { "${it.modelName} [${it.id}]" }
+        val fingerprintSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                fingerprintLabels
+            )
+            val index = fingerprints.indexOfFirst { it.id == existing?.expectedFingerprintId }
+            setSelection(if (index >= 0) index + 1 else 0)
+        }
+        body.addView(makeText("ERWARTETER FINGERPRINT", 10f, Palette.TEXT_MUTED, true).apply {
+            setPadding(0, dp(8), 0, 0)
+        })
+        body.addView(fingerprintSpinner)
+
+        val notesInput = EditText(this).apply {
+            hint = "Notizen / Abweichungen (optional)"
+            setText(existing?.notes ?: "")
+        }
+        body.addView(makeText("NOTIZEN", 10f, Palette.TEXT_MUTED, true).apply {
+            setPadding(0, dp(8), 0, 0)
+        })
+        body.addView(notesInput)
+
+        val capture = CheckBox(this).apply {
+            text = "Aktuelle Sitzungsdaten (Scan/GATT/Erkennung) uebernehmen"
+            setTextColor(Palette.TEXT_SECONDARY)
+            isChecked = existing == null &&
+                (currentScanSnapshot() != null ||
+                    currentGattSnapshot() != null ||
+                    currentRecognitionSnapshot() != null)
+        }
+        body.addView(capture, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(0, dp(10), 0, 0)
+        })
+        body.addView(makeText(
+            "Ohne diese Daten bleibt der Test unvollstaendig und kann keinen Fingerprint bestaetigen.",
+            10.5f, Palette.TEXT_MUTED
+        ))
+
+        val scroll = ScrollView(this).apply { addView(body) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Neuen Hardware-Test anlegen" else "Hardware-Test bearbeiten")
+            .setView(scroll)
+            .setPositiveButton("SPEICHERN", null)
+            .setNegativeButton("ABBRECHEN", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val model = modelInput.text.toString().trim()
+                val date = dateInput.text.toString().trim()
+                if (model.isEmpty()) {
+                    toast("Modellname darf nicht leer sein.")
+                    return@setOnClickListener
+                }
+                if (!IsoDate.isValid(date)) {
+                    toast("Datum muss ein gueltiges Kalenderdatum im Format yyyy-MM-dd sein.")
+                    return@setOnClickListener
+                }
+
+                val manufacturer = manufacturers[manufacturerSpinner.selectedItemPosition]
+                val fingerprintId = fingerprints
+                    .getOrNull(fingerprintSpinner.selectedItemPosition - 1)?.id
+                val tester = testerInput.text.toString().trim().ifBlank { null }
+                val notes = notesInput.text.toString().trim().ifBlank { null }
+
+                val scan = if (capture.isChecked) currentScanSnapshot() else existing?.scan
+                val gatt = if (capture.isChecked) currentGattSnapshot() else existing?.gatt
+                val observed = if (capture.isChecked) {
+                    currentRecognitionSnapshot()
+                } else {
+                    existing?.observedRecognition
+                }
+
+                val record = HardwareTestRecord(
+                    id = existing?.id ?: UUID.randomUUID().toString(),
+                    manufacturer = manufacturer,
+                    modelName = model,
+                    testDate = date,
+                    tester = tester,
+                    addressMasked = existing?.addressMasked ?: HardwareTestJson.maskAddress(
+                        recognitionSession.activeAddress ?: recognitionSession.lastActiveAddress
+                    ),
+                    expectedFingerprintId = fingerprintId,
+                    scan = scan,
+                    gatt = gatt,
+                    observedRecognition = observed,
+                    notes = notes
+                )
+
+                hardwareTests = if (existing == null) {
+                    hardwareTests + record
+                } else {
+                    hardwareTests.map { if (it.id == existing.id) record else it }
+                }
+                hardwareTestNotice = null
+                persistHardwareTests()
+                addLog(
+                    LogCategory.INFO,
+                    "Hardware-Test ${if (existing == null) "angelegt" else "bearbeitet"}: " +
+                        "${manufacturer.displayName} ${model} (${record.testDate})"
+                )
+                dialog.dismiss()
+                showTab(Tab.CONFIG)
+            }
+        }
+        dialog.show()
+    }
+
+    /** Loescht genau EINEN Datensatz nach expliziter Bestaetigung. */
+    private fun confirmDeleteHardwareTest(id: String) {
+        val record = hardwareTests.firstOrNull { it.id == id } ?: return
+        AlertDialog.Builder(this)
+            .setTitle("Hardware-Test loeschen")
+            .setMessage(
+                "Test \u201e${record.manufacturer.displayName} \u00b7 ${record.modelName}\u201c " +
+                    "vom ${record.testDate} wirklich loeschen?\n\n" +
+                    "Es wird genau dieser eine Datensatz entfernt."
+            )
+            .setPositiveButton("LOESCHEN") { _, _ ->
+                hardwareTests = hardwareTests.filterNot { it.id == id }
+                persistHardwareTests()
+                addLog(LogCategory.INFO, "Hardware-Test geloescht: ${record.modelName} (${record.testDate})")
+                showTab(Tab.CONFIG)
+            }
+            .setNegativeButton("ABBRECHEN", null)
+            .show()
+    }
+
+    /** Exportiert alle Tests als JSON (MAC maskiert, keine Seriennummern). */
+    private fun exportHardwareTests() {
+        if (hardwareTests.isEmpty()) {
+            toast("Keine Hardware-Tests zum Exportieren.")
+            return
+        }
+        pendingExportContent = HardwareTestJson.encode(hardwareTests)
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
+        jsonExporter.launch("syrak-hardwaretests-$stamp.json")
+    }
+
+    /** Importiert eine JSON-Datei; vorhandene Datensaetze werden NIE ueberschrieben. */
+    private fun handleHardwareTestImport(uri: Uri) {
+        val bytes = readLimited(uri, MAX_HARDWARE_TEST_IMPORT_BYTES)
+        if (bytes == null || bytes.isEmpty()) {
+            toast("Datei konnte nicht gelesen werden oder ist leer.")
+            addLog(LogCategory.ERROR, "Hardware-Test-Import nicht lesbar: $uri")
+            return
+        }
+        val text = String(bytes, Charsets.UTF_8)
+        val outcome = HardwareTestImporter.importJson(hardwareTests, text)
+
+        if (outcome.importedCount > 0) {
+            hardwareTests = outcome.records
+            hardwareTestNotice = null
+            persistHardwareTests()
+        }
+
+        val message = buildString {
+            append(outcome.summary())
+            if (outcome.rejected.isNotEmpty()) {
+                append("\n\nAbgelehnt:")
+                outcome.rejected.take(10).forEach { append("\n\u2022 ").append(it) }
+                if (outcome.rejected.size > 10) {
+                    append("\n\u2022 \u2026 und ").append(outcome.rejected.size - 10).append(" weitere")
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("JSON-Import")
+            .setMessage(message)
+            .setPositiveButton("OK") { _, _ -> showTab(Tab.CONFIG) }
+            .show()
+        addLog(
+            if (outcome.rejectedCount > 0) LogCategory.ERROR else LogCategory.INFO,
+            "Hardware-Test-Import: ${outcome.summary()}"
+        )
+    }
+
     private fun renderConfig() {
         // ---- PHASE 17.0: MEIN PROFIL & SCOOTER --------------------------
         // Spaetere Aenderung von Name, Sprache, Land, Marke und Modell.
@@ -4965,6 +5475,9 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
             profileCard.addView(row)
         }
         tabContent.addView(profileCard, cardParams())
+
+        // PHASE 17.4: Hardware-Tests & Fingerprint-Qualitaet.
+        renderHardwareTestSection(tabContent)
 
         // PHASE 14 (Teil D): Das doppelte Log-Terminal wurde entfernt.
         // Das Log-Terminal existiert nur noch im geschuetzten Entwicklerbereich.

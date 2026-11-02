@@ -130,6 +130,31 @@ class ScooterRepository(context: Context) {
     }
 
     /* ------------------------------------------------------------------ */
+    /*  PHASE 17.4: HARDWARE-TESTDATENSAETZE                               */
+    /* ------------------------------------------------------------------ */
+    /**
+     * Persistenz der Hardware-Tests. Nutzt DENSELBEN SharedPreferences-Store
+     * ("SyrakPrefs") wie alle anderen Einstellungen — kein zweites
+     * Speichersystem. Die Logik (JSON, Backup, Import) liegt in
+     * [com.syrak.scooterlab.recognition.HardwareTestStore].
+     */
+    private val hardwareTestStore: com.syrak.scooterlab.recognition.HardwareTestStore by lazy {
+        com.syrak.scooterlab.recognition.HardwareTestStore(
+            com.syrak.scooterlab.recognition.SharedPreferencesHardwareTestPersistence(prefs)
+        )
+    }
+
+    /** Laedt die gespeicherten Hardware-Tests (inkl. Backup-Fallback). */
+    fun loadHardwareTests(): com.syrak.scooterlab.recognition.HardwareTestLoadResult =
+        hardwareTestStore.load()
+
+    /** Speichert die Hardware-Tests atomar; bei Fehler bleibt der alte Stand. */
+    fun saveHardwareTests(
+        records: List<com.syrak.scooterlab.recognition.HardwareTestRecord>
+    ): com.syrak.scooterlab.recognition.HardwareTestSaveResult =
+        hardwareTestStore.save(records)
+
+    /* ------------------------------------------------------------------ */
     /*  WEGFAHRSPERRE (PIN, PBKDF2)                                        */
     /* ------------------------------------------------------------------ */
     var isLocked: Boolean
