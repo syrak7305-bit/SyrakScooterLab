@@ -41,6 +41,21 @@ android {
         compose = true
         buildConfig = true
     }
+
+    /* PHASE 17.4.2: Robolectric laesst die echte Activity auf der JVM laufen
+     * (echter Lifecycle, echte View-Hierarchie, echte SharedPreferences).
+     * Das ersetzt KEINEN Geraetetest, ermoeglicht aber Laufzeitpruefungen
+     * ohne Hardware. */
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // PHASE 17.4.2: Robolectric ausschliesslich auf der lokal
+            // vorhandenen Android-14-Jar (API 34) betreiben. Ohne diese
+            // Bindung versucht der Runner zusaetzlich die neueste Jar zu
+            // laden — in dieser Umgebung ohne Netzzugang ein harter Fehler.
+            it.systemProperty("robolectric.enabledSdks", "34")
+        }
+    }
 }
 
 dependencies {
@@ -61,6 +76,8 @@ dependencies {
     implementation(libs.androidx.appcompat)
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

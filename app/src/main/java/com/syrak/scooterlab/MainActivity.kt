@@ -5547,6 +5547,13 @@ class MainActivity : AppCompatActivity(), BleEngine.Listener {
     }
 
     private fun renderConfig() {
+        // PHASE 17.4.2: renderConfig() wird auch direkt aus Filter- und
+        // Wiederherstellungs-Callbacks aufgerufen (nicht nur ueber showTab).
+        // Ohne dieses Leeren wurde der komplette CONFIG-Bereich bei jedem
+        // Filterklick ein zweites Mal UNTER den bestehenden Inhalt gehaengt
+        // (doppelte Karten, doppelte Trefferzahl, alter Filterzustand blieb
+        // sichtbar). Befund aus der Laufzeitpruefung.
+        tabContent.removeAllViews()
         // ---- PHASE 17.0: MEIN PROFIL & SCOOTER --------------------------
         // Spaetere Aenderung von Name, Sprache, Land, Marke und Modell.
         // Marken-/Modellwechsel setzt die Diagnose-Sitzung zurueck (keine
